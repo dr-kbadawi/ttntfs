@@ -86,6 +86,8 @@ int ntfs_mft_record_check(const struct ntfs_volume *vol, struct mft_record *m,
 			  u64 mft_no);
 int ntfs_mft_writepages(struct address_space *mapping,
 		struct writeback_control *wbc);
+/* PORT: exported for core/vfs/aops.c (the port has no writeback_iter()). */
+int ntfs_write_mft_block(struct folio *folio, struct writeback_control *wbc);
 void ntfs_mft_mark_dirty(struct folio *folio);
 
 #endif /* _LINUX_NTFS_MFT_H */

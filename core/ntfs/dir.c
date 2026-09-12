@@ -205,11 +205,14 @@ found_it:
 			u8 type = ie->key.file_name.file_name_type;
 			u8 len = ie->key.file_name.file_name_length;
 
-			/* Only one case insensitive matching name allowed. */
+			/*
+			 * PORT: several POSIX names differing only in case are
+			 * legal (WSL, ntfs-3g); keep the first candidate and
+			 * carry on looking for an exact match.
+			 */
 			if (name) {
-				ntfs_error(sb,
-					"Found already allocated name in phase 1. Please run chkdsk");
-				goto dir_err_out;
+				ntfs_debug("Several case insensitive matches in phase 1.");
+				continue;
 			}
 
 			if (type != FILE_NAME_DOS)
@@ -476,12 +479,10 @@ found_it2:
 			u8 type = ie->key.file_name.file_name_type;
 			u8 len = ie->key.file_name.file_name_length;
 
-			/* Only one case insensitive matching name allowed. */
+			/* PORT: as in phase 1, keep the first candidate. */
 			if (name) {
-				ntfs_error(sb,
-					"Found already allocated name in phase 2. Please run chkdsk");
-				kfree(kaddr);
-				goto dir_err_out;
+				ntfs_debug("Several case insensitive matches in phase 2.");
+				continue;
 			}
 
 			if (type != FILE_NAME_DOS)

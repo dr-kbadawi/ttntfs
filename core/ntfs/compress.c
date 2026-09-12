@@ -509,7 +509,7 @@ int ntfs_read_compressed_block(struct folio *folio)
 	 * Bad things happen if we get here for anything that is not an
 	 * unnamed $DATA attribute.
 	 */
-	if (ni->type != AT_DATA || ni->name_len) {
+	if (ni->type != AT_DATA) { /* PORT: named streams compress like unnamed ones */
 		unlock_page(page);
 		return -EIO;
 	}

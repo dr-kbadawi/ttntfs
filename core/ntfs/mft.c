@@ -2725,7 +2725,8 @@ static s64 lcn_from_index(struct ntfs_volume *vol, struct ntfs_inode *ni,
  *
  * Return: 0 on success, or -errno on error.
  */
-static int ntfs_write_mft_block(struct folio *folio, struct writeback_control *wbc)
+/* PORT: exported; core/vfs/aops.c uses it as the $MFT write_folio backend. */
+int ntfs_write_mft_block(struct folio *folio, struct writeback_control *wbc)
 {
 	struct address_space *mapping = folio->mapping;
 	struct inode *vi = mapping->host;

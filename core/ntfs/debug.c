@@ -29,27 +29,27 @@
 void __ntfs_warning(const char *function, const struct super_block *sb,
 		const char *fmt, ...)
 {
-	struct va_format vaf;
+	char vbuf[512];		/* PORT: no %s in user space */
+	const char *vaf = vbuf;
 	va_list args;
 	int flen = 0;
 
 	if (function)
 		flen = strlen(function);
 	va_start(args, fmt);
-	vaf.fmt = fmt;
-	vaf.va = &args;
+	vsnprintf(vbuf, sizeof(vbuf), fmt, args);
 #ifdef DEBUG
 	if (sb)
-		pr_warn("(device %s): %s(): %pV\n",
-			sb->s_id, flen ? function : "", &vaf);
+		pr_warn("(device %s): %s(): %s\n",
+			sb->s_id, flen ? function : "", vaf);
 	else
-		pr_warn("%s(): %pV\n", flen ? function : "", &vaf);
+		pr_warn("%s(): %s\n", flen ? function : "", vaf);
 #else
 	if (sb)
-		pr_warn_ratelimited("(device %s): %s(): %pV\n",
-			sb->s_id, flen ? function : "", &vaf);
+		pr_warn_ratelimited("(device %s): %s(): %s\n",
+			sb->s_id, flen ? function : "", vaf);
 	else
-		pr_warn_ratelimited("%s(): %pV\n", flen ? function : "", &vaf);
+		pr_warn_ratelimited("%s(): %s\n", flen ? function : "", vaf);
 #endif
 	va_end(args);
 }
@@ -76,27 +76,27 @@ void __ntfs_warning(const char *function, const struct super_block *sb,
 void __ntfs_error(const char *function, struct super_block *sb,
 		const char *fmt, ...)
 {
-	struct va_format vaf;
+	char vbuf[512];		/* PORT: no %s in user space */
+	const char *vaf = vbuf;
 	va_list args;
 	int flen = 0;
 
 	if (function)
 		flen = strlen(function);
 	va_start(args, fmt);
-	vaf.fmt = fmt;
-	vaf.va = &args;
+	vsnprintf(vbuf, sizeof(vbuf), fmt, args);
 #ifdef DEBUG
 	if (sb)
-		pr_err("(device %s): %s(): %pV\n",
-		       sb->s_id, flen ? function : "", &vaf);
+		pr_err("(device %s): %s(): %s\n",
+		       sb->s_id, flen ? function : "", vaf);
 	else
-		pr_err("%s(): %pV\n", flen ? function : "", &vaf);
+		pr_err("%s(): %s\n", flen ? function : "", vaf);
 #else
 	if (sb)
-		pr_err_ratelimited("(device %s): %s(): %pV\n",
-		       sb->s_id, flen ? function : "", &vaf);
+		pr_err_ratelimited("(device %s): %s(): %s\n",
+		       sb->s_id, flen ? function : "", vaf);
 	else
-		pr_err_ratelimited("%s(): %pV\n", flen ? function : "", &vaf);
+		pr_err_ratelimited("%s(): %s\n", flen ? function : "", vaf);
 #endif
 	va_end(args);
 
@@ -112,7 +112,7 @@ int debug_msgs;
 void __ntfs_debug(const char *file, int line, const char *function,
 		const char *fmt, ...)
 {
-	struct va_format vaf;
+	char vbuf[512];		/* PORT: no %pV in user space */
 	va_list args;
 	int flen = 0;
 
@@ -121,9 +121,8 @@ void __ntfs_debug(const char *file, int line, const char *function,
 	if (function)
 		flen = strlen(function);
 	va_start(args, fmt);
-	vaf.fmt = fmt;
-	vaf.va = &args;
-	pr_debug("(%s, %d): %s(): %pV", file, line, flen ? function : "", &vaf);
+	vsnprintf(vbuf, sizeof(vbuf), fmt, args);
+	pr_debug("(%s, %d): %s(): %s", file, line, flen ? function : "", vbuf);
 	va_end(args);
 }
 

@@ -2637,7 +2637,8 @@ static int ntfs_init_fs_context(struct fs_context *fc)
 	return 0;
 }
 
-static struct file_system_type ntfs_fs_type = {
+/* PORT: not static; core/vfs/super_glue.c mounts through its fs_context ops. */
+struct file_system_type ntfs_fs_type = {
 	.owner                  = THIS_MODULE,
 	.name                   = "ntfs",
 	.init_fs_context        = ntfs_init_fs_context,
