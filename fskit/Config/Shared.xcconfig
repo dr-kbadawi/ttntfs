@@ -9,7 +9,7 @@ NTFS_TEAM_ID =
 // Core selection. "stub" links core/stub/ntfscore_stub.c (every operation
 // returns ENOSYS). "real" excludes the stub and links the CMake output
 // ../build/libntfscore.a. Switch with:  NTFS_CORE_MODE = real
-NTFS_CORE_MODE = stub
+NTFS_CORE_MODE = real
 
 NTFS_CORE_EXCLUDE_stub =
 NTFS_CORE_LDFLAGS_stub =
