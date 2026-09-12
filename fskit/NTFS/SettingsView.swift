@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-2.0
+
+import SwiftUI
+
+struct SettingsView: View {
+    @AppStorage(SharedSettings.readOnly, store: SharedSettings.store) private var readOnly = false
+    @AppStorage(SharedSettings.showHidden, store: SharedSettings.store) private var showHidden = true
+    @AppStorage(SharedSettings.showSystem, store: SharedSettings.store) private var showSystem = false
+    @AppStorage(SharedSettings.allowWindowsIllegalNames, store: SharedSettings.store) private var allowIllegal = false
+    @AppStorage(SharedSettings.discard, store: SharedSettings.store) private var discard = false
+    @AppStorage(SharedSettings.caseSensitive, store: SharedSettings.store) private var caseSensitive = false
+
+    var body: some View {
+        Form {
+            Section("Mounting") {
+                Toggle("Mount volumes read-only", isOn: $readOnly)
+                Toggle("Show files Windows marks as hidden", isOn: $showHidden)
+                Toggle("Show NTFS system files ($MFT, $Bitmap, …)", isOn: $showSystem)
+                Toggle("Case-sensitive names", isOn: $caseSensitive)
+            }
+            Section("Compatibility") {
+                Toggle("Allow file names Windows cannot open (: ? * < > | \")", isOn: $allowIllegal)
+                Text("Off: such names are rejected so everything written here opens on Windows.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("TRIM freed space (SSDs)", isOn: $discard)
+            }
+            Section {
+                Text("Changes apply to volumes mounted from now on.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 440)
+        .padding()
+    }
+}

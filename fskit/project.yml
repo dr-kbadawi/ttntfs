@@ -1,0 +1,149 @@
+# xcodegen spec. Regenerate the project with:  xcodegen generate  (run in fskit/)
+name: NTFS
+options:
+  bundleIdPrefix: org.ntfsmac
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+
+configs:
+  Debug: debug
+  Release: release
+
+configFiles:
+  Debug: Config/Shared.xcconfig
+  Release: Config/Shared.xcconfig
+
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    SWIFT_VERSION: "5.0"          # language mode 5: FSKit classes are not Sendable-annotated
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: "$(NTFS_TEAM_ID)"
+    ENABLE_HARDENED_RUNTIME: YES
+    CLANG_WARN_DOCUMENTATION_COMMENTS: NO
+    GCC_TREAT_WARNINGS_AS_ERRORS: NO
+    SWIFT_STRICT_CONCURRENCY: minimal
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      GCC_PREPROCESSOR_DEFINITIONS: DEBUG=1
+
+targets:
+  NTFS:
+    type: application
+    platform: macOS
+    sources:
+      - path: NTFS
+    dependencies:
+      - target: NTFSExtension
+        embed: true
+    info:
+      path: NTFS/Info.plist
+      properties:
+        CFBundleDisplayName: NTFS
+        CFBundleName: NTFS
+        LSUIElement: true                    # menu-bar app, no Dock icon
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: "GPL-2.0"
+    entitlements:
+      path: NTFS/NTFS.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-only: true
+        com.apple.security.application-groups:
+          - group.org.ntfsmac.NTFS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.ntfsmac.NTFS
+        PRODUCT_NAME: NTFS
+        INFOPLIST_KEY_LSUIElement: YES
+        ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: NO
+
+  NTFSExtension:
+    type: extensionkit-extension
+    platform: macOS
+    sources:
+      - path: NTFSExtension
+      - path: Bridge
+        excludes: ["ntfs_bdev_fskit.m"]
+      # Compiled without clang modules: it includes ntfsport/bdev.h, whose kernel
+      # compat types (struct rb_node) collide with Darwin's <sys/rbtree.h> when
+      # the Darwin module is imported wholesale.
+      - path: Bridge/ntfs_bdev_fskit.m
+        compilerFlags: "-fno-modules"
+      - path: ../core/stub/ntfscore_stub.c
+        group: Stub
+    info:
+      path: NTFSExtension/Info.plist
+      properties:
+        CFBundleDisplayName: NTFS
+        CFBundleName: NTFSExtension
+        EXAppExtensionAttributes:
+          EXExtensionPointIdentifier: com.apple.fskit.fsmodule
+          FSShortName: ntfsx
+          FSSupportsBlockResources: true
+          FSSupportsKernelOffloadedIO: false
+          FSSupportsServerURLs: false
+          FSActivateOptionSyntax:
+            shortOptions: "o:"
+          FSCheckOptionSyntax:
+            shortOptions: "qynfp"
+          FSFormatOptionSyntax:
+            shortOptions: "v:c:"
+          FSMediaTypes:
+            Windows_NTFS:
+              FSMediaProperties:
+                "Content Hint": Windows_NTFS
+                Leaf: true
+              FSProbeOrder: 500
+            EBD0A0A2-B9E5-4433-87C0-68B6B72699C7:
+              FSMediaProperties:
+                "Content Hint": EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
+                Leaf: true
+              FSProbeOrder: 1500
+            Partitionless:
+              FSMediaProperties:
+                Leaf: true
+                Whole: true
+              FSProbeOrder: 3500
+          FSPersonalities:
+            NTFS:
+              FSName: "NTFS"
+              FSSubType: 0
+              FSFormatContentMask: Windows_NTFS
+              FSFormatMinimumSize: 1048576
+              FSFormatMaximumSize: 281474976710656
+    entitlements:
+      path: NTFSExtension/NTFSExtension.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.developer.fskit.fsmodule: true
+        com.apple.security.application-groups:
+          - group.org.ntfsmac.NTFS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.ntfsmac.NTFS.Extension
+        PRODUCT_NAME: NTFSExtension
+        SWIFT_OBJC_BRIDGING_HEADER: Bridge/NTFSExtension-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../core/include"
+          - "$(SRCROOT)/../platform/include"
+          - "$(SRCROOT)/Bridge"
+        CLANG_ENABLE_OBJC_ARC: YES
+        # Core selection, see Config/Shared.xcconfig (NTFS_CORE_MODE = stub | real)
+        EXCLUDED_SOURCE_FILE_NAMES: "$(NTFS_CORE_EXCLUDE_$(NTFS_CORE_MODE))"
+        OTHER_LDFLAGS: "$(inherited) $(NTFS_CORE_LDFLAGS_$(NTFS_CORE_MODE))"
+
+schemes:
+  NTFS:
+    build:
+      targets:
+        NTFS: all
+        NTFSExtension: all
+    run:
+      config: Debug
+    archive:
+      config: Release

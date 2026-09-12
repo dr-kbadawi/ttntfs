@@ -1,0 +1,31 @@
+# Standalone build of the page cache + tests. The top-level build compiles
+# platform/pagecache/*.c (minus standalone_shims.c) into libntfsplatform.
+cmake_minimum_required(VERSION 3.20)
+project(ntfs_pagecache C)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_EXTENSIONS ON)
+option(NTFS_SANITIZE "Build with ASan/UBSan" ON)
+option(NTFS_TSAN "Build with ThreadSanitizer (exclusive with NTFS_SANITIZE)" OFF)
+
+set(PC_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+add_library(pagecache_standalone STATIC pagecache.c standalone_shims.c)
+target_include_directories(pagecache_standalone PUBLIC ${PC_ROOT}/platform/include)
+target_compile_options(pagecache_standalone PUBLIC -Wall -Wextra -Wno-unused-parameter
+  -Werror=implicit-function-declaration -fno-strict-aliasing -fwrapv)
+if(NTFS_TSAN)
+  target_compile_options(pagecache_standalone PUBLIC -fsanitize=thread -g -O1)
+  target_link_options(pagecache_standalone PUBLIC -fsanitize=thread)
+elseif(NTFS_SANITIZE)
+  target_compile_options(pagecache_standalone PUBLIC -fsanitize=address,undefined -g -O1)
+  target_link_options(pagecache_standalone PUBLIC -fsanitize=address,undefined)
+endif()
+find_package(Threads REQUIRED)
+target_link_libraries(pagecache_standalone PUBLIC Threads::Threads)
+
+enable_testing()
+add_executable(test_pagecache tests/test_pagecache.c)
+target_link_libraries(test_pagecache pagecache_standalone)
+add_test(NAME pagecache COMMAND test_pagecache)
+add_executable(stress_pagecache tests/stress_pagecache.c)
+target_link_libraries(stress_pagecache pagecache_standalone)
+add_test(NAME pagecache_stress COMMAND stress_pagecache 3)

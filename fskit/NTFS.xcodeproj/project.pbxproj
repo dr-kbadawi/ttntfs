@@ -1,0 +1,522 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */; };
+		70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D88AB6F444249E71E139018 /* VolumeMonitor.swift */; };
+		747947B10E65D12D8E36C4F3 /* NTFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		8A10B01A7F509E33D0A02754 /* NTFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE2682EA100F44295076F7DE /* NTFSExtension.swift */; };
+		A03A39F6CA160CE1691A5427 /* NTFSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D80DAAE4977838464ED6255 /* NTFSApp.swift */; };
+		A47E2521C83A6E5A365131F8 /* ntfscore_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = 21592494DAEE07BF86761556 /* ntfscore_stub.c */; };
+		A91E3637C8414C21A3AA8901 /* Options.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A89785ABD0C6A5D4BE75297 /* Options.swift */; };
+		ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */; };
+		B918A3CCC2D1D2E71DA50A82 /* MenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88488AA353AAC885FE74E9F9 /* MenuView.swift */; };
+		B971CE42F874331618BF0199 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F30CB423189222B7D3898A /* SharedSettings.swift */; };
+		C2A57306E42C69D67937E131 /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3315E373241BC5A5359B9759 /* Errors.swift */; };
+		D16A3E6461DFA2F3C812AC47 /* NTFSVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = B389C0EB1D9C689FA426953F /* NTFSVolume.swift */; };
+		D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */; };
+		F0989E06E6B8D261A2BE925E /* ntfs_bdev_fskit.m in Sources */ = {isa = PBXBuildFile; fileRef = 3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */; settings = {COMPILER_FLAGS = "-fno-modules"; }; };
+		F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 223EFAF44C74CB35E5902EFC /* SettingsView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		7DD032A0737D7CF3746E52B1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 54D1788AC617F44EFB3C41CD /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 9727C5B03DACEC3085AC7BC5;
+			remoteInfo = NTFSExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B7704153B0C778D15C838A86 /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				747947B10E65D12D8E36C4F3 /* NTFSExtension.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		1D88AB6F444249E71E139018 /* VolumeMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeMonitor.swift; sourceTree = "<group>"; };
+		21592494DAEE07BF86761556 /* ntfscore_stub.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = ntfscore_stub.c; path = ../core/stub/ntfscore_stub.c; sourceTree = "<group>"; };
+		223EFAF44C74CB35E5902EFC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSFileSystem.swift; sourceTree = "<group>"; };
+		25EB8A1BE253D39575FE8F8A /* NTFS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NTFS.entitlements; sourceTree = "<group>"; };
+		3315E373241BC5A5359B9759 /* Errors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Errors.swift; sourceTree = "<group>"; };
+		3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ntfs_bdev_fskit.m; sourceTree = "<group>"; };
+		444E775DBFFDA6F5791982DE /* ntfs_bdev_fskit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ntfs_bdev_fskit.h; sourceTree = "<group>"; };
+		67642D3967176F0F3848BF48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7A89785ABD0C6A5D4BE75297 /* Options.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Options.swift; sourceTree = "<group>"; };
+		7D80DAAE4977838464ED6255 /* NTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSApp.swift; sourceTree = "<group>"; };
+		8405521593E3450B24B859E3 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
+		88488AA353AAC885FE74E9F9 /* MenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuView.swift; sourceTree = "<group>"; };
+		8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = NTFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3736E04BD94D01BF34B5ADD /* NTFSExtension-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NTFSExtension-Bridging-Header.h"; sourceTree = "<group>"; };
+		A69E766B5F4D89F7E9A6EF54 /* NTFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NTFSExtension.entitlements; sourceTree = "<group>"; };
+		B382EF12119CB428297CCB7B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		B389C0EB1D9C689FA426953F /* NTFSVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSVolume.swift; sourceTree = "<group>"; };
+		C0F30CB423189222B7D3898A /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
+		DE2682EA100F44295076F7DE /* NTFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSExtension.swift; sourceTree = "<group>"; };
+		EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSItem.swift; sourceTree = "<group>"; };
+		F0994252735E8DC1C493157B /* NTFS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NTFS.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionStatus.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		02D659AB1C3A0C8F08BE9A5F /* NTFSExtension */ = {
+			isa = PBXGroup;
+			children = (
+				3315E373241BC5A5359B9759 /* Errors.swift */,
+				B382EF12119CB428297CCB7B /* Info.plist */,
+				A69E766B5F4D89F7E9A6EF54 /* NTFSExtension.entitlements */,
+				DE2682EA100F44295076F7DE /* NTFSExtension.swift */,
+				22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */,
+				EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */,
+				B389C0EB1D9C689FA426953F /* NTFSVolume.swift */,
+				7A89785ABD0C6A5D4BE75297 /* Options.swift */,
+			);
+			path = NTFSExtension;
+			sourceTree = "<group>";
+		};
+		041363860B3DB1C67B5D663E /* NTFS */ = {
+			isa = PBXGroup;
+			children = (
+				F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */,
+				67642D3967176F0F3848BF48 /* Info.plist */,
+				88488AA353AAC885FE74E9F9 /* MenuView.swift */,
+				25EB8A1BE253D39575FE8F8A /* NTFS.entitlements */,
+				7D80DAAE4977838464ED6255 /* NTFSApp.swift */,
+				223EFAF44C74CB35E5902EFC /* SettingsView.swift */,
+				C0F30CB423189222B7D3898A /* SharedSettings.swift */,
+				1D88AB6F444249E71E139018 /* VolumeMonitor.swift */,
+			);
+			path = NTFS;
+			sourceTree = "<group>";
+		};
+		419394BB8E246BC1C476C7A1 /* Bridge */ = {
+			isa = PBXGroup;
+			children = (
+				444E775DBFFDA6F5791982DE /* ntfs_bdev_fskit.h */,
+				3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */,
+				A3736E04BD94D01BF34B5ADD /* NTFSExtension-Bridging-Header.h */,
+			);
+			path = Bridge;
+			sourceTree = "<group>";
+		};
+		475B00E6072BC0CE74677AF4 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				8405521593E3450B24B859E3 /* Shared.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		64E5222DC489967AF36A743D /* Stub */ = {
+			isa = PBXGroup;
+			children = (
+				21592494DAEE07BF86761556 /* ntfscore_stub.c */,
+			);
+			name = Stub;
+			sourceTree = "<group>";
+		};
+		A1EAC13C82ED49B9B0486A8C = {
+			isa = PBXGroup;
+			children = (
+				419394BB8E246BC1C476C7A1 /* Bridge */,
+				475B00E6072BC0CE74677AF4 /* Config */,
+				041363860B3DB1C67B5D663E /* NTFS */,
+				02D659AB1C3A0C8F08BE9A5F /* NTFSExtension */,
+				64E5222DC489967AF36A743D /* Stub */,
+				BD6F6AE27F063FC8CF12AC15 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		BD6F6AE27F063FC8CF12AC15 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F0994252735E8DC1C493157B /* NTFS.app */,
+				8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		9727C5B03DACEC3085AC7BC5 /* NTFSExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 88182553C12B1D7F596CA341 /* Build configuration list for PBXNativeTarget "NTFSExtension" */;
+			buildPhases = (
+				7387D55F6D4274F7C1D3A010 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NTFSExtension;
+			packageProductDependencies = (
+			);
+			productName = NTFSExtension;
+			productReference = 8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
+		};
+		ACDDED9AC001243BCEC42613 /* NTFS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D5B14B3B9ED279FFEA7EF894 /* Build configuration list for PBXNativeTarget "NTFS" */;
+			buildPhases = (
+				65F633C8F8764BEB1B969C69 /* Sources */,
+				B7704153B0C778D15C838A86 /* Embed ExtensionKit Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				625E3C94293008D41F7316C5 /* PBXTargetDependency */,
+			);
+			name = NTFS;
+			packageProductDependencies = (
+			);
+			productName = NTFS;
+			productReference = F0994252735E8DC1C493157B /* NTFS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		54D1788AC617F44EFB3C41CD /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					9727C5B03DACEC3085AC7BC5 = {
+						DevelopmentTeam = "$(NTFS_TEAM_ID)";
+						ProvisioningStyle = Automatic;
+					};
+					ACDDED9AC001243BCEC42613 = {
+						DevelopmentTeam = "$(NTFS_TEAM_ID)";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 43F6816F94B73CF9B1BF4322 /* Build configuration list for PBXProject "NTFS" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = A1EAC13C82ED49B9B0486A8C;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = BD6F6AE27F063FC8CF12AC15 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				ACDDED9AC001243BCEC42613 /* NTFS */,
+				9727C5B03DACEC3085AC7BC5 /* NTFSExtension */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		65F633C8F8764BEB1B969C69 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */,
+				B918A3CCC2D1D2E71DA50A82 /* MenuView.swift in Sources */,
+				A03A39F6CA160CE1691A5427 /* NTFSApp.swift in Sources */,
+				F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */,
+				B971CE42F874331618BF0199 /* SharedSettings.swift in Sources */,
+				70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7387D55F6D4274F7C1D3A010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C2A57306E42C69D67937E131 /* Errors.swift in Sources */,
+				8A10B01A7F509E33D0A02754 /* NTFSExtension.swift in Sources */,
+				D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */,
+				3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */,
+				D16A3E6461DFA2F3C812AC47 /* NTFSVolume.swift in Sources */,
+				A91E3637C8414C21A3AA8901 /* Options.swift in Sources */,
+				F0989E06E6B8D261A2BE925E /* ntfs_bdev_fskit.m in Sources */,
+				A47E2521C83A6E5A365131F8 /* ntfscore_stub.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		625E3C94293008D41F7316C5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 9727C5B03DACEC3085AC7BC5 /* NTFSExtension */;
+			targetProxy = 7DD032A0737D7CF3746E52B1 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		44B7A93C7DC0D4F725233DB9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
+				CODE_SIGN_ENTITLEMENTS = NTFS/NTFS.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = NTFS/Info.plist;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS;
+				PRODUCT_NAME = NTFS;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		51F1493EFEF9C6DB3A4611DC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_ENTITLEMENTS = NTFSExtension/NTFSExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = "$(NTFS_CORE_EXCLUDE_$(NTFS_CORE_MODE))";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../core/include",
+					"$(SRCROOT)/../platform/include",
+					"$(SRCROOT)/Bridge",
+				);
+				INFOPLIST_FILE = NTFSExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = "$(inherited) $(NTFS_CORE_LDFLAGS_$(NTFS_CORE_MODE))";
+				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS.Extension;
+				PRODUCT_NAME = NTFSExtension;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Bridge/NTFSExtension-Bridging-Header.h";
+			};
+			name = Release;
+		};
+		6F62EB16C9998AD4637978B0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_ENTITLEMENTS = NTFSExtension/NTFSExtension.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				EXCLUDED_SOURCE_FILE_NAMES = "$(NTFS_CORE_EXCLUDE_$(NTFS_CORE_MODE))";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../core/include",
+					"$(SRCROOT)/../platform/include",
+					"$(SRCROOT)/Bridge",
+				);
+				INFOPLIST_FILE = NTFSExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				OTHER_LDFLAGS = "$(inherited) $(NTFS_CORE_LDFLAGS_$(NTFS_CORE_MODE))";
+				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS.Extension;
+				PRODUCT_NAME = NTFSExtension;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Bridge/NTFSExtension-Bridging-Header.h";
+			};
+			name = Debug;
+		};
+		837174C7AD2089D2387817A8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = NO;
+				CODE_SIGN_ENTITLEMENTS = NTFS/NTFS.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				INFOPLIST_FILE = NTFS/Info.plist;
+				INFOPLIST_KEY_LSUIElement = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS;
+				PRODUCT_NAME = NTFS;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		A1451E897FF04E3C5E82C96A /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8405521593E3450B24B859E3 /* Shared.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = NO;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "$(NTFS_TEAM_ID)";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_TREAT_WARNINGS_AS_ERRORS = NO;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		B496C4D5FCA7A587BD1F0824 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 8405521593E3450B24B859E3 /* Shared.xcconfig */;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = NO;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "$(NTFS_TEAM_ID)";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = "DEBUG=1";
+				GCC_TREAT_WARNINGS_AS_ERRORS = NO;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		43F6816F94B73CF9B1BF4322 /* Build configuration list for PBXProject "NTFS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B496C4D5FCA7A587BD1F0824 /* Debug */,
+				A1451E897FF04E3C5E82C96A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		88182553C12B1D7F596CA341 /* Build configuration list for PBXNativeTarget "NTFSExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6F62EB16C9998AD4637978B0 /* Debug */,
+				51F1493EFEF9C6DB3A4611DC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		D5B14B3B9ED279FFEA7EF894 /* Build configuration list for PBXNativeTarget "NTFS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				837174C7AD2089D2387817A8 /* Debug */,
+				44B7A93C7DC0D4F725233DB9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 54D1788AC617F44EFB3C41CD /* Project object */;
+}
