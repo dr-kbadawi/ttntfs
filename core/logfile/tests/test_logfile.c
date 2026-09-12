@@ -36,10 +36,23 @@ static void logger(int level, const char *m, void *ctx)
 #define PS 4096u
 #define NPAGES 64u			/* 256 KiB: file_data_bits = 16 */
 #define LSIZE (PS * NPAGES)
-#define FIRST_PAGE (4 * PS)
 #define DATA_OFF 0x40u
 #define FDB 16u				/* file data bits */
 #define SEQ_BITS (64 - FDB)
+
+/* Log version the builder emits. v1.x: record pages from page 4, tail
+ * copies at 2 and 3. v2.0: record pages from page 0x22, tail copies at
+ * 0x02.. and 0x12.., page header carries file_off at 0x3c. */
+static uint16_t log_major = 1, log_minor = 1;
+static uint32_t first_page = 4 * PS;
+#define FIRST_PAGE first_page
+
+static void lb_set_version(uint16_t major, uint16_t minor)
+{
+	log_major = major;
+	log_minor = minor;
+	first_page = (major >= 2 ? 0x22u : 4u) * PS;
+}
 
 struct lb {
 	uint8_t *buf;
@@ -271,8 +284,8 @@ static void lb_restart(struct lb *b, uint64_t current_lsn, uint32_t last_len, ui
 		lf_put32(p + RP_SYSTEM_PAGE_SIZE, PS);
 		lf_put32(p + RP_LOG_PAGE_SIZE, PS);
 		lf_put16(p + RP_RESTART_AREA_OFFSET, 0x30);
-		lf_put16(p + RP_MINOR_VER, 1);
-		lf_put16(p + RP_MAJOR_VER, 1);
+		lf_put16(p + RP_MINOR_VER, log_minor);
+		lf_put16(p + RP_MAJOR_VER, log_major);
 		ra = p + 0x30;
 		lf_put64(ra + RA_CURRENT_LSN, current_lsn);
 		lf_put16(ra + RA_LOG_CLIENTS, 1);
@@ -341,8 +354,14 @@ static uint64_t lb_make_tail_copy(struct lb *b, uint32_t page, uint64_t seq)
 	memcpy(copy + off + LR_HEADER_SIZE, tmp, n);
 	lf_put64(copy + PG_LAST_END_LSN, lsn);
 	lf_put16(copy + PG_NEXT_RECORD_OFFSET, (uint16_t)LF_ALIGN8(off + LR_HEADER_SIZE + n));
-	/* v1 tail copies carry the page's file offset in the last_lsn field */
-	lf_put64(copy + PG_LAST_LSN, page);
+	if (log_major >= 2) {
+		/* v2 tail copies keep last_lsn and name the page in file_off */
+		lf_put64(copy + PG_LAST_LSN, lsn);
+		lf_put32(copy + PG_FILE_OFFSET, page);
+	} else {
+		/* v1 tail copies carry the page's file offset in the last_lsn field */
+		lf_put64(copy + PG_LAST_LSN, page);
+	}
 	return lsn;
 }
 
@@ -769,8 +788,9 @@ static void test_walk_wrap_multipage(void)
 	free(b.buf);
 }
 
-/* Build the standard replay scenario. @commit selects committed vs active. */
-static uint64_t build_bitmap_scenario(struct lb *b, bool commit, bool bogus_attr)
+/* Build the standard replay scenario. @commit selects committed vs active.
+ * *@bits_lsn (optional) receives the lsn of the SetBits record. */
+static uint64_t build_bitmap_scenario(struct lb *b, bool commit, bool bogus_attr, uint64_t *bits_lsn)
 {
 	uint8_t oat[256];
 	uint32_t oatn = build_oatbl(oat, 6, ATTR_TYPE_DATA);
@@ -794,6 +814,8 @@ static uint64_t build_bitmap_scenario(struct lb *b, bool commit, bool bogus_attr
 	c.redo = br; c.redo_len = BR_SIZE;
 	c.undo = br; c.undo_len = BR_SIZE;
 	l = lb_client(b, 0x40, 0, &c);
+	if (bits_lsn)
+		*bits_lsn = l;
 	if (commit) {
 		lb_simple(b, 0x40, LOP_CommitTransaction, LOP_Noop);
 		l = lb_simple(b, 0x40, LOP_ForgetTransaction, LOP_Noop);
@@ -815,7 +837,7 @@ static void test_redo_bitmap(void)
 	struct ntfs_logfile_info info;
 
 	printf("test_redo_bitmap\n");
-	build_bitmap_scenario(&b, true, false);
+	build_bitmap_scenario(&b, true, false, NULL);
 	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
 	log = open_log(&m, &io);
 	vol_init(&v);
@@ -875,7 +897,7 @@ static void test_undo_bitmap(void)
 	struct ntfs_log_replay_result res;
 
 	printf("test_undo_bitmap\n");
-	build_bitmap_scenario(&b, false, false);
+	build_bitmap_scenario(&b, false, false, NULL);
 	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
 	log = open_log(&m, &io);
 	vol_init(&v);
@@ -912,7 +934,7 @@ static void test_refuse_incoherent(void)
 
 	printf("test_refuse_incoherent\n");
 	/* Target attribute not in the open attribute table. */
-	build_bitmap_scenario(&b, true, true);
+	build_bitmap_scenario(&b, true, true, NULL);
 	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
 	log = open_log(&m, &io);
 	vol_init(&v);
@@ -925,22 +947,98 @@ static void test_refuse_incoherent(void)
 	ntfs_logfile_close(log);
 	free(b.buf);
 
-	/* Bitmap record whose logged lcn is unreadable (beyond the volume). */
-	build_bitmap_scenario(&b, true, false);
+	/*
+	 * Bitmap record whose logged lcn is unreadable (beyond the volume).
+	 * The page LCN in the log record is what replay reads and writes
+	 * (dirty page table semantics), so that is what must be corrupted;
+	 * the read fails and nothing is written.
+	 */
 	{
-		/* patch record 6's $DATA to point beyond the fake disk */
-		uint8_t rec[VRS];
-		uint32_t off;
-		memcpy(rec, v.disk + MFT_LCN * VCS + 6 * VRS, VRS);
-		ntfs_log_fixup_post_read(rec, VRS, 512, NULL);
-		off = lf_get16(rec + MR_ATTRS_OFFSET) + AT_NONRESIDENT_SIZE;
-		rec[off + 2] = (uint8_t)(VOL_CLUSTERS + 5);
-		vol_put_record(&v, 6, rec);
+		uint64_t bits_lsn;
+		uint32_t vbo;
+		uint8_t *p;
+		build_bitmap_scenario(&b, true, false, &bits_lsn);
+		vbo = (uint32_t)(bits_lsn << 3) & (LSIZE - 1);
+		p = b.buf + (vbo & ~(PS - 1));
+		ntfs_log_fixup_post_read(p, PS, 512, NULL);
+		lf_put64(b.buf + vbo + LR_HEADER_SIZE + NR_PAGE_LCNS, VOL_CLUSTERS + 5);
+		ntfs_log_fixup_pre_write(p, PS, 512);
 	}
 	m.buf = b.buf;
 	log = open_log(&m, &io);
 	CHECK(ntfs_logfile_replay(log, &ap, false, &res) < 0);
 	CHECK_EQ(v.clu_writes, 0);
+	CHECK_EQ(v.mft_writes, 0);
+	ntfs_logfile_close(log);
+	free(b.buf);
+
+	/*
+	 * Stale run list: record 6's $DATA says the bitmap lives at lcn 41,
+	 * the log says the dirty page is at lcn 40. The LCN logged by NTFS at
+	 * the time of the operation wins (that is why the LFS records LCNs at
+	 * all: the owning record may not have been flushed yet), so replay
+	 * writes cluster 40 and leaves 41 alone. Refusing here would break the
+	 * file-extension case the module exists for.
+	 */
+	build_bitmap_scenario(&b, true, false, NULL);
+	{
+		uint8_t rec[VRS];
+		uint32_t off;
+		memcpy(rec, v.disk + MFT_LCN * VCS + 6 * VRS, VRS);
+		ntfs_log_fixup_post_read(rec, VRS, 512, NULL);
+		off = lf_get16(rec + MR_ATTRS_OFFSET) + AT_NONRESIDENT_SIZE;
+		rec[off + 2] = (uint8_t)(BITMAP_LCN + 1);
+		vol_put_record(&v, 6, rec);
+	}
+	m.buf = b.buf;
+	log = open_log(&m, &io);
+	CHECK_EQ(ntfs_logfile_replay(log, &ap, false, &res), 0);
+	CHECK(!res.needs_chkdsk);
+	CHECK_EQ(v.clu_writes, 1);
+	CHECK_EQ(res.plan_len, 1);
+	if (res.plan_len == 1)
+		CHECK_EQ(res.plan[0].lcn, BITMAP_LCN);
+	CHECK_EQ(v.disk[BITMAP_LCN * VCS + 12], 0x70);
+	CHECK_EQ(v.disk[(BITMAP_LCN + 1) * VCS + 12], 0);
+	ntfs_logfile_close(log);
+	free(v.disk);
+	free(b.buf);
+
+	/*
+	 * MFT op whose target vcn lies outside $MFT's run list: $MFT never
+	 * shrinks, so the log and record 0 disagree; refused, not skipped.
+	 */
+	{
+		uint8_t oat[256], newrec[VRS];
+		uint32_t oatn = build_oatbl(oat, 6, ATTR_TYPE_DATA);
+		uint64_t start, oa_lsn, restart_lsn;
+		struct crec c;
+		lb_init(&b, FIRST_PAGE, 2);
+		start = lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
+		oa_lsn = lb_table_dump(&b, LOP_OpenAttributeTableDump, oat, oatn);
+		restart_lsn = lb_checkpoint(&b, 0, oa_lsn, oatn, 0, 0, 0, 0);
+		build_record(newrec, 4 * MFT_CLUSTERS, MFT_RECORD_IN_USE, fill_plain);
+		memset(&c, 0, sizeof(c));
+		c.redo_op = LOP_InitializeFileRecordSegment;
+		c.undo_op = LOP_Noop;
+		c.target_attr = 0x18;
+		c.lcns = 1;
+		c.lcn[0] = MFT_LCN + MFT_CLUSTERS;	/* one past the end of $MFT */
+		c.target_vcn = MFT_CLUSTERS;
+		c.redo = newrec;
+		c.redo_len = (uint16_t)lf_get32(newrec + MR_BYTES_IN_USE);
+		lb_client(&b, 0x40, 0, &c);
+		lb_simple(&b, 0x40, LOP_CommitTransaction, LOP_Noop);
+		lb_simple(&b, 0x40, LOP_ForgetTransaction, LOP_Noop);
+		lb_restart(&b, b.last_lsn, b.last_len, start, restart_lsn, 0, false);
+		lb_protect(&b);
+	}
+	m.buf = b.buf;
+	log = open_log(&m, &io);
+	vol_init(&v);
+	CHECK_EQ(ntfs_logfile_replay(log, &ap, false, &res), -EINVAL);
+	CHECK(res.needs_chkdsk);
+	CHECK_EQ(v.mft_writes + v.clu_writes, 0);
 	ntfs_logfile_close(log);
 	free(v.disk);
 	free(b.buf);
@@ -1179,7 +1277,7 @@ static void test_tables_api(void)
 	struct ntfs_log_table_cbs cbs;
 
 	printf("test_tables_api\n");
-	build_bitmap_scenario(&b, true, false);
+	build_bitmap_scenario(&b, true, false, NULL);
 	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
 	log = open_log(&m, &io);
 	CHECK_EQ(ntfs_logfile_load_checkpoint(log), 0);
@@ -1189,6 +1287,118 @@ static void test_tables_api(void)
 	CHECK_EQ(n_oa, 2);
 	ntfs_logfile_close(log);
 	free(b.buf);
+}
+
+/*
+ * Version 2.0 log (Windows 8+ layout as inferred from fslog.c): restart
+ * pages at 0/1, 32 tail-copy slots at 0x02..0x21, record pages from 0x22,
+ * file_off at 0x3c of the page header. Same scenario as test_redo_bitmap
+ * plus a v2 tail copy that supersedes its in-place page. No real 2.0 log
+ * has been seen by this code: this pins the inferred layout, nothing more.
+ */
+static void test_v2_log(void)
+{
+	struct lb b;
+	struct memio m;
+	struct ntfs_log_io io;
+	ntfs_logfile_t *log;
+	struct ntfs_logfile_info info;
+	struct vol v;
+	struct ntfs_log_apply ap;
+	struct ntfs_log_replay_result res;
+	struct rec_list l;
+	uint64_t start, restart_lsn, last = 0, tail_lsn;
+	uint32_t last_page;
+	unsigned i;
+
+	printf("test_v2_log\n");
+	lb_set_version(2, 0);
+	CHECK_EQ(FIRST_PAGE, 0x22 * PS);
+
+	/* Replay of the standard scenario. */
+	build_bitmap_scenario(&b, true, false, NULL);
+	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
+	log = open_log(&m, &io);
+	CHECK(log);
+	ntfs_logfile_get_info(log, &info);
+	CHECK_EQ(info.state, NTFS_LOG_DIRTY);
+	CHECK_EQ(info.major_ver, 2);
+	CHECK_EQ(info.minor_ver, 0);
+	CHECK(!ntfs_logfile_is_clean(log));
+	vol_init(&v);
+	vol_apply(&v, &ap);
+	CHECK_EQ(ntfs_logfile_replay(log, &ap, true, &res), 0);
+	CHECK_EQ(res.records_redone, 1);
+	CHECK_EQ(res.plan_len, 1);
+	CHECK_EQ(v.clu_writes, 0);
+	CHECK_EQ(ntfs_logfile_replay(log, &ap, false, &res), 0);
+	CHECK_EQ(v.clu_writes, 1);
+	CHECK_EQ(v.disk[BITMAP_LCN * VCS + 12], 0x70);
+	CHECK_EQ(ntfs_logfile_mark_clean(log), 0);
+	ntfs_logfile_close(log);
+	log = open_log(&m, &io);
+	CHECK(log && ntfs_logfile_is_clean(log));
+	ntfs_logfile_close(log);
+	free(v.disk);
+	free(b.buf);
+
+	/* Tail copy at slot 0x02 with file_off naming the last record page. */
+	lb_init(&b, FIRST_PAGE, 2);
+	start = lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
+	restart_lsn = lb_checkpoint(&b, start, 0, 0, 0, 0, 0, 0);
+	for (i = 0; i < 3; i++)
+		last = lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
+	last_page = b.page;
+	tail_lsn = lb_make_tail_copy(&b, last_page, b.seq);
+	lb_restart(&b, start, 0, start, restart_lsn, 0, false);
+	lb_protect(&b);
+	m.buf = b.buf; m.writes = 0;
+	log = open_log(&m, &io);
+	memset(&l, 0, sizeof(l));
+	CHECK_EQ(ntfs_logfile_walk(log, 0, collect, &l), 0);
+	ntfs_logfile_get_info(log, &info);
+	CHECK_EQ(info.tail_overrides, 1);
+	CHECK_EQ(info.last_lsn, tail_lsn);
+	CHECK_EQ(l.n, 6);
+	CHECK_EQ(l.lsn[l.n - 1], tail_lsn);
+	CHECK_EQ(l.lsn[l.n - 2], last);
+	CHECK_EQ(ntfs_logfile_mark_clean(log), 0);
+	CHECK_EQ(m.writes, 3);
+	ntfs_logfile_close(log);
+	{
+		uint8_t pg[PS];
+		memcpy(pg, b.buf + last_page, PS);
+		CHECK_EQ(ntfs_log_fixup_post_read(pg, PS, 512, NULL), 0);
+		CHECK_EQ(lf_get64(pg + PG_LAST_END_LSN), tail_lsn);
+		CHECK_EQ(lf_get32(pg + PG_FILE_OFFSET), 0);	/* in-place page again */
+	}
+	log = open_log(&m, &io);
+	CHECK(log && ntfs_logfile_is_clean(log));
+	ntfs_logfile_close(log);
+	free(b.buf);
+
+	/* A stray tail copy sitting in the record area is not a log page. */
+	lb_init(&b, FIRST_PAGE, 2);
+	start = lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
+	restart_lsn = lb_checkpoint(&b, start, 0, 0, 0, 0, 0, 0);
+	last = lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
+	last_page = b.page;
+	lb_next_page(&b);
+	lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
+	lf_put32(b.buf + b.page + PG_FILE_OFFSET, last_page);	/* claims to be a copy of the previous page */
+	lb_restart(&b, start, 0, start, restart_lsn, 0, false);
+	lb_protect(&b);
+	m.buf = b.buf;
+	log = open_log(&m, &io);
+	memset(&l, 0, sizeof(l));
+	CHECK_EQ(ntfs_logfile_walk(log, 0, collect, &l), 0);
+	ntfs_logfile_get_info(log, &info);
+	CHECK_EQ(info.last_lsn, last);
+	CHECK_EQ(l.n, 3);
+	ntfs_logfile_close(log);
+	free(b.buf);
+
+	lb_set_version(1, 1);
 }
 
 /* Fixture images from the tools stream: freshly formatted, must be clean. */
@@ -1246,6 +1456,7 @@ int main(void)
 	test_mft_record_ops();
 	test_tail_copy_and_torn();
 	test_tables_api();
+	test_v2_log();
 	test_images();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

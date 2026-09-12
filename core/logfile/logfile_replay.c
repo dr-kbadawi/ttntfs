@@ -236,9 +236,18 @@ int lfs_plan_add(ntfs_logfile_t *log, const struct ntfs_log_plan_entry *e)
 	return 0;
 }
 
+/*
+ * do_action() result for a record that was examined and deliberately not
+ * applied (target already carries a later lsn). Positive so callers can
+ * tell it from success (0) and errors (< 0) and keep the redo/undo counts
+ * honest.
+ */
+#define LFS_SKIPPED 1
+
 static int plan_skip(struct replay *r, uint64_t lsn, uint16_t op, bool undo, const char *why)
 {
 	struct ntfs_log_plan_entry e;
+	int err;
 
 	memset(&e, 0, sizeof(e));
 	e.kind = NTFS_PLAN_SKIPPED;
@@ -246,7 +255,8 @@ static int plan_skip(struct replay *r, uint64_t lsn, uint16_t op, bool undo, con
 	e.op = op;
 	e.undo = undo;
 	snprintf(e.why, sizeof(e.why), "%s", why);
-	return lfs_plan_add(r->log, &e);
+	err = lfs_plan_add(r->log, &e);
+	return err ? err : LFS_SKIPPED;
 }
 
 /* ---- NTFS structure helpers ------------------------------------------- */
@@ -509,6 +519,22 @@ static int decode_mapping_pairs(struct open_attr *oa, const uint8_t *mp, uint32_
 	return 0;
 }
 
+/* Run list only: what the attribute's own mapping pairs say. */
+static bool run_lookup_mapped(const struct open_attr *oa, uint64_t vcn, uint64_t *lcn)
+{
+	uint32_t i;
+
+	for (i = 0; i < oa->nruns; i++) {
+		const struct run *rl = &oa->runs[i];
+		if (vcn >= rl->vcn && vcn < rl->vcn + rl->len) {
+			*lcn = rl->lcn == SPARSE_LCN ? SPARSE_LCN : rl->lcn + (vcn - rl->vcn);
+			return true;
+		}
+	}
+	return false;
+}
+
+/* Dirty-page overrides (LCNs logged by NTFS) take precedence over the run list. */
 static bool run_lookup(const struct open_attr *oa, uint64_t vcn, uint64_t *lcn)
 {
 	uint32_t i;
@@ -519,14 +545,12 @@ static bool run_lookup(const struct open_attr *oa, uint64_t vcn, uint64_t *lcn)
 			return true;
 		}
 	}
-	for (i = 0; i < oa->nruns; i++) {
-		const struct run *rl = &oa->runs[i];
-		if (vcn >= rl->vcn && vcn < rl->vcn + rl->len) {
-			*lcn = rl->lcn == SPARSE_LCN ? SPARSE_LCN : rl->lcn + (vcn - rl->vcn);
-			return true;
-		}
-	}
-	return false;
+	return run_lookup_mapped(oa, vcn, lcn);
+}
+
+static bool oa_is_mft_data(const struct open_attr *oa)
+{
+	return oa->mft_no == 0 && oa->type == ATTR_TYPE_DATA && !oa->name_len;
 }
 
 static int run_override(struct open_attr *oa, uint64_t vcn, uint64_t lcn)
@@ -966,25 +990,37 @@ static int do_action(struct replay *r, uint32_t target_attr, const struct action
 
 		/*
 		 * Heuristic H1: an MFT operation must be logged against the
-		 * $MFT:$DATA open attribute, and when the record carries the
-		 * page's LCN it must agree with where $MFT's run list (plus
-		 * dirty-page overrides) puts target_vcn. Otherwise the record
-		 * number we derive from target_vcn could name the wrong record.
+		 * $MFT:$DATA open attribute, and every page LCN the record
+		 * carries must agree with where $MFT's own run list (record 0,
+		 * as modified by earlier records of this replay) puts that vcn.
+		 *
+		 * The comparison is against the mapping pairs only, never the
+		 * dirty-page overrides: those are seeded from the very LCNs
+		 * being checked, which made the earlier form of this check a
+		 * tautology. MFT records are written by number through the
+		 * apply vtable (as fslog.c reads them through mi_get()), so the
+		 * volume's mapping is what will be used; a log that disagrees
+		 * with it about where $MFT lives must not be applied.
 		 */
 		err = oa_load(r, target_attr, &oa);
 		if (err)
 			return INCOHERENT(r, "lsn 0x%llx: mft op targets unloadable attribute 0x%x",
 					  (unsigned long long)a->lsn, target_attr);
-		if (oa->mft_no != 0 || oa->type != ATTR_TYPE_DATA || oa->name_len)
+		if (!oa_is_mft_data(oa))
 			return INCOHERENT(r, "lsn 0x%llx: mft op targets attribute 0x%x which is not $MFT:$DATA",
 					  (unsigned long long)a->lsn, target_attr);
-		if (lcns) {
+		{
 			uint64_t tvcn = lf_get64(lr + NR_TARGET_VCN), lcn, logged;
-			logged = lf_get64(lr + NR_PAGE_LCNS);
-			if (logged && (!run_lookup(oa, tvcn, &lcn) || lcn != logged))
-				return INCOHERENT(r, "lsn 0x%llx: logged lcn %llu for $MFT vcn %llu does not match run list",
-						  (unsigned long long)a->lsn, (unsigned long long)logged,
-						  (unsigned long long)tvcn);
+			uint32_t i;
+			for (i = 0; i < lcns; i++) {
+				logged = lf_get64(lr + NR_PAGE_LCNS + 8 * i);
+				if (!logged)
+					continue;
+				if (!run_lookup_mapped(oa, tvcn + i, &lcn) || lcn != logged)
+					return INCOHERENT(r, "lsn 0x%llx: logged lcn %llu for $MFT vcn %llu does not match $MFT's run list",
+							  (unsigned long long)a->lsn, (unsigned long long)logged,
+							  (unsigned long long)(tvcn + i));
+			}
 		}
 		if (mft_no >= (uint64_t)1 << 48)
 			return INCOHERENT(r, "lsn 0x%llx: absurd mft record number", (unsigned long long)a->lsn);
@@ -1648,7 +1684,16 @@ static int prepare_dirty_pages(struct replay *r)
 
 			if (!lcn)
 				continue;
-			/* Never remap the first system records of $MFT. */
+			/*
+			 * $MFT:$DATA is never remapped from the log: MFT records are
+			 * addressed by number and H1 verifies the logged LCNs against
+			 * record 0's run list instead (fslog.c only exempts the first
+			 * four records; the rest of its override is unused because it
+			 * reads records through mi_get()).
+			 */
+			if (oa_is_mft_data(oa))
+				continue;
+			/* Never remap the first system records of $MFTMirr either. */
 			if (oa->mft_no <= MFT_REC_MIRR && oa->type == ATTR_TYPE_DATA &&
 			    size < (uint64_t)(MFT_REC_VOL + 1) * r->rs)
 				continue;
@@ -1706,8 +1751,18 @@ static int redo_pass(struct replay *r, uint64_t rlsn)
 					  (unsigned long long)lsn, ta);
 		}
 		if (!run_lookup(oa, tvcn, &lcn) || lcn == SPARSE_LCN) {
+			/*
+			 * A truncated attribute may legitimately have lost the page
+			 * (fslog.c skips too). $MFT never shrinks, so an MFT record
+			 * outside $MFT's run list means the log and record 0 disagree.
+			 */
+			if (op_is_mft(lf_get16(lr + NR_REDO_OP))) {
+				err = lfs_seterr(log, -EINVAL, "redo: lsn 0x%llx targets $MFT vcn %llu outside its run list",
+						 (unsigned long long)lsn, (unsigned long long)tvcn);
+				goto fail;
+			}
 			err = plan_skip(r, lsn, lf_get16(lr + NR_REDO_OP), false, "target vcn not allocated");
-			if (err)
+			if (err < 0)
 				goto fail;
 			goto next_rec;
 		}
@@ -1742,9 +1797,10 @@ static int redo_pass(struct replay *r, uint64_t rlsn)
 		a.data = lr + lf_get16(lr + NR_REDO_OFFSET);
 		a.dlen = dlen;
 		err = do_action(r, ta, &a);
-		if (err)
+		if (err < 0)
 			goto fail;
-		r->res->records_redone++;
+		if (err == 0)
+			r->res->records_redone++;
 next_rec:
 		err = lfs_next_lsn(log, &rec, &next);
 		lfs_free_record(&rec);
@@ -1804,11 +1860,12 @@ static int undo_pass(struct replay *r)
 				a.data = lr + lf_get16(lr + NR_UNDO_OFFSET);
 				a.dlen = lf_get16(lr + NR_UNDO_LENGTH);
 				err = do_action(r, ta, &a);
-				if (err) {
+				if (err < 0) {
 					lfs_free_record(&rec);
 					return err;
 				}
-				r->res->records_undone++;
+				if (err == 0)
+					r->res->records_undone++;
 			}
 			lsn = lf_get64(rec.hdr + LR_CLIENT_UNDO_NEXT_LSN);
 			lfs_free_record(&rec);

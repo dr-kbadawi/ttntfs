@@ -50,8 +50,15 @@ if(PROJECT_IS_TOP_LEVEL OR NTFS_LOGFILE_TOOLS)
 	target_link_options(test_logfile PRIVATE ${NTFS_LOGFILE_SAN})
 
 	enable_testing()
+	# Fixture images from the tools stream (mkntfs-formatted, all-0xff
+	# $LogFile). Override with -DNTFS_IMAGES=<dir>.
+	set(NTFS_IMAGES "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/images" CACHE PATH
+		"Directory of fixture .img files for the logfile tests")
 	add_test(NAME logfile_unit COMMAND test_logfile)
-	# Fixture images from the tools stream, if generated.
 	set_tests_properties(logfile_unit PROPERTIES
-		ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/../../tools/images;UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1;ASAN_OPTIONS=detect_leaks=1")
+		ENVIRONMENT "NTFS_IMAGES=${NTFS_IMAGES};UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")
+	# The analyzer must report every fixture clean; skipped when there are none.
+	add_test(NAME logfile_images
+		COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_images.sh $<TARGET_FILE:ntfslog> ${NTFS_IMAGES})
+	set_tests_properties(logfile_images PROPERTIES SKIP_RETURN_CODE 77)
 endif()
