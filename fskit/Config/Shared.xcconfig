@@ -15,3 +15,7 @@ NTFS_CORE_EXCLUDE_stub =
 NTFS_CORE_LDFLAGS_stub =
 NTFS_CORE_EXCLUDE_real = ntfscore_stub.c
 NTFS_CORE_LDFLAGS_real = $(SRCROOT)/../build/libntfscore.a
+
+// Apple Silicon only: the core static library is built arm64.
+ARCHS = arm64
+ONLY_ACTIVE_ARCH = NO

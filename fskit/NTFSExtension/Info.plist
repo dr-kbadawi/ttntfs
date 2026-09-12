@@ -78,7 +78,7 @@
 		</dict>
 		<key>FSPersonalities</key>
 		<dict>
-			<key>NTFS</key>
+			<key>TTNTFS</key>
 			<dict>
 				<key>FSFormatContentMask</key>
 				<string>Windows_NTFS</string>

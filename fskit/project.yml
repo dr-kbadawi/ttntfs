@@ -112,7 +112,7 @@ targets:
                 Whole: true
               FSProbeOrder: 3500
           FSPersonalities:
-            NTFS:
+            TTNTFS:
               FSName: "TT NTFS Native"
               FSSubType: 0
               FSFormatContentMask: Windows_NTFS
