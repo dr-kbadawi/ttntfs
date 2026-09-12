@@ -19,6 +19,7 @@
  */
 
 #include <pthread.h>
+#include <stdlib.h>
 #include <string.h>
 #include <linux/fs.h>
 #include <linux/fs_context.h>
@@ -233,6 +234,34 @@ iput_out:
 	return ret;
 }
 
+/*
+ * ntfs_glue_make_rw - switch a clean, read-only mounted volume read-write
+ *
+ * What super.c's ntfs_reconfigure() does for a rw remount, minus
+ * ntfs_mark_quotas_out_of_date(): that upstream function looks up the
+ * $Quota index under the wrong name ("$I30") and reads the entry's key as
+ * its data, so it always fails; the kernel's own rw *mount* never calls it
+ * (only remount does) and neither does ntfs-3g, so a rw mount here matches
+ * both. Emptying a clean journal is what every rw mount of this driver does.
+ */
+static int ntfs_glue_make_rw(struct ntfs_volume *vol)
+{
+	struct super_block *sb = vol->sb;
+
+	if (NVolErrors(vol))
+		return -EROFS;
+	if (vol->vol_flags & (VOLUME_IS_DIRTY | VOLUME_MODIFIED_BY_CHKDSK |
+			      VOLUME_MUST_MOUNT_RO_MASK))
+		return -EROFS;
+	if (vol->logfile_ino && !ntfs_empty_logfile(vol->logfile_ino)) {
+		ntfs_error(sb, "Failed to empty journal LogFile.  Staying read-only.");
+		NVolSetErrors(vol);
+		return -EROFS;
+	}
+	sb->s_flags &= ~SB_RDONLY;
+	return 0;
+}
+
 /* ---- probe ------------------------------------------------------------ */
 
 static int ntfs_glue_check_boot_sector(struct ntfs_bdev *dev,
@@ -390,11 +419,9 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 		h->ro_reason = NTFS_RO_ERRORS;
 
 	if (want_rw && h->ro_reason == NTFS_RO_NONE) {
-		/* Clean: switch read-write through super.c's remount path. */
-		h->fc.sb_flags = 0;
-		err = h->fc.ops->reconfigure(&h->fc);
+		/* Clean: switch read-write. */
+		err = ntfs_glue_make_rw(vol);
 		if (!err) {
-			sb->s_flags &= ~SB_RDONLY;
 			h->fc.sb_flags = sb->s_flags;
 		} else {
 			platform_log(PLATFORM_LOG_WARN,

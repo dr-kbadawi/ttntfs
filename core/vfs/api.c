@@ -813,6 +813,11 @@ static void cache_sync_range(struct inode *vi, loff_t pos, loff_t end)
 				      (end - 1) >> PAGE_SHIFT);
 }
 
+static inline struct ntfs_inode *base_of(struct ntfs_inode *ni)
+{
+	return NInoAttr(ni) ? ni->ext.base_ntfs_ino : ni;
+}
+
 static ssize_t resident_read(struct inode *vi, void *buf, size_t count, loff_t pos)
 {
 	struct ntfs_inode *ni = NTFS_I(vi);
@@ -821,7 +826,7 @@ static ssize_t resident_read(struct inode *vi, void *buf, size_t count, loff_t p
 	ssize_t ret;
 
 	mutex_lock(&ni->mrec_lock);
-	ctx = ntfs_attr_get_search_ctx(ni, NULL);
+	ctx = ntfs_attr_get_search_ctx(base_of(ni), NULL);
 	if (!ctx) {
 		ret = -ENOMEM;
 		goto out;
@@ -852,25 +857,20 @@ out:
 	return ret;
 }
 
-ssize_t ntfs_read(ntfs_inode_t *h, void *buf, size_t count, uint64_t offset)
+/*
+ * do_read - read [offset, offset + count) of the stream behind @vi
+ *
+ * Works for file inodes and for attribute inodes (named $DATA streams).
+ * Locking: caller holds vi's i_rwsem shared (or exclusive).
+ */
+static ssize_t do_read(struct inode *vi, void *buf, size_t count, loff_t pos)
 {
-	struct inode *vi = VI(h);
 	struct ntfs_inode *ni = NTFS_I(vi);
-	loff_t pos = offset, i_size, init_size, end, data_end;
+	loff_t i_size, init_size, end, data_end;
 	unsigned long flags;
 	ssize_t ret;
 	int err;
 
-	if (!h || (!buf && count))
-		return -EINVAL;
-	if (S_ISDIR(vi->i_mode))
-		return -EISDIR;
-	if (NVolShutdown(ni->vol))
-		return -EIO;
-	if (!count)
-		return 0;
-
-	inode_lock_shared(vi);
 	i_size = i_size_read(vi);
 	if (pos >= i_size) {
 		ret = 0;
@@ -930,6 +930,24 @@ ssize_t ntfs_read(ntfs_inode_t *h, void *buf, size_t count, uint64_t offset)
 err:
 	ret = err;
 out:
+	return ret;
+}
+
+ssize_t ntfs_read(ntfs_inode_t *h, void *buf, size_t count, uint64_t offset)
+{
+	struct inode *vi = VI(h);
+	ssize_t ret;
+
+	if (!h || (!buf && count))
+		return -EINVAL;
+	if (S_ISDIR(vi->i_mode))
+		return -EISDIR;
+	if (NVolShutdown(NTFS_I(vi)->vol))
+		return -EIO;
+	if (!count)
+		return 0;
+	inode_lock_shared(vi);
+	ret = do_read(vi, buf, count, offset);
 	inode_unlock_shared(vi);
 	return ret;
 }
@@ -965,6 +983,33 @@ static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len)
 	return err;
 }
 
+/*
+ * ntfs_attr_set_initialized_size() opens its search context on the inode
+ * it is given; for an attribute inode that maps a second, stale copy of the
+ * base record (the kernel only calls it for base inodes). Same body, on the
+ * base inode's record.
+ */
+static int set_initialized_size(struct ntfs_inode *ni, loff_t new_size)
+{
+	struct ntfs_attr_search_ctx *ctx;
+	int err;
+
+	if (!NInoNonResident(ni))
+		return -EINVAL;
+	ctx = ntfs_attr_get_search_ctx(base_of(ni), NULL);
+	if (!ctx)
+		return -ENOMEM;
+	err = ntfs_attr_lookup(ni->type, ni->name, ni->name_len,
+			       CASE_SENSITIVE, 0, NULL, 0, ctx);
+	if (!err) {
+		ctx->attr->data.non_resident.initialized_size = cpu_to_le64(new_size);
+		ni->initialized_size = new_size;
+		mark_mft_record_dirty(ctx->ntfs_ino);
+	}
+	ntfs_attr_put_search_ctx(ctx);
+	return err;
+}
+
 static ssize_t resident_write(struct inode *vi, const void *buf, size_t count,
 			      loff_t pos)
 {
@@ -974,7 +1019,7 @@ static ssize_t resident_write(struct inode *vi, const void *buf, size_t count,
 	ssize_t ret;
 
 	mutex_lock(&ni->mrec_lock);
-	ctx = ntfs_attr_get_search_ctx(ni, NULL);
+	ctx = ntfs_attr_get_search_ctx(base_of(ni), NULL);
 	if (!ctx) {
 		ret = -ENOMEM;
 		goto out;
@@ -1009,35 +1054,22 @@ out:
 	return ret;
 }
 
-ssize_t ntfs_write(ntfs_inode_t *h, const void *buf, size_t count, uint64_t offset)
+/*
+ * do_write - write [pos, pos + count) to the stream behind @vi
+ *
+ * Grows the attribute, allocates clusters under the range (the core's own
+ * expansion leaves holes, and write_folio never allocates), zeroes the gap
+ * up to the old initialized_size, writes (edges cached, whole pages direct)
+ * and extends initialized_size. Works for file and attribute inodes.
+ * Locking: caller holds vi's i_rwsem exclusive.
+ */
+static ssize_t do_write(struct inode *vi, const void *buf, size_t count, loff_t pos)
 {
-	struct inode *vi = VI(h);
 	struct ntfs_inode *ni = NTFS_I(vi);
-	struct ntfs_volume *vol = ni->vol;
-	loff_t pos = offset, end, old_data_size, old_init_size, init_size;
+	loff_t end = pos + count, old_data_size, old_init_size, init_size;
 	unsigned long flags;
 	ssize_t ret;
 	int err;
-
-	if (!h || (!buf && count))
-		return -EINVAL;
-	if (S_ISDIR(vi->i_mode))
-		return -EISDIR;
-	if (NVolShutdown(vol))
-		return -EIO;
-	if (IS_RDONLY(vi))
-		return -EROFS;
-	if (NInoEncrypted(ni))
-		return -EOPNOTSUPP;
-	if (!count)
-		return 0;
-	if (pos + count > (u64)vi->i_sb->s_maxbytes)
-		return -EFBIG;
-	end = pos + count;
-
-	inode_lock(vi);
-	if (!(vol->vol_flags & VOLUME_IS_DIRTY))
-		ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY);
 
 	old_data_size = ni->data_size;
 	old_init_size = ni->initialized_size;
@@ -1113,7 +1145,7 @@ ssize_t ntfs_write(ntfs_inode_t *h, const void *buf, size_t count, uint64_t offs
 	}
 	if (end > init_size) {
 		mutex_lock(&ni->mrec_lock);
-		err = ntfs_attr_set_initialized_size(ni, end);
+		err = set_initialized_size(ni, end);
 		mutex_unlock(&ni->mrec_lock);
 		if (err) {
 			ret = err;
@@ -1126,7 +1158,7 @@ done:
 		/* Undo a size change of a failed write (upstream write_iter). */
 		if (ni->initialized_size != old_init_size && NInoNonResident(ni)) {
 			mutex_lock(&ni->mrec_lock);
-			ntfs_attr_set_initialized_size(ni, old_init_size);
+			set_initialized_size(ni, old_init_size);
 			mutex_unlock(&ni->mrec_lock);
 		}
 		if (ni->data_size != old_data_size) {
@@ -1138,6 +1170,35 @@ done:
 		NInoSetFileNameDirty(ni);
 		mark_inode_dirty(vi);
 	}
+	return ret;
+}
+
+ssize_t ntfs_write(ntfs_inode_t *h, const void *buf, size_t count, uint64_t offset)
+{
+	struct inode *vi = VI(h);
+	struct ntfs_inode *ni = NTFS_I(vi);
+	struct ntfs_volume *vol = ni->vol;
+	ssize_t ret;
+
+	if (!h || (!buf && count))
+		return -EINVAL;
+	if (S_ISDIR(vi->i_mode))
+		return -EISDIR;
+	if (NVolShutdown(vol))
+		return -EIO;
+	if (IS_RDONLY(vi))
+		return -EROFS;
+	if (NInoEncrypted(ni))
+		return -EOPNOTSUPP;
+	if (!count)
+		return 0;
+	if (offset + count > (u64)vi->i_sb->s_maxbytes)
+		return -EFBIG;
+
+	inode_lock(vi);
+	if (!(vol->vol_flags & VOLUME_IS_DIRTY))
+		ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY);
+	ret = do_write(vi, buf, count, offset);
 	inode_unlock(vi);
 	return ret;
 }
@@ -1281,7 +1342,9 @@ int ntfs_getxattr(ntfs_inode_t *h, const char *name, void *buf, size_t size,
 		if (size < *len_out) {
 			err = -ERANGE;
 		} else if (*len_out) {
-			n = ntfs_inode_attr_pread(avi, 0, *len_out, buf);
+			inode_lock_shared(avi);
+			n = do_read(avi, buf, *len_out, 0);
+			inode_unlock_shared(avi);
 			if (n < 0)
 				err = (int)n;
 			else if (n != (s64)*len_out)
@@ -1329,18 +1392,22 @@ int ntfs_setxattr(ntfs_inode_t *h, const char *name, const void *buf,
 			err = -EEXIST;
 		} else {
 			/* Replace the value in place: truncate, then write. */
+			inode_lock(avi);
 			truncate_inode_pages(avi->i_mapping, 0);
 			mutex_lock(&ani->mrec_lock);
 			err = ntfs_attr_truncate(ani, 0);
 			mutex_unlock(&ani->mrec_lock);
+			if (!err)
+				i_size_write(avi, 0);
 			if (!err && size) {
-				s64 n = ntfs_inode_attr_pwrite(avi, 0, size, (u8 *)buf, false);
+				s64 n = do_write(avi, buf, size, 0);
 
 				if (n < 0)
 					err = (int)n;
 				else if (n != (s64)size)
 					err = -EIO;
 			}
+			inode_unlock(avi);
 		}
 		iput(avi);
 	} else if (PTR_ERR(avi) != -ENOENT) {
@@ -1348,9 +1415,34 @@ int ntfs_setxattr(ntfs_inode_t *h, const char *name, const void *buf,
 	} else if (flags & XATTR_REPLACE) {
 		err = -ENOATTR;
 	} else {
+		/*
+		 * Create the stream empty (a resident record that always fits
+		 * the base mft record) and fill it through the attribute inode,
+		 * which turns it non-resident as needed. Passing the value to
+		 * ntfs_attr_add() would size a resident record for it first
+		 * and, for anything larger than the mft record, grow an
+		 * attribute list and extent record for nothing.
+		 */
 		mutex_lock(&ni->mrec_lock);
-		err = ntfs_attr_add(ni, AT_DATA, uname, ulen, (u8 *)buf, size);
+		err = ntfs_attr_add(ni, AT_DATA, uname, ulen, NULL, 0);
 		mutex_unlock(&ni->mrec_lock);
+		if (!err && size) {
+			avi = ntfs_attr_iget(vi, AT_DATA, uname, ulen);
+			if (IS_ERR(avi)) {
+				err = PTR_ERR(avi);
+			} else {
+				s64 n;
+
+				inode_lock(avi);
+				n = do_write(avi, buf, size, 0);
+				inode_unlock(avi);
+				if (n < 0)
+					err = (int)n;
+				else if (n != (s64)size)
+					err = -EIO;
+				iput(avi);
+			}
+		}
 	}
 	if (!err) {
 		inode_set_ctime_current(vi);
@@ -1391,6 +1483,10 @@ int ntfs_removexattr(ntfs_inode_t *h, const char *name)
 		mutex_lock(&ni->mrec_lock);
 		err = ntfs_attr_rm(NTFS_I(avi));
 		mutex_unlock(&ni->mrec_lock);
+		/* ntfs_attr_rm() returns ntfs_cluster_free()'s positive count for
+		 * a non-resident stream; only a negative value is an error. */
+		if (err > 0)
+			err = 0;
 		/* The attribute inode must not be found again. */
 		remove_inode_hash(avi);
 		iput(avi);

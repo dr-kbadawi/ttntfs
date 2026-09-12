@@ -26,8 +26,18 @@ Owner: vfs agent. Paths: `core/vfs/`, `core/include/`.
   to `initialized_size`, extends it afterwards. xattrs = named `$DATA` streams. `noowners`
   mode/uid/gid policy. `preallocated_size=0` so `allocated_size` never carries slack.
 - `compat_extra.c`: `dir_emit_dotdot`, `writeback_iter`.
-- Read path: `ntfscli verify` passes 0 mismatches on basic-4k (234), cluster-512 (231),
-  cluster-64k (231), attrlist (11), compressed-sparse (23), empty (0), names (5058, see below).
+- Read path: `ntfscli verify` passes 0 mismatches on all 7 fixtures (basic-4k 234, names 5058,
+  compressed-sparse 23, cluster-512 231, cluster-64k 231, attrlist 11, empty 0);
+  `tools/run-tests.sh --quick ground-truth` PASS (20/20 vs ntfs-3g).
+- Write path: `tools/run-tests.sh write` on all 7 fixtures: every step passes (mkdir, cp-in 3 MiB
+  and small, overwrite, mv, replacing mv, truncate shrink/grow, xattr set small/3 MiB/list/rm,
+  rm, rmdir, sync, `ntfsfix -n` clean, ntfsls identical to pristine, manifest re-verify) except
+  the runner's own "ntfsls after mv" expectation (see below). Also run under
+  `-DNTFS_SANITIZE=ON`: verify on all fixtures and the write sequence on basic-4k and
+  cluster-512 are clean (one UBSan alignment note, see below).
+- Mount policy: read-only first; rw switch = `ntfs_reconfigure`'s checks minus
+  `ntfs_mark_quotas_out_of_date` (upstream looks up `$Quota` under the name `$I30` and reads
+  the entry key as data, so it always fails; the kernel's own rw mount never calls it).
 
 ## PORT edits outside core/vfs (minimal, all marked `/* PORT: */`)
 - `core/ntfs/mft.c`, `mft.h`: `ntfs_write_mft_block` exported ($MFT write_folio backend).
@@ -40,16 +50,37 @@ Owner: vfs agent. Paths: `core/vfs/`, `core/include/`.
 - `core/ntfs/compress.c`: compressed *named* `$DATA` streams accepted by
   `ntfs_read_compressed_block` (fixture compressed-sparse has one).
 
+## Needs the integrator (outside core/vfs)
+- **platform/pagecache/pagecache.c `read_mapping_folio()`** (uncommitted, in the working tree
+  next to the integrator's own in-progress edits): kernel `read_cache_folio()` returns an
+  already-uptodate folio *without* taking its lock; the port always took it. mft.c allocates an
+  extent record with the `$MFT` folio locked and then maps that folio again through
+  `map_mft_record()`, so every extent-record allocation (attribute lists, large ADS, many
+  attributes) deadlocked. Fix = try `__filemap_get_folio(FGP_ACCESSED)` first and return it if
+  uptodate; otherwise the existing locked read path. Please keep it when committing pagecache.c.
+- `platform/include/asm/byteorder.h`: `le16_to_cpup()` & co take typed pointers; compress.c
+  (LZNT1 tokens) calls them on odd addresses, UBSan `-fsanitize=alignment` reports it
+  (harmless on arm64). Taking `const void *` would silence it.
+- `tools/run-tests.sh` write mode, check "ntfsls after mv": the expected string omits the
+  `/rt-write/` directory line that `grep "^$d/"` (and the earlier "ntfsls sees $d" check)
+  includes, so it fails on a correct volume. Everything else in write mode passes.
+- `platform/tests/test_inode` fails in my tree (`t_evict_inode` i_count/evicts) since the
+  integrator's uncommitted pagecache.c rewrite appeared; it passed 4/4 before that.
+
 ## Known problems / open questions
-- `tools/common/json.c` `parse_string_raw()` double-encodes raw UTF-8 bytes (each byte >= 0x80 goes
-  through `put_utf8()` as a code point). Every non-ASCII manifest path is looked up mangled, so
-  `verify names.img` reports 17 missing + 17 extra. With that one line fixed (append the byte),
-  names.img verifies 0/5058. Tools stream: please fix.
 - Writes to compressed files go through `ntfs_compress_write` (upstream); truncate of compressed/
   encrypted files is refused (upstream limitation). Encrypted data is refused (EOPNOTSUPP).
 - No `->release()`: pre-allocation is disabled instead of trimmed on close.
 - Windows symlinks (IO_REPARSE_TAG_SYMLINK) are readable through `ntfs_readlink` (print name);
   created symlinks are WSL-style (upstream behaviour).
 
+- Upstream `ntfs_attr_rm()` returns `ntfs_cluster_free()`'s positive cluster count for a
+  non-resident attribute; api.c treats > 0 as success.
+- Upstream `ntfs_attr_set_initialized_size()` opens its search context on the inode passed and
+  so maps a stale second copy of the base record for attribute inodes; api.c uses its own
+  variant on the base inode for ADS writes.
+
 ## Next
-- Phase 2: `tools/run-tests.sh write` on every fixture; ntfsfix/ntfsls agreement; sanitizer run.
+- Windows `chkdsk /f` round trip on real media (phase 2 gate needs the PC).
+- Hand `readdir` want_attr the index entry's sizes/times without an iget (needs a dir.c hook).
+- Compressed-file writes/truncate beyond what upstream supports; encrypted files stay refused.
