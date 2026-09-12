@@ -6,8 +6,7 @@ sticks, perform each scenario's writes, tell you the exact moment to pull the
 stick, record `fsutil`/`chkdsk`/`dir` ground truth, and dump the raw `$LogFile`.
 
 Every script takes the drive letter **explicitly** and refuses `C:`, the
-system/boot disk, anything that is not USB/removable, and (without
-`-AllowLarge`) disks over 64 GB. Destructive steps require typing the drive
+system/boot disk, and anything that is not USB/removable. Destructive steps require typing the drive
 letter or `YES`.
 
 ```

@@ -26,13 +26,12 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('E1', 'GroundTruth', 'Verdict')][string]$Mode,
     [Parameter(Mandatory = $true)][string]$DriveLetter,
     [string]$Scenario = '',
-    [switch]$SkipPolicyCheck,
-    [switch]$AllowLarge
+    [switch]$SkipPolicyCheck
 )
 . "$PSScriptRoot\Common.ps1"
 Assert-Admin
 if ($Mode -ne 'E1' -and -not $Scenario) { throw "-Scenario (A, B1, B2, C, D, D-512, ...) is required for $Mode" }
-$t = Get-TargetVolume $DriveLetter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $DriveLetter
 $name = if ($Mode -eq 'E1') { 'E1' } elseif ($Mode -eq 'GroundTruth') { "$Scenario-replayed" } else { "$Scenario-verdict" }
 $dir = Get-SessionDir $name $t
 $transcript = Start-SessionTranscript $dir
@@ -74,7 +73,7 @@ try {
         $all = Join-Path $dir "$Scenario-replayed.txt"
         Get-Content (Join-Path $dir "$Scenario-replayed.dirty.txt"), (Join-Path $dir "$Scenario-replayed.ntfsinfo.txt"), (Join-Path $dir "$Scenario-replayed.dir.txt") | Set-Content $all -Encoding UTF8
         Write-Step "post-replay `$LogFile dump"
-        & "$PSScriptRoot\Dump-LogFile.ps1" -DriveLetter $t.Letter -Scenario "$Scenario-replayed" -OutDir $dir -AllowLarge:$AllowLarge
+        & "$PSScriptRoot\Dump-LogFile.ps1" -DriveLetter $t.Letter -Scenario "$Scenario-replayed" -OutDir $dir
         $meta = Get-Content (Join-Path $dir 'meta.json') -Raw | ConvertFrom-Json
         Save-Meta $dir @{
             scenario = "$Scenario-replayed"; description = 'ground truth after Windows replay (LOGFILE.md 7.3)'

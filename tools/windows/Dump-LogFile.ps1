@@ -29,13 +29,12 @@
 param(
     [Parameter(Mandatory = $true)][string]$DriveLetter,
     [Parameter(Mandatory = $true)][string]$Scenario,
-    [string]$OutDir,
-    [switch]$AllowLarge
+    [string]$OutDir
 )
 . "$PSScriptRoot\Common.ps1"
 
 Assert-Admin
-$t = Get-TargetVolume $DriveLetter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $DriveLetter
 Write-Step "target"
 Show-Target $t
 if ($t.Volume.FileSystem -ne 'NTFS') { throw "$($t.Letter): is $($t.Volume.FileSystem), not NTFS." }

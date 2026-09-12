@@ -18,12 +18,11 @@
 param(
     [Parameter(Mandatory = $true)][string]$DriveLetter,
     [int]$Files = 80,
-    [switch]$SkipPolicyCheck,
-    [switch]$AllowLarge
+    [switch]$SkipPolicyCheck
 )
 . "$PSScriptRoot\Common.ps1"
 Assert-Admin
-$t = Get-TargetVolume $DriveLetter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $DriveLetter
 $dir = Get-SessionDir 'C' $t
 $transcript = Start-SessionTranscript $dir
 try {
@@ -43,7 +42,7 @@ try {
     Save-VolumeState $dir $t.Letter 'after-step1'
     Write-Step "safely remove and re-plug so step 1 is committed"
     Invoke-SafeEject $t
-    $t = Wait-Replug $t -AllowLarge:$AllowLarge
+    $t = Wait-Replug $t
     Save-VolumeState $dir $t.Letter 'replugged'
     if (@(Get-ChildItem "$($t.Letter):\idx").Count -ne $count) { throw "file count changed after re-plug" }
 

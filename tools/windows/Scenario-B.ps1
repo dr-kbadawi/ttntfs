@@ -23,12 +23,11 @@ param(
     [Parameter(Mandatory = $true)][string]$DriveLetter,
     [string]$SourceFile = (Join-Path $env:TEMP 'ntfs-capture-200MB.bin'),
     [int]$ShutdownDelayMs = 800,
-    [switch]$SkipPolicyCheck,
-    [switch]$AllowLarge
+    [switch]$SkipPolicyCheck
 )
 . "$PSScriptRoot\Common.ps1"
 Assert-Admin
-$t = Get-TargetVolume $DriveLetter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $DriveLetter
 $dir = Get-SessionDir $Mode $t
 $transcript = Start-SessionTranscript $dir
 try {

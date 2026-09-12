@@ -18,12 +18,11 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$DriveLetter,
-    [switch]$SkipPolicyCheck,
-    [switch]$AllowLarge
+    [switch]$SkipPolicyCheck
 )
 . "$PSScriptRoot\Common.ps1"
 Assert-Admin
-$t = Get-TargetVolume $DriveLetter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $DriveLetter
 $dir = Get-SessionDir 'A' $t
 $transcript = Start-SessionTranscript $dir
 try {

@@ -6,8 +6,7 @@
 .DESCRIPTION
   Quick-formats the volume at -DriveLetter as NTFS with the given label and
   cluster size, then records fsutil ntfsinfo for the session. Refuses C:, the
-  system/boot disk, any non-USB / non-removable disk and (without -AllowLarge)
-  disks over 64 GB. You must type the drive letter to confirm.
+  system/boot disk, any non-USB / non-removable disk. You must type the drive letter to confirm.
 
   Two sticks are wanted: 4 KiB clusters (default) and 512-byte clusters:
       .\Prepare-Drive.ps1 -DriveLetter E -Label CAP1
@@ -21,23 +20,20 @@
   Allocation unit in bytes: 512, 1024, 2048, 4096 (default), 8192, ..., 65536.
 .PARAMETER Full
   Full format instead of quick (slow; not needed).
-.PARAMETER AllowLarge
-  Allow disks over 64 GB.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$DriveLetter,
     [string]$Label = 'CAP1',
     [ValidateSet(512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)][int]$ClusterSize = 4096,
-    [switch]$Full,
-    [switch]$AllowLarge
+    [switch]$Full
 )
 . "$PSScriptRoot\Common.ps1"
 
 Assert-Admin
 if ($Label -notmatch '^[^\\/:*?"<>|]{1,32}$') { throw "Label must be 1-32 characters without \ / : * ? `" < > |" }
 
-$t = Get-TargetVolume $DriveLetter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $DriveLetter
 Write-Step "target"
 Show-Target $t
 
@@ -59,7 +55,7 @@ try {
 }
 
 Start-Sleep -Seconds 2
-$t = Get-TargetVolume $t.Letter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $t.Letter
 $dir = Get-SessionDir 'prepared' $t
 Save-VolumeState $dir $t.Letter 'fresh'
 Save-Meta $dir @{

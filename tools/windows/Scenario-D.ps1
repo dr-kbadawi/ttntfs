@@ -22,12 +22,11 @@ param(
     [string]$Tag = 'D',
     [string]$SourceFile = (Join-Path $env:TEMP 'ntfs-capture-300MB.bin'),
     [double]$PullAfterSeconds = 2.5,
-    [switch]$SkipPolicyCheck,
-    [switch]$AllowLarge
+    [switch]$SkipPolicyCheck
 )
 . "$PSScriptRoot\Common.ps1"
 Assert-Admin
-$t = Get-TargetVolume $DriveLetter -AllowLarge:$AllowLarge
+$t = Get-TargetVolume $DriveLetter
 $dir = Get-SessionDir $Tag $t
 $transcript = Start-SessionTranscript $dir
 try {
@@ -44,7 +43,7 @@ try {
     cmd /c "fsutil file createnew $target 1048576" | Out-Null
     if ((Get-Item $target).Length -ne 1048576) { throw "createnew did not produce a 1 MiB file" }
     Invoke-SafeEject $t
-    $t = Wait-Replug $t -AllowLarge:$AllowLarge
+    $t = Wait-Replug $t
     $target = "$($t.Letter):\D.bin"
     Save-VolumeState $dir $t.Letter 'replugged'
 

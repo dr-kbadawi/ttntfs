@@ -6,7 +6,7 @@
 #
 # Safety: every script resolves its target through Get-TargetVolume, which
 # refuses C:, the system/boot disk, any non-USB / non-removable disk, and
-# (unless -AllowLarge) anything over 64 GB.
+#
 
 Set-StrictMode -Version 2
 $ErrorActionPreference = 'Stop'
@@ -85,8 +85,7 @@ function Get-BuildTag {
 # Resolves a drive letter to volume/partition/disk and enforces the safety rules.
 function Get-TargetVolume {
     param(
-        [Parameter(Mandatory = $true)][string]$DriveLetter,
-        [switch]$AllowLarge
+        [Parameter(Mandatory = $true)][string]$DriveLetter
     )
     $letter = $DriveLetter.Trim().TrimEnd(':', '\').ToUpper()
     if ($letter -notmatch '^[A-Z]$') {
@@ -107,9 +106,6 @@ function Get-TargetVolume {
     $removable = ($disk.BusType -eq 'USB') -or ($vol.DriveType -eq 'Removable')
     if (-not $removable) {
         throw "Refusing: ${letter}: is on disk $($disk.Number) ($($disk.FriendlyName), bus $($disk.BusType), drive type $($vol.DriveType)). Only USB / removable drives are allowed."
-    }
-    if (-not $AllowLarge -and $disk.Size -gt 64GB) {
-        throw "Refusing: disk $($disk.Number) is $([math]::Round($disk.Size / 1GB)) GB. Captures are imaged whole on the Mac; use a 2-8 GB stick, or pass -AllowLarge."
     }
     [pscustomobject]@{
         Letter    = $letter
@@ -245,13 +241,13 @@ function Invoke-SafeEject {
 
 # Waits until the same volume (by label) is back; re-resolves the target.
 function Wait-Replug {
-    param($Target, [switch]$AllowLarge)
+    param($Target)
     $label = $Target.Volume.FileSystemLabel
     Read-Host "    Plug the stick back in, wait for Explorer to show it, then press Enter"
     for ($i = 0; $i -lt 30; $i++) {
         $v = Get-Volume -ErrorAction SilentlyContinue | Where-Object { $_.FileSystemLabel -eq $label -and $_.DriveLetter }
         if ($v) {
-            $t = Get-TargetVolume ([string]$v[0].DriveLetter) -AllowLarge:$AllowLarge
+            $t = Get-TargetVolume ([string]$v[0].DriveLetter)
             Write-Ok "back as $($t.Letter): ($label)"
             return $t
         }
