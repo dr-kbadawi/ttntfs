@@ -52,3 +52,15 @@ Test builds add `-fsanitize=address,undefined`.
 Every stream ends with a report containing: what was built, how to build and
 run it, what is stubbed or incomplete, contract changes made (additive only),
 and open questions for the integrator.
+
+## Progress notes and commits (every stream)
+
+- Keep `docs/progress/<stream>.md` current at every milestone: done / in
+  progress / next / known problems. It is a status file, overwritten, not a log.
+- Commit at each milestone, **only your own paths** (`git add <your dirs>
+  docs/progress/<stream>.md && git commit`). Never `git add -A`: other streams
+  write concurrently. If `index.lock` exists, another stream is committing —
+  sleep 2 s and retry (up to 5 times).
+- Commit message: `<stream>: <what landed>`, ending with the session's
+  attribution lines.
+- Never commit build trees, `tools/.local`, `tools/images`.
