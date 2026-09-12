@@ -86,6 +86,8 @@ static inline bool inode_dying(const struct inode *inode)
 /* ------------------------------------------------------------------ */
 /* LRU of unreferenced inodes (sb locked)                              */
 
+unsigned long inode_cache_global_count;
+
 static void lru_add(struct inode *inode)
 {
 	struct super_block *sb = inode->i_sb;
@@ -93,6 +95,7 @@ static void lru_add(struct inode *inode)
 	if (list_empty(&inode->i_lru)) {
 		list_add_tail(&inode->i_lru, &sb->s_inode_lru);
 		sb->s_nr_inode_lru++;
+		__atomic_fetch_add(&inode_cache_global_count, 1, __ATOMIC_RELAXED);
 	}
 }
 
@@ -101,6 +104,7 @@ static void lru_remove(struct inode *inode)
 	if (!list_empty(&inode->i_lru)) {
 		list_del_init(&inode->i_lru);
 		inode->i_sb->s_nr_inode_lru--;
+		__atomic_fetch_sub(&inode_cache_global_count, 1, __ATOMIC_RELAXED);
 	}
 }
 
@@ -119,7 +123,6 @@ unsigned long inode_cache_count(void)
 	extern unsigned long inode_cache_global_count;
 	return __atomic_load_n(&inode_cache_global_count, __ATOMIC_RELAXED);
 }
-unsigned long inode_cache_global_count;
 
 /* ------------------------------------------------------------------ */
 /* Allocation / initialisation                                         */
@@ -319,16 +322,18 @@ found:
 		return inode;
 	}
 
-	new = alloc_inode(sb);
-	if (!new)
-		return NULL;
-
+	/* Allocate under the sb lock: user-space allocation never sleeps on
+	 * I/O, and this guarantees a racing lookup creates exactly one inode. */
 	sb_lock(sb);
 	inode = find_inode(sb, hashval, test, data);
 	if (inode) {
 		sb_unlock(sb);
-		discard_new_inode(new);
 		goto found;
+	}
+	new = alloc_inode(sb);
+	if (!new) {
+		sb_unlock(sb);
+		return NULL;
 	}
 	if (set(new, data)) {
 		sb_unlock(sb);
@@ -540,7 +545,6 @@ static void shrink_lru(struct super_block *sb)
 	while (sb->s_nr_inode_lru > NTFS_INODE_CACHE_MAX) {
 		struct inode *victim = list_first_entry(&sb->s_inode_lru, struct inode, i_lru);
 
-		__atomic_fetch_sub(&inode_cache_global_count, 1, __ATOMIC_RELAXED);
 		evict_unreferenced_locked(victim, victim->i_nlink != 0);
 		sb_lock(sb);
 	}
@@ -566,7 +570,6 @@ void iput(struct inode *inode)
 	drop = op && op->drop_inode ? op->drop_inode(inode) : generic_drop_inode(inode);
 	if (!drop && (sb->s_flags & SB_ACTIVE)) {
 		lru_add(inode);
-		__atomic_fetch_add(&inode_cache_global_count, 1, __ATOMIC_RELAXED);
 		sb_unlock(sb);
 		shrink_lru(sb);
 		return;
@@ -709,8 +712,6 @@ void evict_inodes(struct super_block *sb)
 			sb_unlock(sb);
 			break;
 		}
-		if (!list_empty(&victim->i_lru))
-			__atomic_fetch_sub(&inode_cache_global_count, 1, __ATOMIC_RELAXED);
 		evict_unreferenced_locked(victim, victim->i_nlink != 0);
 	}
 	sb_lock(sb);

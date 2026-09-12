@@ -257,8 +257,10 @@ static void test_new_and_failed(void)
 	evicts = n_evict;
 	iget_failed(creator);		/* creation fails */
 	pthread_join(th, NULL);
-	/* The waiter must not adopt the dead inode: it creates a fresh one. */
-	CHECK(w.got != NULL && w.got != creator && w.was_new);
+	/* The waiter must not adopt the dead inode: it creates a fresh one.
+	 * (No pointer comparison with @creator: it has been freed and the
+	 * allocator may hand the same address to the fresh inode.) */
+	CHECK(w.got != NULL && w.was_new);
 	CHECK(n_evict == evicts + 1);
 	iput(w.got);
 
