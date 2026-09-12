@@ -1,6 +1,15 @@
 # Standalone build of the page cache + tests. The top-level build compiles
 # platform/pagecache/*.c (minus standalone_shims.c) into libntfsplatform.
 cmake_minimum_required(VERSION 3.20)
+# Build for the real host CPU even when cmake itself runs under Rosetta
+# (Intel Homebrew cmake spawns x86_64 compilers by default).
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+  execute_process(COMMAND sysctl -n hw.optional.arm64 OUTPUT_VARIABLE _ntfs_has_arm64
+                  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(_ntfs_has_arm64 STREQUAL "1")
+    set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "Target architecture" FORCE)
+  endif()
+endif()
 project(ntfs_pagecache C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)

@@ -13,6 +13,15 @@
 #   3. otherwise                                               -> core/stub/ntfscore_stub.c
 #                                                                 + bdev_compat.c
 cmake_minimum_required(VERSION 3.16)
+# Build for the real host CPU even when cmake itself runs under Rosetta
+# (Intel Homebrew cmake spawns x86_64 compilers by default).
+if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
+  execute_process(COMMAND sysctl -n hw.optional.arm64 OUTPUT_VARIABLE _ntfs_has_arm64
+                  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+  if(_ntfs_has_arm64 STREQUAL "1")
+    set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "Target architecture" FORCE)
+  endif()
+endif()
 project(ntfscli C)
 
 get_filename_component(NTFS_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
