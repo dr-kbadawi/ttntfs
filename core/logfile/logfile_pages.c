@@ -60,6 +60,16 @@ int lfs_fixup_pre_write(uint8_t *rec, uint32_t bytes, uint32_t sector)
 	return 0;
 }
 
+int ntfs_log_fixup_post_read(void *rec, uint32_t bytes, uint32_t sector, bool *torn)
+{
+	return lfs_fixup_post_read(rec, bytes, sector, torn);
+}
+
+int ntfs_log_fixup_pre_write(void *rec, uint32_t bytes, uint32_t sector)
+{
+	return lfs_fixup_pre_write(rec, bytes, sector);
+}
+
 int lfs_read_page(ntfs_logfile_t *log, uint32_t vbo, uint8_t *page, bool *torn)
 {
 	uint32_t pvbo = vbo & ~log->page_mask;
@@ -294,7 +304,7 @@ int lfs_tail_scan(ntfs_logfile_t *log)
 	bool stop_replaced = false, stop_new_transfer = false;
 
 	if (log->tail_scanned)
-		return 0;
+		return log->tail_err;
 	log->tail_scanned = true;
 	if (log->state == NTFS_LOG_EMPTY || log->cur_rst < 0)
 		return 0;
@@ -339,10 +349,8 @@ int lfs_tail_scan(ntfs_logfile_t *log)
 		}
 
 		err = lfs_read_page(log, cur, page, &torn);
-		if (err && err != -EINVAL) {
-			free(page);
-			return err;
-		}
+		if (err && err != -EINVAL)
+			goto out;
 		usable = !err && !torn && page_is_rcrd(page);
 		err = 0;
 		if (usable && log->major_ver >= 2 && lf_get32(page + PG_FILE_OFFSET) &&
@@ -461,5 +469,6 @@ out:
 	for (i = 0; i < ntails; i++)
 		free(tails[i].page);
 	free(page);
+	log->tail_err = err;
 	return err;
 }

@@ -195,8 +195,13 @@ static int ovl_get_mft(struct replay *r, uint64_t mft_no, bool init, struct ovl_
 	if (!err && lf_get32(m->rec) == LFS_MAGIC_FILE) {
 		bool torn = false;
 		err = lfs_fixup_post_read(m->rec, r->rs, LFS_SECTOR_SIZE, &torn);
-		if (err || torn)
+		if (err || torn) {
+			/* Unusable like a BAAD record; every op but Initialize refuses it. */
+			lfs_msg(r->log, 1, "mft record %llu: %s update sequence array",
+				(unsigned long long)mft_no, err ? "malformed" : "torn");
 			m->bad = true;
+			err = 0;
+		}
 	} else if (!err && lf_get32(m->rec) == LFS_MAGIC_BAAD) {
 		m->bad = true;
 	} else if (err || init) {

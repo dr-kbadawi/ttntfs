@@ -136,6 +136,13 @@ int ntfs_logfile_walk(ntfs_logfile_t *log, uint64_t from_lsn,
 /* Human-readable op name. */
 const char *ntfs_log_op_name(unsigned op);
 
+/* Multi-sector transfer protection helpers (update sequence array), for
+ * callers that hand raw MFT records / index blocks to the module. @sector
+ * is the fixup stride (512 for NTFS). post_read returns -EINVAL for a
+ * malformed array and sets *torn when a sector tail mismatches. */
+int ntfs_log_fixup_post_read(void *rec, uint32_t bytes, uint32_t sector, bool *torn);
+int ntfs_log_fixup_pre_write(void *rec, uint32_t bytes, uint32_t sector);
+
 /*
  * Load the NTFS client restart record (checkpoint) and the three restart
  * tables it references, without walking the records after it. Runs the

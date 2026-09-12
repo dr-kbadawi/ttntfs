@@ -130,7 +130,7 @@ static int read_mft_record(struct ntfs_image *img, uint64_t no, uint8_t *rec)
 		return err;
 	if (lf_get32(rec) != LFS_MAGIC_FILE)
 		return -EINVAL;
-	err = lfs_fixup_post_read(rec, img->mft_record_size, LFS_SECTOR_SIZE, &torn);
+	err = ntfs_log_fixup_post_read(rec, img->mft_record_size, LFS_SECTOR_SIZE, &torn);
 	if (err || torn)
 		return -EINVAL;
 	return 0;

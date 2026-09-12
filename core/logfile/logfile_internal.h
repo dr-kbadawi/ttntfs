@@ -78,6 +78,7 @@ struct ntfs_logfile {
 	uint32_t next_page;
 	bool wrapped, reuse_tail, no_last_lsn, single_page_io;
 	bool tail_scanned;
+	int tail_err;			/* result of the scan, returned on repeat calls */
 	uint32_t open_log_count;
 
 	/* Tail-copy overrides discovered by the scan. */

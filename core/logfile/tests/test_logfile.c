@@ -279,7 +279,7 @@ static void lb_restart(struct lb *b, uint64_t current_lsn, uint32_t last_len, ui
 		lf_put16(ra + RA_CLIENT_FREE_LIST, closed ? 0 : LFS_NO_CLIENT);
 		lf_put16(ra + RA_CLIENT_IN_USE_LIST, closed ? LFS_NO_CLIENT : 0);
 		lf_put16(ra + RA_FLAGS, flags);
-		lf_put32(ra + RA_SEQ_NUMBER_BITS, SEQ_BITS - 3);	/* 67 - 19 */
+		lf_put32(ra + RA_SEQ_NUMBER_BITS, SEQ_BITS);	/* 67 - 19 */
 		lf_put16(ra + RA_RESTART_AREA_LENGTH, RA_SIZE_XP + CR_SIZE);
 		lf_put16(ra + RA_CLIENT_ARRAY_OFFSET, RA_SIZE_XP);
 		lf_put64(ra + RA_FILE_SIZE, LSIZE);
@@ -298,7 +298,7 @@ static void lb_restart(struct lb *b, uint64_t current_lsn, uint32_t last_len, ui
 		lf_put16(cr + CR_CLIENT_NAME + 4, 'F');
 		lf_put16(cr + CR_CLIENT_NAME + 6, 'S');
 		lf_put16(p + RP_HEADER_SIZE, (uint16_t)(0x100 + i));
-		lfs_fixup_pre_write(p, PS, 512);
+		ntfs_log_fixup_pre_write(p, PS, 512);
 	}
 }
 
@@ -310,7 +310,7 @@ static void lb_protect(struct lb *b)
 		uint8_t *p = b->buf + pg;
 		if (lf_get32(p) == LFS_MAGIC_RCRD) {
 			lf_put16(p + PG_USA, (uint16_t)(1 + pg / PS));
-			CHECK(lfs_fixup_pre_write(p, PS, 512) == 0);
+			CHECK(ntfs_log_fixup_pre_write(p, PS, 512) == 0);
 		}
 	}
 }
@@ -383,8 +383,13 @@ static ntfs_logfile_t *open_log(struct memio *m, struct ntfs_log_io *io)
 	io->read = mem_read;
 	io->write = mem_write;
 	CHECK_EQ(ntfs_logfile_open(io, &g, &log), 0);
-	if (log)
+	if (log) {
+		struct ntfs_logfile_info info;
 		ntfs_logfile_set_logger(log, logger, NULL);
+		ntfs_logfile_get_info(log, &info);
+		if (info.state == NTFS_LOG_CORRUPT || info.state == NTFS_LOG_UNSUPPORTED)
+			fprintf(stderr, "    open: state %d: %s\n", info.state, ntfs_logfile_last_error(log));
+	}
 	return log;
 }
 
@@ -409,7 +414,7 @@ static void put_nonres_attr(uint8_t *rec, uint32_t *off, uint32_t type, uint64_t
 	uint8_t mp[16];
 	uint32_t mplen = 0, len;
 
-	mp[mplen++] = 0x14;	/* 1 byte length, 4 byte lcn */
+	mp[mplen++] = 0x41;	/* 1 byte length, 4 byte lcn */
 	mp[mplen++] = (uint8_t)clusters;
 	mp[mplen++] = (uint8_t)lcn;
 	mp[mplen++] = (uint8_t)(lcn >> 8);
@@ -461,7 +466,7 @@ static void build_record(uint8_t *rec, uint64_t no, uint16_t flags, void (*fill)
 	lf_put16(rec + MR_FLAGS, flags);
 	lf_put32(rec + MR_BYTES_ALLOCATED, VRS);
 	lf_put32(rec + MR_RECORD_NUMBER, (uint32_t)no);
-	lf_put16(rec + MR_USA_OFS + 0, 0x0001);
+	lf_put16(rec + MR_FIXUP_OFFSET_3, 0x0001);
 	fill(rec, &off);
 	lf_put32(rec + off, ATTR_TYPE_END);
 	off += 8;
@@ -481,7 +486,7 @@ static void vol_put_record(struct vol *v, uint64_t no, const uint8_t *deprot)
 {
 	uint8_t *dst = v->disk + MFT_LCN * VCS + no * VRS;
 	memcpy(dst, deprot, VRS);
-	lfs_fixup_pre_write(dst, VRS, 512);
+	ntfs_log_fixup_pre_write(dst, VRS, 512);
 }
 
 static void vol_init(struct vol *v)
@@ -601,7 +606,7 @@ static void test_states(void)
 	CHECK_EQ(info.major_ver, 1);
 	CHECK_EQ(info.minor_ver, 1);
 	CHECK_EQ(info.log_page_size, PS);
-	CHECK_EQ(info.seq_number_bits, SEQ_BITS - 3);
+	CHECK_EQ(info.seq_number_bits, SEQ_BITS);
 	/* Open with VOLUME_IS_CLEAN: clean. */
 	lb_restart(&b, b.last_lsn, b.last_len, b.last_lsn, 0, RESTART_VOLUME_IS_CLEAN, false);
 	ntfs_logfile_close(log);
@@ -633,9 +638,9 @@ static void test_states(void)
 	lb_restart(&b, b.last_lsn, b.last_len, b.last_lsn, 0, 0, false);
 	{
 		uint8_t *p = b.buf;
-		lfs_fixup_post_read(p, PS, 512, NULL);
+		ntfs_log_fixup_post_read(p, PS, 512, NULL);
 		lf_put64(p + 0x30 + RA_CURRENT_LSN, b.last_lsn - 8);
-		lfs_fixup_pre_write(p, PS, 512);
+		ntfs_log_fixup_pre_write(p, PS, 512);
 	}
 	log = open_log(&m, &io);
 	ntfs_logfile_get_info(log, &info);
@@ -716,6 +721,11 @@ static void test_walk_wrap_multipage(void)
 	CHECK_EQ(info.checkpoint_lsn, ckpt);
 	/* walk yields the checkpoint record itself first, then everything after */
 	CHECK_EQ(l.n, expect + 2);
+	if (l.n < 2 || l.n > 256) {
+		ntfs_logfile_close(log);
+		free(b.buf);
+		return;
+	}
 	CHECK_EQ(l.lsn[0], ckpt);
 	CHECK_EQ(l.lsn[1], restart_lsn);
 	CHECK_EQ(l.lsn[l.n - 1], last);
@@ -749,7 +759,7 @@ static void test_walk_wrap_multipage(void)
 		vol_init(&v);
 		vol_apply(&v, &ap);
 		CHECK_EQ(ntfs_logfile_replay(log, &ap, true, &res), 0);
-		CHECK_EQ(res.records_analyzed, expect);
+		CHECK_EQ(res.records_analyzed, expect + 1);	/* + the restart record */
 		CHECK_EQ(res.transactions_committed, 1);
 		CHECK_EQ(res.plan_len, 0);
 		CHECK(!res.needs_chkdsk);
@@ -771,7 +781,7 @@ static uint64_t build_bitmap_scenario(struct lb *b, bool commit, bool bogus_attr
 	lb_init(b, FIRST_PAGE, 2);
 	start = lb_simple(b, 0x18, LOP_Noop, LOP_Noop);
 	oa_lsn = lb_table_dump(b, LOP_OpenAttributeTableDump, oat, oatn);
-	restart_lsn = lb_checkpoint(b, start, oa_lsn, oatn, 0, 0, 0, 0);
+	restart_lsn = lb_checkpoint(b, 0, oa_lsn, oatn, 0, 0, 0, 0);
 
 	lf_put32(br + BR_BITMAP_OFF, 100);
 	lf_put32(br + BR_BITS, 3);
@@ -813,7 +823,7 @@ static void test_redo_bitmap(void)
 	/* dry run */
 	CHECK_EQ(ntfs_logfile_replay(log, &ap, true, &res), 0);
 	CHECK(!res.needs_chkdsk);
-	CHECK_EQ(res.records_analyzed, 3);
+	CHECK_EQ(res.records_analyzed, 3);	/* SetBits, Commit, Forget */
 	CHECK_EQ(res.records_redone, 1);
 	CHECK_EQ(res.records_undone, 0);
 	CHECK_EQ(res.dirty_pages, 1);
@@ -922,7 +932,7 @@ static void test_refuse_incoherent(void)
 		uint8_t rec[VRS];
 		uint32_t off;
 		memcpy(rec, v.disk + MFT_LCN * VCS + 6 * VRS, VRS);
-		lfs_fixup_post_read(rec, VRS, 512, NULL);
+		ntfs_log_fixup_post_read(rec, VRS, 512, NULL);
 		off = lf_get16(rec + MR_ATTRS_OFFSET) + AT_NONRESIDENT_SIZE;
 		rec[off + 2] = (uint8_t)(VOL_CLUSTERS + 5);
 		vol_put_record(&v, 6, rec);
@@ -955,7 +965,7 @@ static void test_mft_record_ops(void)
 	lb_init(&b, FIRST_PAGE, 2);
 	start = lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
 	oa_lsn = lb_table_dump(&b, LOP_OpenAttributeTableDump, oat, oatn);
-	restart_lsn = lb_checkpoint(&b, start, oa_lsn, oatn, 0, 0, 0, 0);
+	restart_lsn = lb_checkpoint(&b, 0, oa_lsn, oatn, 0, 0, 0, 0);
 
 	/* InitializeFileRecordSegment of record 40 (page: vcn 10 -> lcn 26). */
 	build_record(newrec, 40, MFT_RECORD_IN_USE, fill_plain);
@@ -1010,13 +1020,13 @@ static void test_mft_record_ops(void)
 	/* record 40 now exists, protected, with the record lsn stamped */
 	memcpy(got, v.disk + MFT_LCN * VCS + 40 * VRS, VRS);
 	CHECK_EQ(lf_get32(got), LFS_MAGIC_FILE);
-	CHECK_EQ(lfs_fixup_post_read(got, VRS, 512, NULL), 0);
+	CHECK_EQ(ntfs_log_fixup_post_read(got, VRS, 512, NULL), 0);
 	CHECK_EQ(lf_get64(got + MR_LSN), init_lsn);
 	CHECK_EQ(lf_get32(got + MR_RECORD_NUMBER), 40);
 	CHECK(!memcmp(got + MR_ATTRS_OFFSET, newrec + MR_ATTRS_OFFSET, 2));
 	/* record 30's value updated */
 	memcpy(got, v.disk + MFT_LCN * VCS + 30 * VRS, VRS);
-	CHECK_EQ(lfs_fixup_post_read(got, VRS, 512, NULL), 0);
+	CHECK_EQ(ntfs_log_fixup_post_read(got, VRS, 512, NULL), 0);
 	CHECK(!memcmp(got + MR_FIXUP_OFFSET_3 + 8 + AT_RESIDENT_SIZE, newsi, sizeof(newsi)));
 	/* Replaying again is idempotent: records carry lsn >= record lsn. */
 	CHECK_EQ(ntfs_logfile_replay(log, &ap, true, &res), 0);
@@ -1030,9 +1040,9 @@ static void test_mft_record_ops(void)
 	{
 		uint8_t *p = b.buf + FIRST_PAGE;
 		uint32_t vbo = (uint32_t)(init_lsn << 3) & (LSIZE - 1);
-		lfs_fixup_post_read(p, PS, 512, NULL);
+		ntfs_log_fixup_post_read(p, PS, 512, NULL);
 		lf_put64(b.buf + vbo + LR_HEADER_SIZE + NR_PAGE_LCNS, MFT_LCN + 11);
-		lfs_fixup_pre_write(p, PS, 512);
+		ntfs_log_fixup_pre_write(p, PS, 512);
 		vol_init(&v);	/* leaks previous disk? free first */
 	}
 	log = open_log(&m, &io);
@@ -1087,7 +1097,7 @@ static void test_tail_copy_and_torn(void)
 	{
 		uint8_t pg[PS];
 		memcpy(pg, b.buf + last_page, PS);
-		CHECK_EQ(lfs_fixup_post_read(pg, PS, 512, NULL), 0);
+		CHECK_EQ(ntfs_log_fixup_post_read(pg, PS, 512, NULL), 0);
 		CHECK_EQ(lf_get64(pg + PG_LAST_END_LSN), tail_lsn);
 		CHECK_EQ(lf_get64(pg + PG_LAST_LSN), tail_lsn);
 	}
@@ -1145,6 +1155,20 @@ static void test_tail_copy_and_torn(void)
 	free(b.buf);
 }
 
+static int oa_cb(const struct ntfs_log_open_attr *a, void *ctx)
+{
+	int *n = ctx;
+	(*n)++;
+	if (a->id == 0x18) {
+		CHECK_EQ(a->mft_no, 0);
+		CHECK_EQ(a->type, ATTR_TYPE_DATA);
+	} else {
+		CHECK_EQ(a->id, 0x40);
+		CHECK_EQ(a->mft_no, 6);
+	}
+	return 0;
+}
+
 static void test_tables_api(void)
 {
 	struct lb b;
@@ -1160,22 +1184,7 @@ static void test_tables_api(void)
 	log = open_log(&m, &io);
 	CHECK_EQ(ntfs_logfile_load_checkpoint(log), 0);
 	memset(&cbs, 0, sizeof(cbs));
-	{
-		int cb(const struct ntfs_log_open_attr *a, void *ctx)
-		{
-			int *n = ctx;
-			(*n)++;
-			if (a->id == 0x18) {
-				CHECK_EQ(a->mft_no, 0);
-				CHECK_EQ(a->type, ATTR_TYPE_DATA);
-			} else {
-				CHECK_EQ(a->id, 0x40);
-				CHECK_EQ(a->mft_no, 6);
-			}
-			return 0;
-		}
-		cbs.open_attr = cb;
-	}
+	cbs.open_attr = oa_cb;
 	CHECK_EQ(ntfs_logfile_tables(log, &cbs, &n_oa), 0);
 	CHECK_EQ(n_oa, 2);
 	ntfs_logfile_close(log);
