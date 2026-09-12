@@ -30,6 +30,9 @@
 #ifndef ENOKEY
 #define ENOKEY 528
 #endif
+#ifndef ENOPARAM
+#define ENOPARAM 519
+#endif
 #ifndef EBADE
 #define EBADE 529
 #endif

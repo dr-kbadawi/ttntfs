@@ -156,6 +156,8 @@ struct super_block {
 	struct list_head	s_inodes;
 	struct hlist_head	*s_inode_hash;
 	unsigned int		s_inode_hash_bits;
+	struct list_head	s_inode_lru;	/* unreferenced cached inodes, oldest first */
+	unsigned long		s_nr_inode_lru;
 	struct rw_semaphore	s_umount;
 };
 

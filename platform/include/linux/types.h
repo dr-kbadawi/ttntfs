@@ -93,6 +93,9 @@ struct timespec64 {
 #define BITS_PER_LONG 64
 #define BITS_PER_BYTE 8
 
+#undef PAGE_SHIFT
+#undef PAGE_SIZE
+#undef PAGE_MASK
 #define PAGE_SHIFT NTFS_PAGE_SHIFT
 #define PAGE_SIZE  (1UL << PAGE_SHIFT)
 #define PAGE_MASK  (~(PAGE_SIZE - 1))
