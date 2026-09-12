@@ -948,85 +948,124 @@ static void fixture_attrlist(struct fx *fx)
 		}
 		fx_close(ni);
 	}
-	/* (b) heavily fragmented file. libntfs-3g's allocator cannot be asked
-	 *     for a specific LCN through the inode API, and for one-cluster
-	 *     files it rotates between regions, so fragmentation is forced by
-	 *     hand: reserve a contiguous region with one file, delete it, then
-	 *     create one-cluster blockers on the even clusters of that region
-	 *     (a fresh file's first allocation starts at vol->data1_zone_pos)
-	 *     and finally append one cluster at a time; every append seeks from
-	 *     the previous extent's end, hits a blocker, and lands on the next
-	 *     odd cluster. 600 one-cluster extents need ~1.8 KiB of mapping
+	/* (b) heavily fragmented file. The libntfs-3g allocator (lcnalloc.c)
+	 *     takes an exact LCN only as the "seek from" hint of an *append*
+	 *     (end of the previous extent); every other allocation, and any
+	 *     append whose hint is in use, goes to the start of the largest
+	 *     free range in the bitmap. So: reserve a contiguous region with a
+	 *     file, fill the rest of the volume, delete the reservation, and
+	 *     append one cluster at a time alternately to two files. Each
+	 *     append finds its hint taken by the other file and moves to the
+	 *     start of the largest free range = the next cluster: perfect
+	 *     interleaving. 600 one-cluster extents need ~1.8 KiB of mapping
 	 *     pairs, more than the 1 KiB base record: libntfs-3g splits $DATA
 	 *     into extent records and adds $ATTRIBUTE_LIST. */
 	{
 		const int nfrag = 600;
 		uint32_t cs = fx->vol->cluster_size;
-		LCN region = -1;
+		const char *rp = "/attrlist/.reserve", *fp = "/attrlist/.fill";
+		ntfs_inode *r = fx_create(fx, rp, S_IFREG);
+		fx_write_stream(fx, r, rp, NULL, 0, (uint64_t)2 * nfrag * cs, FILL_ZERO);
+		fx->bytes -= (uint64_t)2 * nfrag * cs;
 		{
-			const char *rp = "/attrlist/.reserve";
-			ntfs_inode *r = fx_create(fx, rp, S_IFREG);
-			fx_write_stream(fx, r, rp, NULL, 0, (uint64_t)2 * nfrag * cs, FILL_ZERO);
-			fx->bytes -= (uint64_t)2 * nfrag * cs;
 			ntfs_attr *na = ntfs_attr_open(r, AT_DATA, AT_UNNAMED, 0);
 			if (!na || ntfs_attr_map_whole_runlist(na))
 				die("map runlist of %s", rp);
+			int runs = 0;
 			for (runlist_element *rl = na->rl; rl->length; rl++)
-				if (rl->lcn >= 0 && rl->length >= 2 * nfrag) {
-					region = rl->lcn;
-					break;
-				}
+				runs++;
 			ntfs_attr_close(na);
-			if (region < 0)
-				die("could not reserve %d contiguous clusters", 2 * nfrag);
+			if (runs != 1)
+				die("%s: expected 1 run, got %d (volume too fragmented?)", rp, runs);
+		}
+		fx_close(r);
+
+		/* fill everything else, leaving a few clusters for index blocks */
+		ntfs_inode *f = fx_create(fx, fp, S_IFREG);
+		{
+			if (ntfs_volume_get_free_space(fx->vol))
+				die("ntfs_volume_get_free_space");
+			s64 nfree = fx->vol->free_clusters - 32;
+			if (nfree <= 0)
+				die("no free space to fill");
+			ntfs_attr *na = ntfs_attr_open(f, AT_DATA, AT_UNNAMED, 0);
+			uint8_t *z = calloc(64, cs);
+			if (!na || !z)
+				die("fill open");
+			for (s64 pos = 0; pos < nfree * (s64)cs;) {
+				s64 n = nfree * (s64)cs - pos;
+				if (n > 64 * (s64)cs)
+					n = 64 * (s64)cs;
+				if (ntfs_attr_pwrite(na, pos, n, z) != n)
+					die("fill pwrite at %lld", (long long)pos);
+				pos += n;
+			}
+			free(z);
+			ntfs_attr_close(na);
+		}
+		fx_close(f);
+
+		/* free the reserved region again */
+		{
 			ntfs_inode *dir = fx_open(fx, "/attrlist");
+			ntfs_inode *ni = ntfs_pathname_to_inode(fx->vol, dir, ".reserve");
 			ntfschar *uname = NULL;
 			int ulen = ucs(".reserve", &uname);
-			if (ntfs_delete(fx->vol, NULL, r, dir, uname, (u8)ulen))	/* closes r */
+			if (!ni || ntfs_delete(fx->vol, NULL, ni, dir, uname, (u8)ulen))	/* closes ni */
 				die("ntfs_delete(%s)", rp);
 			free(uname);
 			fx_close(dir);
 			fx->files--;
 		}
-		fx_mkdir(fx, "/attrlist/blockers");
-		ntfs_inode *bd = fx_open(fx, "/attrlist/blockers");
-		for (int i = 0; i < nfrag; i++) {
-			char name[32], path[64];
-			snprintf(name, sizeof(name), "blk-%04d", i);
-			snprintf(path, sizeof(path), "/attrlist/blockers/%s", name);
-			fx->vol->data1_zone_pos = region + 2 * i;
-			ntfs_inode *ni = fx_create_in(fx, bd, name, S_IFREG);
-			fx_write_stream(fx, ni, path, NULL, 0, cs, FILL_RANDOM);
-			fx_close_in(ni, bd);
-		}
-		fx_close(bd);
 
-		const char *pa = "/attrlist/fragmented.bin";
-		ntfs_inode *a = fx_create(fx, pa, S_IFREG);
+		const char *pa = "/attrlist/fragmented.bin", *pb = "/attrlist/interleaver.bin";
+		ntfs_inode *a = fx_create(fx, pa, S_IFREG), *b = fx_create(fx, pb, S_IFREG);
 		ntfs_attr *na = ntfs_attr_open(a, AT_DATA, AT_UNNAMED, 0);
-		if (!na)
+		ntfs_attr *nb = ntfs_attr_open(b, AT_DATA, AT_UNNAMED, 0);
+		if (!na || !nb)
 			die("attr_open fragmented");
 		uint8_t *buf = malloc(cs);
-		uint64_t sa = seed_for(pa, NULL);
-		fx->vol->data1_zone_pos = region + 1;
+		uint64_t sa = seed_for(pa, NULL), sb = seed_for(pb, NULL);
+		/* start the bitmap search at the beginning of the data zone so
+		 * the first allocation of each file sees the reserved region */
+		fx->vol->data1_zone_pos = fx->vol->mft_zone_end;
 		for (int i = 0; i < nfrag; i++) {
 			fill_buf(buf, cs, &sa, FILL_RANDOM, (uint64_t)i * cs);
 			if (ntfs_attr_pwrite(na, (s64)i * cs, cs, buf) != cs)
-				die("pwrite fragmented");
+				die("pwrite %s", pa);
+			fill_buf(buf, cs, &sb, FILL_RANDOM, (uint64_t)i * cs);
+			if (ntfs_attr_pwrite(nb, (s64)i * cs, cs, buf) != cs)
+				die("pwrite %s", pb);
 		}
 		free(buf);
-		fx->bytes += (uint64_t)nfrag * cs;
+		fx->bytes += 2ULL * nfrag * cs;
 		if (ntfs_attr_map_whole_runlist(na))
 			die("map runlist of %s", pa);
 		int runs = 0;
 		for (runlist_element *rl = na->rl; rl->length; rl++)
 			runs++;
 		ntfs_attr_close(na);
+		ntfs_attr_close(nb);
+		bool has_attrlist = NInoAttrList(a);
 		fx_close(a);
+		fx_close(b);
 		if (runs < nfrag / 2)
 			die("fragmentation failed: %s has only %d runs", pa, runs);
-		if (!(ntfs_pathname_to_inode(fx->vol, NULL, pa)->attr_list))
-			fprintf(stderr, "warning: %s has %d runs but no $ATTRIBUTE_LIST\n", pa, runs);
+		if (!has_attrlist)
+			die("%s has %d runs but no $ATTRIBUTE_LIST", pa, runs);
+
+		/* give the space back (the interleaver stays: it keeps the holes) */
+		{
+			ntfs_inode *dir = fx_open(fx, "/attrlist");
+			ntfs_inode *ni = ntfs_pathname_to_inode(fx->vol, dir, ".fill");
+			ntfschar *uname = NULL;
+			int ulen = ucs(".fill", &uname);
+			if (!ni || ntfs_delete(fx->vol, NULL, ni, dir, uname, (u8)ulen))
+				die("ntfs_delete(%s)", fp);
+			free(uname);
+			fx_close(dir);
+			fx->files--;
+		}
 	}
 	/* (c) both: fragmented and many streams, plus hard links (each name is
 	 *     another $FILE_NAME in the base record, squeezing $DATA out) */
