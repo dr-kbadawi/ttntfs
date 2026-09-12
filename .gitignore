@@ -6,3 +6,4 @@ xcuserdata/
 *.dmg
 *.img
 tools/images/
+build-logfile/
