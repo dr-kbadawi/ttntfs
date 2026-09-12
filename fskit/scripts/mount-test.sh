@@ -11,7 +11,8 @@
 #      status, here through `pluginkit`)
 #   2. attach the fixture image with hdiutil -nomount (no auto-mount, so the
 #      kernel ntfs driver does not grab it)
-#   3. mount -F -t ttntfs <dev> <mountpoint>    (sudo)
+#   3. mount -F -t ttntfs <dev> <mountpoint>    (as the user: FSKit mounts are
+#      per-user; `sudo mount -F` fails with "entitlement no" on macOS 26)
 #   4. list the volume, stat a file, df, and (with --rw) create/rename/delete
 #   5. unmount, detach
 #
@@ -49,7 +50,7 @@ shadow=""
 cleanup() {
 	[ $keep -eq 1 ] && { echo "    --keep: leaving $dev attached${mountpoint:+ at $mountpoint}"; return; }
 	if [ -n "$mountpoint" ] && mount | grep -q " on $mountpoint "; then
-		sudo umount "$mountpoint" 2>/dev/null || sudo diskutil unmount force "$mountpoint" >/dev/null 2>&1
+		umount "$mountpoint" 2>/dev/null || diskutil unmount force "$mountpoint" >/dev/null 2>&1
 	fi
 	[ -n "$dev" ] && hdiutil detach "$dev" -quiet 2>/dev/null
 	[ -n "$shadow" ] && rm -f "$shadow"
@@ -92,8 +93,8 @@ step "3/5 mount -F -t $fstype $dev"
 [ -n "$mountpoint" ] || mountpoint=$(mktemp -d /tmp/ttntfs-mount.XXXXXX)
 opts=""
 [ $rw -eq 1 ] || opts="-o ro"
-echo "    sudo mount -F -t $fstype $opts $dev $mountpoint"
-if ! out=$(sudo mount -F -t "$fstype" $opts "$dev" "$mountpoint" 2>&1); then
+echo "    mount -F -t $fstype $opts $dev $mountpoint"
+if ! out=$(mount -F -t "$fstype" $opts "$dev" "$mountpoint" 2>&1); then
 	echo "    $out"
 	echo "    hint: log stream --predicate 'subsystem == \"ch.techtag.ntfs\"' --level debug   (in another terminal)"
 	fail "mount failed"
@@ -128,7 +129,7 @@ fi
 ok "exercised"
 
 step "5/5 unmount and detach"
-sudo umount "$mountpoint" || fail "umount"
+umount "$mountpoint" || diskutil unmount "$mountpoint" || fail "umount"
 ok "unmounted"
 hdiutil detach "$dev" -quiet || fail "detach"
 ok "detached"
