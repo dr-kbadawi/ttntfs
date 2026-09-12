@@ -4,7 +4,10 @@ Working title: a free, open-source, kext-less NTFS read/write driver for macOS,
 built by porting the Linux kernel's new `ntfs` driver (ntfsplus) to run as a
 user-space FSKit file system extension.
 
-Status: design. Nothing compiles yet.
+Status (2026-09-12 22:05): phase 0 done — compat layer, page cache, inode
+table and file bdev built and tested; all 20 Tier 0/1 files compile;
+`$LogFile` module and tooling complete; FSKit project builds (unsigned).
+Phase 1/2 (`core/vfs/`) in progress. See `docs/progress/*.md`.
 
 ## 1. Why this source
 
