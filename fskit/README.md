@@ -51,6 +51,12 @@ already include `core/include` and `platform/include`. Verified 2026-09-12: the
 real-mode link excludes the stub and resolves every `ntfs_*` and platform
 symbol from the archive.
 
+> **Build outside iCloud-synced folders.** `~/Documents` is synced by File
+> Provider, which stamps bundles with `com.apple.fileprovider.fpfs#P` /
+> `FinderInfo`; codesign then fails with "resource fork, Finder information,
+> or similar detritus not allowed". Use `-derivedDataPath /tmp/ttntfs-dd`
+> (or any path outside the synced tree) for signed builds.
+
 ## Signing and enabling the extension (integrator checklist)
 
 `security find-identity -v -p codesigning` on the development machine reports
