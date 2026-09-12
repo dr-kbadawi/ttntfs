@@ -11,7 +11,7 @@ import Foundation
 import FSKit
 
 enum SharedDefaults {
-    static let suite = "group.org.ntfsmac.NTFS"
+    static let suite = "group.ch.techtag.ntfs"
     static let readOnly = "readOnly"
     static let showHidden = "showHidden"
     static let showSystem = "showSystem"

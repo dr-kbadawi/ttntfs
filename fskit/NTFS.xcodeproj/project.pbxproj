@@ -297,8 +297,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS;
-				PRODUCT_NAME = NTFS;
+				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs;
+				PRODUCT_NAME = "TT NTFS Native";
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -321,7 +321,7 @@
 					"@executable_path/../Frameworks",
 				);
 				OTHER_LDFLAGS = "$(inherited) $(NTFS_CORE_LDFLAGS_$(NTFS_CORE_MODE))";
-				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS.Extension;
+				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs.extension;
 				PRODUCT_NAME = NTFSExtension;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "Bridge/NTFSExtension-Bridging-Header.h";
@@ -346,7 +346,7 @@
 					"@executable_path/../Frameworks",
 				);
 				OTHER_LDFLAGS = "$(inherited) $(NTFS_CORE_LDFLAGS_$(NTFS_CORE_MODE))";
-				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS.Extension;
+				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs.extension;
 				PRODUCT_NAME = NTFSExtension;
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "Bridge/NTFSExtension-Bridging-Header.h";
@@ -366,8 +366,8 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = org.ntfsmac.NTFS;
-				PRODUCT_NAME = NTFS;
+				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs;
+				PRODUCT_NAME = "TT NTFS Native";
 				SDKROOT = macosx;
 			};
 			name = Debug;

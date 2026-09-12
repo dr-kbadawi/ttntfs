@@ -26,7 +26,7 @@ static os_log_t bdev_log(void)
 {
 	static os_log_t log;
 	static dispatch_once_t once;
-	dispatch_once(&once, ^{ log = os_log_create("org.ntfsmac.NTFS", "bdev"); });
+	dispatch_once(&once, ^{ log = os_log_create("ch.techtag.ntfs", "bdev"); });
 	return log;
 }
 

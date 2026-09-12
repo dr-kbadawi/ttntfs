@@ -10,7 +10,7 @@ import Foundation
 import FSKit
 import os
 
-let log = Logger(subsystem: "org.ntfsmac.NTFS", category: "extension")
+let log = Logger(subsystem: "ch.techtag.ntfs", category: "extension")
 
 /// Largest errno Darwin defines (`ELAST` in <sys/errno.h>). Anything above it
 /// that platform_errno_to_host() did not translate is collapsed to EIO.

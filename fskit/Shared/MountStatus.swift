@@ -11,7 +11,7 @@
 import Foundation
 
 struct MountStatus: Codable, Equatable {
-    static let appGroup = "group.org.ntfsmac.NTFS"
+    static let appGroup = "group.ch.techtag.ntfs"
     static let fileName = "mount-status.json"
 
     var bsdName: String

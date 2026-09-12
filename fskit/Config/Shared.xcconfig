@@ -3,8 +3,8 @@
 // Signing: set your Apple Developer Team ID here (or pass DEVELOPMENT_TEAM on
 // the xcodebuild command line). The extension needs the managed capability
 // "FSKit Module" (entitlement com.apple.developer.fskit.fsmodule) enabled for
-// the App ID org.ntfsmac.NTFS.Extension in the developer portal. See README.md.
-NTFS_TEAM_ID =
+// the App ID ch.techtag.ntfs.extension in the developer portal. See README.md.
+NTFS_TEAM_ID = HU5S996C2K
 
 // Core selection. "stub" links core/stub/ntfscore_stub.c (every operation
 // returns ENOSYS). "real" excludes the stub and links the CMake output

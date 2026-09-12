@@ -1,7 +1,7 @@
 # xcodegen spec. Regenerate the project with:  xcodegen generate  (run in fskit/)
 name: NTFS
 options:
-  bundleIdPrefix: org.ntfsmac
+  bundleIdPrefix: ch.techtag
   deploymentTarget:
     macOS: "26.0"
   createIntermediateGroups: true
@@ -44,8 +44,8 @@ targets:
     info:
       path: NTFS/Info.plist
       properties:
-        CFBundleDisplayName: NTFS
-        CFBundleName: NTFS
+        CFBundleDisplayName: TT NTFS Native
+        CFBundleName: TT NTFS Native
         LSUIElement: true                    # menu-bar app, no Dock icon
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: "GPL-2.0"
@@ -55,11 +55,11 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.security.files.user-selected.read-only: true
         com.apple.security.application-groups:
-          - group.org.ntfsmac.NTFS
+          - group.ch.techtag.ntfs
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.ntfsmac.NTFS
-        PRODUCT_NAME: NTFS
+        PRODUCT_BUNDLE_IDENTIFIER: ch.techtag.ntfs
+        PRODUCT_NAME: TT NTFS Native
         INFOPLIST_KEY_LSUIElement: YES
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: NO
 
@@ -81,11 +81,11 @@ targets:
     info:
       path: NTFSExtension/Info.plist
       properties:
-        CFBundleDisplayName: NTFS
+        CFBundleDisplayName: TT NTFS Native
         CFBundleName: NTFSExtension
         EXAppExtensionAttributes:
           EXExtensionPointIdentifier: com.apple.fskit.fsmodule
-          FSShortName: ntfsx
+          FSShortName: ttntfs
           FSSupportsBlockResources: true
           FSSupportsKernelOffloadedIO: false
           FSSupportsServerURLs: false
@@ -113,7 +113,7 @@ targets:
               FSProbeOrder: 3500
           FSPersonalities:
             NTFS:
-              FSName: "NTFS"
+              FSName: "TT NTFS Native"
               FSSubType: 0
               FSFormatContentMask: Windows_NTFS
               FSFormatMinimumSize: 1048576
@@ -124,10 +124,10 @@ targets:
         com.apple.security.app-sandbox: true
         com.apple.developer.fskit.fsmodule: true
         com.apple.security.application-groups:
-          - group.org.ntfsmac.NTFS
+          - group.ch.techtag.ntfs
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.ntfsmac.NTFS.Extension
+        PRODUCT_BUNDLE_IDENTIFIER: ch.techtag.ntfs.extension
         PRODUCT_NAME: NTFSExtension
         SWIFT_OBJC_BRIDGING_HEADER: Bridge/NTFSExtension-Bridging-Header.h
         HEADER_SEARCH_PATHS:

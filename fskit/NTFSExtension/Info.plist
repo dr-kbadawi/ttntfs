@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>NTFS</string>
+	<string>TT NTFS Native</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -87,13 +87,13 @@
 				<key>FSFormatMinimumSize</key>
 				<integer>1048576</integer>
 				<key>FSName</key>
-				<string>NTFS</string>
+				<string>TT NTFS Native</string>
 				<key>FSSubType</key>
 				<integer>0</integer>
 			</dict>
 		</dict>
 		<key>FSShortName</key>
-		<string>ntfsx</string>
+		<string>ttntfs</string>
 		<key>FSSupportsBlockResources</key>
 		<true/>
 		<key>FSSupportsKernelOffloadedIO</key>

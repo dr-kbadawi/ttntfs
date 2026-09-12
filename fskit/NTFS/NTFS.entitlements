@@ -6,7 +6,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.org.ntfsmac.NTFS</string>
+		<string>group.ch.techtag.ntfs</string>
 	</array>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>

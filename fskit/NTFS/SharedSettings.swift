@@ -6,7 +6,7 @@
 import Foundation
 
 enum SharedSettings {
-    static let suite = "group.org.ntfsmac.NTFS"
+    static let suite = "group.ch.techtag.ntfs"
     static let store = UserDefaults(suiteName: suite) ?? .standard
     static let readOnly = "readOnly"
     static let showHidden = "showHidden"

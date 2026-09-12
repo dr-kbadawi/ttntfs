@@ -25,7 +25,7 @@ xcodebuild -project NTFS.xcodeproj -scheme NTFS -configuration Debug \
            -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
 ```
 
-Output: `build/DerivedData/Build/Products/Debug/NTFS.app` with
+Output: `build/DerivedData/Build/Products/Debug/TT NTFS Native.app` with
 `Contents/Extensions/NTFSExtension.appex` inside. Requires Xcode 26 / macOS 26 SDK
 (FSKit API as shipped in macOS 26; deployment target 26.0 per docs/PORTING.md §6).
 Debug builds put the code in `NTFSExtension.debug.dylib` next to the tiny
@@ -59,10 +59,10 @@ managed entitlement `com.apple.developer.fskit.fsmodule`; fskitd refuses to
 load an extension whose provisioning profile does not carry it.
 
 1. **Apple Developer portal → Identifiers.** Create two App IDs (explicit, not
-   wildcard): `org.ntfsmac.NTFS` (app) and `org.ntfsmac.NTFS.Extension`
+   wildcard): `ch.techtag.ntfs` (app) and `ch.techtag.ntfs.extension`
    (extension). Or change `PRODUCT_BUNDLE_IDENTIFIER` for both targets in
    `project.yml` and regenerate. On **both**, enable *App Groups* and add the
-   group `group.org.ntfsmac.NTFS`. On the **extension's** App ID enable the
+   group `group.ch.techtag.ntfs`. On the **extension's** App ID enable the
    capability **FSKit Module** (it appears under "Additional Capabilities" for
    paid accounts on macOS 15.4+ SDKs; it is a managed capability, no request
    form).
@@ -81,23 +81,23 @@ load an extension whose provisioning profile does not carry it.
    xcodebuild -project NTFS.xcodeproj -scheme NTFS -configuration Debug \
               -derivedDataPath build/DerivedData -allowProvisioningUpdates build
    codesign -d --entitlements - --xml \
-     build/DerivedData/Build/Products/Debug/NTFS.app/Contents/Extensions/NTFSExtension.appex \
+     build/DerivedData/Build/Products/Debug/TT NTFS Native.app/Contents/Extensions/NTFSExtension.appex \
      | grep fskit.fsmodule       # must print the key
    ```
    Do not ad-hoc sign or strip the entitlement to "make it load": it will not.
-4. **Install and register.** Copy `NTFS.app` to `/Applications` and launch it
+4. **Install and register.** Copy `TT NTFS Native.app` to `/Applications` and launch it
    once (LaunchServices registers the appex; `pluginkit -m -i
-   org.ntfsmac.NTFS.Extension -v` lists it).
+   ch.techtag.ntfs.extension -v` lists it).
 5. **Enable.** System Settings → General → Login Items & Extensions → File
    System Extensions (the ⓘ button) → enable **NTFS**. `pluginkit -e use -i
-   org.ntfsmac.NTFS.Extension` may do the same from a terminal. The menu-bar
+   ch.techtag.ntfs.extension` may do the same from a terminal. The menu-bar
    app shows the state via `FSClient.installedExtensions` and deep-links there.
 6. **Mount.** Plug in an NTFS drive: Disk Arbitration probes registered modules
    in `FSProbeOrder` order. Ours claims `Windows_NTFS` at 500 (Apple's kernel
    `ntfs.fs` uses 1000, its FSKit exfat module also probes NTFS partitions at
    2000). Whether a third-party module wins against the built-in bundle has not
    been verified (no signing identity); the manual path always works:
-   `sudo mount -F -t ntfsx /dev/diskNsM /Volumes/X` (`-o ro` for read-only).
+   `sudo mount -F -t ttntfs /dev/diskNsM /Volumes/X` (`-o ro` for read-only).
 
 ## Mount test (after signing)
 
@@ -110,13 +110,13 @@ fskit/scripts/mount-test.sh -i tools/images/names.img -m /tmp/ntfs-test
 Steps and what each proves: (1) `pluginkit` shows the module registered and
 enabled and `codesign` confirms the entitlement; (2) `hdiutil attach -nomount
 -shadow` exposes the fixture as `/dev/diskN` without letting the kernel driver
-mount it, writes go to a temporary shadow file; (3) `sudo mount -F -t ntfsx`
+mount it, writes go to a temporary shadow file; (3) `sudo mount -F -t ttntfs`
 runs probe → load → check → activate → mount; (4) `ls`, `df`, `stat`, `xattr`
 and optionally a write cycle exercise enumerate/getattr/statfs/read/xattr and
 create/rename/remove; the `mount-status.json` the extension wrote is printed;
 (5) `umount` and `hdiutil detach` run unmount → reclaim → deactivate → unload.
 Failures print the step and a `log stream` predicate for the extension's
-subsystem `org.ntfsmac.NTFS`. Fixtures come from `make -C tools/mkfixtures
+subsystem `ch.techtag.ntfs`. Fixtures come from `make -C tools/mkfixtures
 fixtures` (see tools/README.md).
 
 ## Design notes
@@ -126,7 +126,7 @@ fixtures` (see tools/README.md).
   `FSActivateOptionSyntax`); `mount` is a signal only; `unmount` syncs;
   `deactivate` runs `ntfs_unmount` after FSKit has reclaimed every item;
   `unloadResource` unmounts late if deactivate never came and closes the device.
-- **Short name `ntfsx`** (`FSShortName`, `mount -t ntfsx`). Apple's kernel
+- **Short name `ttntfs`** (`FSShortName`, `mount -t ttntfs`). Apple's kernel
   driver already owns the type name `ntfs` in `/System/Library/Filesystems`;
   sharing it risks the wrong bundle being picked for `mount -t`. The volume
   reports `fileSystemTypeName = "ntfs"` in statfs so `df`/Finder show NTFS.
@@ -157,13 +157,13 @@ fixtures` (see tools/README.md).
   `NTFS_MOUNT_RDONLY_FALLBACK`; when `ntfs_volume_info.read_only` comes back
   (dirty, hibernated, unclean `$LogFile`, write-protected device, requested),
   the volume refuses every mutating operation with EROFS and publishes the
-  reason to `~/Library/Group Containers/group.org.ntfsmac.NTFS/Library/
+  reason to `~/Library/Group Containers/group.ch.techtag.ntfs/Library/
   Application Support/mount-status.json`, which the menu-bar app polls every
   2 s and shows under the volume. FSKit has no API to flip MNT_RDONLY after
   load; `--rdonly` is only passed when the kernel already wants it (that also
   marks the bdev read-only). Probe answers `usableButLimited` for such media.
 - **Options**: mount defaults come from the app group `UserDefaults`
-  (`group.org.ntfsmac.NTFS`, keys in `SharedSettings.swift` ↔ `Options.swift`),
+  (`group.ch.techtag.ntfs`, keys in `SharedSettings.swift` ↔ `Options.swift`),
   overridable per mount with `-o ro,rw,hidehidden,showsystem,allowillegal,
   discard,casesensitive`; FSKit's `--rdonly` and `-f` are recognised too.
 - **Ownership**: `doesNotSupportSettingFilePermissions` + uid/gid of the

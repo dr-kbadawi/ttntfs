@@ -52,7 +52,7 @@ final class VolumeMonitor: ObservableObject {
                 let type = withUnsafePointer(to: &st.f_fstypename) { p in
                     p.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) { String(cString: $0) }
                 }
-                guard type == "ntfs" || type == "ntfsx" else { continue }
+                guard type == "ntfs" || type == "ttntfs" else { continue }
                 let mnt = withUnsafePointer(to: &st.f_mntonname) { p in
                     p.withMemoryRebound(to: CChar.self, capacity: Int(MAXPATHLEN)) { String(cString: $0) }
                 }

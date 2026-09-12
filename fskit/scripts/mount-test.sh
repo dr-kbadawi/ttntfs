@@ -11,7 +11,7 @@
 #      status, here through `pluginkit`)
 #   2. attach the fixture image with hdiutil -nomount (no auto-mount, so the
 #      kernel ntfs driver does not grab it)
-#   3. mount -F -t ntfsx <dev> <mountpoint>    (sudo)
+#   3. mount -F -t ttntfs <dev> <mountpoint>    (sudo)
 #   4. list the volume, stat a file, df, and (with --rw) create/rename/delete
 #   5. unmount, detach
 #
@@ -22,11 +22,11 @@ set -u
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 image="$root/tools/images/basic-4k.img"
-fstype=ntfsx
+fstype=ttntfs
 mountpoint=""
 rw=0
 keep=0
-bundle_id=org.ntfsmac.NTFS.Extension
+bundle_id=ch.techtag.ntfs.extension
 
 while [ $# -gt 0 ]; do
 	case "$1" in
@@ -61,7 +61,7 @@ step "1/5 extension registered and enabled?"
 # pluginkit -m -v: first column is the user election: '+' enabled, '-' disabled,
 # '!' invalid, ' ' no election yet (FSKit modules must be enabled by the user).
 if ! pk=$(pluginkit -m -i "$bundle_id" -v 2>/dev/null) || [ -z "$pk" ]; then
-	fail "$bundle_id is not registered. Build signed, copy NTFS.app to /Applications, launch it once."
+	fail "$bundle_id is not registered. Build signed, copy TT NTFS Native.app to /Applications, launch it once."
 fi
 echo "    $pk"
 appex=$(printf '%s\n' "$pk" | head -1 | awk -F'\t' '{print $NF}')
@@ -89,13 +89,13 @@ ok "attached as $dev (raw image, whole device holds the volume)"
 diskutil info "$dev" | grep -E 'Device Node|Media Name|Disk Size|Device Block Size' | sed 's/^/    /'
 
 step "3/5 mount -F -t $fstype $dev"
-[ -n "$mountpoint" ] || mountpoint=$(mktemp -d /tmp/ntfsx-mount.XXXXXX)
+[ -n "$mountpoint" ] || mountpoint=$(mktemp -d /tmp/ttntfs-mount.XXXXXX)
 opts=""
 [ $rw -eq 1 ] || opts="-o ro"
 echo "    sudo mount -F -t $fstype $opts $dev $mountpoint"
 if ! out=$(sudo mount -F -t "$fstype" $opts "$dev" "$mountpoint" 2>&1); then
 	echo "    $out"
-	echo "    hint: log stream --predicate 'subsystem == \"org.ntfsmac.NTFS\"' --level debug   (in another terminal)"
+	echo "    hint: log stream --predicate 'subsystem == \"ch.techtag.ntfs\"' --level debug   (in another terminal)"
 	fail "mount failed"
 fi
 mount | grep " on $mountpoint " | sed 's/^/    /'
@@ -122,8 +122,8 @@ if [ $rw -eq 1 ]; then
 else
 	echo "    (read-only run; pass --rw for the write test — it only touches the shadow file)"
 fi
-if [ -f "$HOME/Library/Group Containers/group.org.ntfsmac.NTFS/Library/Application Support/mount-status.json" ]; then
-	echo "    mount-status.json:"; sed 's/^/      /' "$HOME/Library/Group Containers/group.org.ntfsmac.NTFS/Library/Application Support/mount-status.json"
+if [ -f "$HOME/Library/Group Containers/group.ch.techtag.ntfs/Library/Application Support/mount-status.json" ]; then
+	echo "    mount-status.json:"; sed 's/^/      /' "$HOME/Library/Group Containers/group.ch.techtag.ntfs/Library/Application Support/mount-status.json"
 fi
 ok "exercised"
 

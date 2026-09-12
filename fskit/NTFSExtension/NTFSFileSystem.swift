@@ -130,27 +130,27 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         DispatchQueue.global().async {
             defer { progress.completedUnitCount = 1 }
             guard let volume else {
-                task.logMessage("ntfsx: no volume loaded")
+                task.logMessage("ttntfs: no volume loaded")
                 task.didComplete(error: fsError(ENOENT))
                 return
             }
             var info = ntfs_volume_info()
             let rc = ntfs_probe(volume.device, &info)
             if rc < 0 {
-                task.logMessage("ntfsx: not a valid NTFS volume (errno \(hostErrno(rc)))")
+                task.logMessage("ttntfs: not a valid NTFS volume (errno \(hostErrno(rc)))")
                 task.didComplete(error: posixError(rc, "check"))
                 return
             }
             let label = NTFSFileSystem.label(from: info)
-            task.logMessage("ntfsx: NTFS \(info.major_ver).\(info.minor_ver) '\(label)', cluster \(info.cluster_size), \(info.total_clusters) clusters")
+            task.logMessage("ttntfs: NTFS \(info.major_ver).\(info.minor_ver) '\(label)', cluster \(info.cluster_size), \(info.total_clusters) clusters")
             if info.hibernated {
-                task.logMessage("ntfsx: volume is hibernated (Windows Fast Startup); it will mount read-only")
+                task.logMessage("ttntfs: volume is hibernated (Windows Fast Startup); it will mount read-only")
             } else if info.dirty {
-                task.logMessage("ntfsx: volume is marked dirty; it will mount read-only until chkdsk runs in Windows")
+                task.logMessage("ttntfs: volume is marked dirty; it will mount read-only until chkdsk runs in Windows")
             } else if !info.logfile_clean {
-                task.logMessage("ntfsx: $LogFile is not clean; it will mount read-only (journal replay is not enabled yet)")
+                task.logMessage("ttntfs: $LogFile is not clean; it will mount read-only (journal replay is not enabled yet)")
             } else {
-                task.logMessage(quick ? "ntfsx: quick check: volume appears clean" : "ntfsx: volume appears clean")
+                task.logMessage(quick ? "ttntfs: quick check: volume appears clean" : "ttntfs: volume appears clean")
             }
             task.didComplete(error: nil)
         }
@@ -158,7 +158,7 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
     }
 
     func startFormat(task: FSTask, options: FSTaskOptions) throws -> Progress {
-        task.logMessage("ntfsx: formatting is not supported yet (use mkntfs from tools/)")
+        task.logMessage("ttntfs: formatting is not supported yet (use mkntfs from tools/)")
         throw fsError(ENOTSUP)
     }
 
@@ -167,7 +167,7 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
     /// Deterministic UUID from the 64-bit NTFS volume serial.
     static func uuid(fromSerial serial: UInt64) -> UUID {
         var bytes = [UInt8](repeating: 0, count: 16)
-        let ns: [UInt8] = Array("ntfsx".utf8)              // namespace tag
+        let ns: [UInt8] = Array("ttntfs".utf8)              // namespace tag
         for (i, b) in ns.enumerated() { bytes[i] = b }
         for i in 0..<8 { bytes[8 + i] = UInt8((serial >> (8 * UInt64(7 - i))) & 0xff) }
         bytes[6] = (bytes[6] & 0x0f) | 0x40  // version 4-ish, keeps it a valid UUID

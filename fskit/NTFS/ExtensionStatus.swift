@@ -11,7 +11,7 @@ final class ExtensionStatus: ObservableObject {
     enum State { case unknown, notInstalled, disabled, enabled }
     @Published private(set) var state: State = .unknown
 
-    static let extensionBundleID = "org.ntfsmac.NTFS.Extension"
+    static let extensionBundleID = "ch.techtag.ntfs.extension"
 
     func refresh() {
         Task {

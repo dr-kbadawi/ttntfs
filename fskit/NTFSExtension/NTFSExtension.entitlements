@@ -8,7 +8,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.org.ntfsmac.NTFS</string>
+		<string>group.ch.techtag.ntfs</string>
 	</array>
 </dict>
 </plist>
