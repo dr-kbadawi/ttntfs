@@ -37,6 +37,7 @@ targets:
     platform: macOS
     sources:
       - path: NTFS
+      - path: Shared
     dependencies:
       - target: NTFSExtension
         embed: true
@@ -67,6 +68,7 @@ targets:
     platform: macOS
     sources:
       - path: NTFSExtension
+      - path: Shared
       - path: Bridge
         excludes: ["ntfs_bdev_fskit.m"]
       # Compiled without clang modules: it includes ntfsport/bdev.h, whose kernel

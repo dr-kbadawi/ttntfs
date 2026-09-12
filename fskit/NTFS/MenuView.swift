@@ -11,13 +11,23 @@ struct MenuView: View {
         VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
-            if monitor.volumes.isEmpty {
+            if monitor.volumes.isEmpty && monitor.staleStatus.isEmpty {
                 Text("No NTFS volumes mounted")
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
             } else {
                 ForEach(monitor.volumes) { v in
                     VolumeRow(volume: v) { monitor.unmount(v) }
+                }
+                ForEach(monitor.staleStatus, id: \.bsdName) { s in
+                    HStack(alignment: .top) {
+                        Image(systemName: "externaldrive.badge.questionmark")
+                        VStack(alignment: .leading) {
+                            Text("\(s.label.isEmpty ? "NTFS" : s.label) (\(s.bsdName))").font(.body)
+                            Text(s.readOnly ? s.roReasonText : "Activated by the extension; not listed by the system yet.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             Divider()
@@ -30,7 +40,7 @@ struct MenuView: View {
             .foregroundStyle(.secondary)
         }
         .padding(12)
-        .frame(width: 320)
+        .frame(width: 340)
         .task { monitor.start(); status.refresh() }
     }
 
@@ -62,12 +72,19 @@ struct VolumeRow: View {
     let unmount: () -> Void
 
     var body: some View {
-        HStack {
-            Image(systemName: "externaldrive.fill")
-            VStack(alignment: .leading) {
+        HStack(alignment: .top) {
+            Image(systemName: volume.readOnly ? "externaldrive.badge.exclamationmark" : "externaldrive.fill")
+                .foregroundStyle(volume.readOnly ? .orange : .primary)
+            VStack(alignment: .leading, spacing: 2) {
                 Text(volume.name).font(.body)
                 Text("\(volume.device) · \(volume.readOnly ? "read-only" : "read/write")")
                     .font(.caption).foregroundStyle(.secondary)
+                if volume.readOnly && !volume.reason.isEmpty {
+                    Text(volume.reason)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             Button("Eject") { unmount() }.controlSize(.small)

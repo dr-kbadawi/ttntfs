@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		121312321DF34FF9FD4A2614 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
 		3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */; };
 		70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D88AB6F444249E71E139018 /* VolumeMonitor.swift */; };
 		747947B10E65D12D8E36C4F3 /* NTFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -17,6 +18,7 @@
 		ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */; };
 		B918A3CCC2D1D2E71DA50A82 /* MenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88488AA353AAC885FE74E9F9 /* MenuView.swift */; };
 		B971CE42F874331618BF0199 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F30CB423189222B7D3898A /* SharedSettings.swift */; };
+		BF98677B5A8DB1AA94BE67F8 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
 		C2A57306E42C69D67937E131 /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3315E373241BC5A5359B9759 /* Errors.swift */; };
 		D16A3E6461DFA2F3C812AC47 /* NTFSVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = B389C0EB1D9C689FA426953F /* NTFSVolume.swift */; };
 		D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */; };
@@ -57,6 +59,7 @@
 		3315E373241BC5A5359B9759 /* Errors.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Errors.swift; sourceTree = "<group>"; };
 		3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = ntfs_bdev_fskit.m; sourceTree = "<group>"; };
 		444E775DBFFDA6F5791982DE /* ntfs_bdev_fskit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ntfs_bdev_fskit.h; sourceTree = "<group>"; };
+		49CC0869C89E4C38774395AC /* MountStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountStatus.swift; sourceTree = "<group>"; };
 		67642D3967176F0F3848BF48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7A89785ABD0C6A5D4BE75297 /* Options.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Options.swift; sourceTree = "<group>"; };
 		7D80DAAE4977838464ED6255 /* NTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSApp.swift; sourceTree = "<group>"; };
@@ -105,6 +108,14 @@
 			path = NTFS;
 			sourceTree = "<group>";
 		};
+		33EDF5C75C363D794D8D58F2 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				49CC0869C89E4C38774395AC /* MountStatus.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
 		419394BB8E246BC1C476C7A1 /* Bridge */ = {
 			isa = PBXGroup;
 			children = (
@@ -138,6 +149,7 @@
 				475B00E6072BC0CE74677AF4 /* Config */,
 				041363860B3DB1C67B5D663E /* NTFS */,
 				02D659AB1C3A0C8F08BE9A5F /* NTFSExtension */,
+				33EDF5C75C363D794D8D58F2 /* Shared */,
 				64E5222DC489967AF36A743D /* Stub */,
 				BD6F6AE27F063FC8CF12AC15 /* Products */,
 			);
@@ -237,6 +249,7 @@
 			files = (
 				ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */,
 				B918A3CCC2D1D2E71DA50A82 /* MenuView.swift in Sources */,
+				121312321DF34FF9FD4A2614 /* MountStatus.swift in Sources */,
 				A03A39F6CA160CE1691A5427 /* NTFSApp.swift in Sources */,
 				F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */,
 				B971CE42F874331618BF0199 /* SharedSettings.swift in Sources */,
@@ -249,6 +262,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C2A57306E42C69D67937E131 /* Errors.swift in Sources */,
+				BF98677B5A8DB1AA94BE67F8 /* MountStatus.swift in Sources */,
 				8A10B01A7F509E33D0A02754 /* NTFSExtension.swift in Sources */,
 				D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */,
 				3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */,
