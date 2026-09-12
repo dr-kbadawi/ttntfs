@@ -2,10 +2,14 @@
 /*
  * ntfsport/bdev.h over a regular file or a /dev node (bdev_file.c).
  *
- *  - pread/pwrite loop until the whole request is done; raw devices get a
- *    bounce buffer when the request is not a multiple of the logical block
- *    size (macOS raw disks reject unaligned I/O).
- *  - flush is fcntl(F_FULLFSYNC) (falls back to fsync).
+ *  - pread/pwrite loop until the whole request is done (EINTR retried,
+ *    at most IO_CHUNK bytes per call); raw devices get a bounce buffer
+ *    when the request is not a multiple of the logical block size (macOS
+ *    raw disks reject unaligned I/O). Sub-block writes are a
+ *    read-modify-write of the covering blocks, serialised per device so
+ *    two of them on the same block cannot lose each other's bytes.
+ *  - flush is fcntl(F_FULLFSYNC); fsync only when the fd does not support
+ *    it (an I/O error from F_FULLFSYNC is reported, not masked).
  *  - discard is F_PUNCHHOLE on regular files and DKIOCUNMAP on devices.
  *  - size/geometry via fstat, or DKIOCGETBLOCKSIZE/DKIOCGETBLOCKCOUNT/
  *    DKIOCGETPHYSICALBLOCKSIZE for devices.
@@ -21,6 +25,7 @@
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <sys/disk.h>
+#include <pthread.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
 #include <linux/pagemap.h>
@@ -30,7 +35,11 @@ struct bdev_file {
 	int fd;
 	bool owns_fd;
 	bool is_device;
+	pthread_mutex_t rmw_lock;	/* unaligned read-modify-write */
 };
+
+/* Largest single pread/pwrite: the syscalls reject counts > INT_MAX. */
+#define IO_CHUNK	(1UL << 30)
 
 static inline struct bdev_file *bf(struct ntfs_bdev *dev) { return dev->priv; }
 
@@ -42,7 +51,8 @@ static ssize_t do_pread(int fd, void *buf, size_t count, u64 offset)
 	size_t done = 0;
 
 	while (done < count) {
-		ssize_t n = pread(fd, (char *)buf + done, count - done, (off_t)(offset + done));
+		ssize_t n = pread(fd, (char *)buf + done, min(count - done, IO_CHUNK),
+				  (off_t)(offset + done));
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
@@ -60,7 +70,8 @@ static ssize_t do_pwrite(int fd, const void *buf, size_t count, u64 offset)
 	size_t done = 0;
 
 	while (done < count) {
-		ssize_t n = pwrite(fd, (const char *)buf + done, count - done, (off_t)(offset + done));
+		ssize_t n = pwrite(fd, (const char *)buf + done, min(count - done, IO_CHUNK),
+				   (off_t)(offset + done));
 		if (n < 0) {
 			if (errno == EINTR)
 				continue;
@@ -118,6 +129,7 @@ static ssize_t file_pwrite(struct ntfs_bdev *dev, const void *buf, size_t count,
 
 	if (posix_memalign(&tmp, bs, len) != 0)
 		return -ENOMEM;
+	pthread_mutex_lock(&bf(dev)->rmw_lock);
 	n = do_pread(bf(dev)->fd, tmp, len, start);
 	if (n >= 0) {
 		memcpy((char *)tmp + (offset - start), buf, count);
@@ -125,6 +137,7 @@ static ssize_t file_pwrite(struct ntfs_bdev *dev, const void *buf, size_t count,
 		if (n >= 0)
 			n = (ssize_t)count;
 	}
+	pthread_mutex_unlock(&bf(dev)->rmw_lock);
 	free(tmp);
 	return n;
 }
@@ -133,6 +146,10 @@ static int file_flush(struct ntfs_bdev *dev)
 {
 	if (fcntl(bf(dev)->fd, F_FULLFSYNC) == 0)
 		return 0;
+	/* Only fall back when the file system does not implement it; an
+	 * I/O error means the device may not have the data. */
+	if (errno != ENOTSUP && errno != ENOTTY && errno != EINVAL && errno != EOPNOTSUPP)
+		return -errno;
 	if (fsync(bf(dev)->fd) == 0)
 		return 0;
 	return errno == EINVAL || errno == ENOTSUP ? 0 : -errno;	/* not a syncable fd */
@@ -167,6 +184,7 @@ static void file_close(struct ntfs_bdev *dev)
 	if (f) {
 		if (f->owns_fd && f->fd >= 0)
 			close(f->fd);
+		pthread_mutex_destroy(&f->rmw_lock);
 		free(f);
 	}
 	free(dev);
@@ -249,6 +267,7 @@ static struct ntfs_bdev *open_common(int fd, bool owns_fd, bool read_only, const
 	}
 	f->fd = fd;
 	f->owns_fd = owns_fd;
+	pthread_mutex_init(&f->rmw_lock, NULL);
 	dev->ops = &file_ops;
 	dev->priv = f;
 	dev->read_only = read_only;
@@ -264,6 +283,13 @@ static struct ntfs_bdev *open_common(int fd, bool owns_fd, bool read_only, const
 			bs = 512;
 		if (ioctl(fd, DKIOCGETBLOCKCOUNT, &count) != 0)
 			count = 0;
+		if (!count) {
+			/* Not a disk driver node (or the ioctl is refused):
+			 * the end of the device is the next best answer. */
+			off_t end = lseek(fd, 0, SEEK_END);
+			if (end > 0)
+				count = (uint64_t)end / bs;
+		}
 		if (ioctl(fd, DKIOCGETPHYSICALBLOCKSIZE, &pbs) != 0 || !pbs)
 			pbs = bs;
 		dev->logical_block_size = bs;
@@ -311,6 +337,16 @@ struct ntfs_bdev *ntfs_bdev_open_path(const char *path, bool read_only)
 struct ntfs_bdev *ntfs_bdev_open_fd(int fd, bool read_only, const char *name)
 {
 	return open_common(fd, false, read_only, name);
+}
+
+void ntfs_bdev_file_set_alignment(struct ntfs_bdev *dev, u32 block_size)
+{
+	if (!dev || dev->ops != &file_ops || !block_size)
+		return;
+	bf(dev)->is_device = true;
+	dev->logical_block_size = block_size;
+	if (dev->physical_block_size < block_size)
+		dev->physical_block_size = block_size;
 }
 
 /* ------------------------------------------------------------------ */

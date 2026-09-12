@@ -22,6 +22,11 @@ static pthread_mutex_t fake_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic64_t fake_reads = ATOMIC64_INIT(0), fake_writes = ATOMIC64_INIT(0);
 static int fake_fail_writes;	/* when set, write_folio returns -EIO */
 static int fake_write_delay_us;	/* slow writes to widen races */
+static int fake_redirty_left;	/* while > 0, write_folio re-dirties instead of writing */
+/* Hosts of the mappings written, in order (first FAKE_ORDER_MAX only). */
+#define FAKE_ORDER_MAX 64
+static struct inode *fake_write_order[FAKE_ORDER_MAX];
+static int fake_write_order_n;
 
 static unsigned char *fake_addr(struct address_space *m, pgoff_t index)
 {
@@ -48,8 +53,17 @@ static int fake_write_folio(struct address_space *m, struct folio *f)
 		return -EIO;
 	if (fake_write_delay_us)
 		usleep(fake_write_delay_us);
-	atomic64_inc(&fake_writes);
 	pthread_mutex_lock(&fake_lock);
+	if (fake_redirty_left > 0) {
+		/* Like ntfs_write_folio_resident() when mrec_lock is busy. */
+		fake_redirty_left--;
+		pthread_mutex_unlock(&fake_lock);
+		folio_redirty_for_writepage(NULL, f);
+		return 0;
+	}
+	atomic64_inc(&fake_writes);
+	if (fake_write_order_n < FAKE_ORDER_MAX)
+		fake_write_order[fake_write_order_n++] = m->host;
 	memcpy(fake_addr(m, f->index), f->data, PAGE_SIZE);
 	pthread_mutex_unlock(&fake_lock);
 	return 0;

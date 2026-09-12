@@ -22,12 +22,23 @@
  *   The hash table holds one reference on every inserted folio. Lookups
  *   hand out +1. folio_put() frees at zero, which can only happen after the
  *   folio was removed from the table (truncate/invalidate/reclaim/destroy).
+ *
+ * Write-back state machine (platform review)
+ *   A folio goes dirty -> (writeback && !dirty) -> clean under its lock.
+ *   PG_writeback is set *before* PG_dirty is cleared so a concurrent
+ *   filemap_write_and_wait_range(), which collects dirty folios and then
+ *   waits for PG_writeback, can never observe the folio as neither: it
+ *   either locks it (and finds it clean, written by us) or waits for it.
+ *   A backend that re-dirties the folio (folio_redirty_for_writepage, used
+ *   when a trylock fails) makes synchronous flushes retry a bounded number
+ *   of times; the background writer simply picks it up next tick.
  */
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
 #include <errno.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <linux/kernel.h>
 #include <linux/list.h>
@@ -50,9 +61,30 @@ struct pc_index {
 static pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
 static LIST_HEAD(g_registry);
 
-/* Waiters for folio state transitions (writeback end, busy==0). */
+/* Waiters for folio state transitions (unlock, writeback end, busy==0).
+ * state_waiters is bumped under state_lock before the condition is checked
+ * and read (seq_cst) by the signaller after it changed the state, so the
+ * broadcast can be skipped when nobody waits without losing a wake-up. */
 static pthread_mutex_t state_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t state_cond = PTHREAD_COND_INITIALIZER;
+static int state_waiters;
+
+static inline void state_changed(void)
+{
+	if (__atomic_load_n(&state_waiters, __ATOMIC_SEQ_CST)) {
+		pthread_mutex_lock(&state_lock);
+		pthread_cond_broadcast(&state_cond);
+		pthread_mutex_unlock(&state_lock);
+	}
+}
+/* Block (state_lock held) until @cond; the caller loops on it. */
+#define state_wait_while(cond) do { \
+	pthread_mutex_lock(&state_lock); \
+	__atomic_add_fetch(&state_waiters, 1, __ATOMIC_SEQ_CST); \
+	while (cond) \
+		pthread_cond_wait(&state_cond, &state_lock); \
+	__atomic_sub_fetch(&state_waiters, 1, __ATOMIC_SEQ_CST); \
+	pthread_mutex_unlock(&state_lock); } while (0)
 
 static atomic64_t g_nr_folios = ATOMIC64_INIT(0);
 
@@ -184,8 +216,39 @@ void folio_get(struct folio *folio)
 
 void folio_put(struct folio *folio)
 {
-	if (atomic_dec_and_test(&folio->_refcount))
+	if (atomic_dec_and_test(&folio->_refcount)) {
+		/* The table's reference is dropped only after removal, so a
+		 * still-mapped folio reaching zero means a caller over-put. */
+		WARN_ON(folio->mapping != NULL);
 		folio_free(folio);
+	}
+}
+
+struct folio *folio_alloc_standalone(gfp_t gfp)
+{
+	struct folio *f = folio_alloc_new(NULL, 0);
+
+	if (f && (gfp & __GFP_ZERO))
+		memset(f->data, 0, PAGE_SIZE);
+	return f;
+}
+
+static unsigned long g_max_folios = NTFS_PAGECACHE_MAX_FOLIOS;
+
+long pagecache_nr_folios(void)
+{
+	return (long)atomic64_read(&g_nr_folios);
+}
+
+void pagecache_set_max_folios(unsigned long max)
+{
+	__atomic_store_n(&g_max_folios, max ? max : NTFS_PAGECACHE_MAX_FOLIOS, __ATOMIC_SEQ_CST);
+}
+
+static inline long folios_over_cap(void)
+{
+	return (long)atomic64_read(&g_nr_folios) -
+	       (long)__atomic_load_n(&g_max_folios, __ATOMIC_SEQ_CST);
 }
 
 /* ------------------------------------------------------------------ */
@@ -203,16 +266,11 @@ void folio_unlock(struct folio *folio)
 {
 	clear_bit(PG_locked, &folio->flags);
 	mutex_unlock(&folio->lock);
-	pthread_mutex_lock(&state_lock);
-	pthread_cond_broadcast(&state_cond);
-	pthread_mutex_unlock(&state_lock);
+	state_changed();
 }
 void folio_wait_locked(struct folio *folio)
 {
-	pthread_mutex_lock(&state_lock);
-	while (folio_test_locked(folio))
-		pthread_cond_wait(&state_cond, &state_lock);
-	pthread_mutex_unlock(&state_lock);
+	state_wait_while(folio_test_locked(folio));
 }
 
 /* ------------------------------------------------------------------ */
@@ -284,16 +342,11 @@ void folio_start_writeback(struct folio *folio) { set_bit(PG_writeback, &folio->
 void folio_end_writeback(struct folio *folio)
 {
 	clear_bit(PG_writeback, &folio->flags);
-	pthread_mutex_lock(&state_lock);
-	pthread_cond_broadcast(&state_cond);
-	pthread_mutex_unlock(&state_lock);
+	state_changed();
 }
 void folio_wait_writeback(struct folio *folio)
 {
-	pthread_mutex_lock(&state_lock);
-	while (folio_test_writeback(folio))
-		pthread_cond_wait(&state_cond, &state_lock);
-	pthread_mutex_unlock(&state_lock);
+	state_wait_while(folio_test_writeback(folio));
 }
 void folio_redirty_for_writepage(void *wbc, struct folio *folio)
 {
@@ -368,7 +421,7 @@ static void __reclaim_from(struct address_space *m, long want)
 
 static void maybe_reclaim(struct address_space *m)
 {
-	long over = (long)atomic64_read(&g_nr_folios) - (long)NTFS_PAGECACHE_MAX_FOLIOS;
+	long over = folios_over_cap();
 	if (over > 0)
 		__reclaim_from(m, over);
 }
@@ -394,7 +447,9 @@ repeat:
 			list_move(&f->lru, &mapping->lru);
 		spin_unlock(&mapping->tree_lock);
 		if (nf) {
+			/* Lost the race to insert; nf was never in the table. */
 			mutex_unlock(&nf->lock);
+			nf->mapping = NULL;
 			folio_put(nf);
 			nf = NULL;
 		}
@@ -467,6 +522,23 @@ struct folio *read_mapping_folio(struct address_space *mapping, pgoff_t index,
 	int err;
 
 	(void)file;
+	/*
+	 * Kernel semantics (read_cache_folio): an uptodate folio is returned
+	 * without taking its lock. The core relies on this - mft.c allocates
+	 * an extent record with the $MFT folio locked and then maps that same
+	 * folio through map_mft_record(); locking it here would deadlock.
+	 * (vfs stream fix, adopted by the platform review.) This is safe
+	 * against invalidate_mapping_pages()/reclaim because those decide
+	 * "unreferenced" under tree_lock, where this lookup took its
+	 * reference. truncate/invalidate2 drop referenced folios by design;
+	 * their callers hold the locks that exclude readers.
+	 */
+	f = __filemap_get_folio(mapping, index, FGP_ACCESSED, 0);
+	if (!IS_ERR(f)) {
+		if (folio_test_uptodate(f))
+			return f;
+		folio_put(f);
+	}
 	f = __filemap_get_folio(mapping, index, FGP_LOCK | FGP_CREAT | FGP_ACCESSED, 0);
 	if (IS_ERR(f))
 		return f;
@@ -500,16 +572,25 @@ struct folio *read_mapping_folio(struct address_space *mapping, pgoff_t index,
 /* ------------------------------------------------------------------ */
 /* Write-back                                                          */
 
-/* Write one folio. Caller holds the folio lock and a reference. */
+/*
+ * Write one folio. Caller holds the folio lock and a reference. Returns a
+ * negative errno, 0, or 1 when the backend re-dirtied the folio instead of
+ * writing it (the caller may retry).
+ *
+ * PG_writeback goes up before PG_dirty comes down (see the header comment):
+ * a syncing thread that finds the folio clean will find it under writeback
+ * and wait, instead of returning while the data is still in flight.
+ */
 static int writeback_one(struct address_space *m, struct folio *f)
 {
 	int err;
 
-	if (!folio_clear_dirty_for_io(f))
-		return 0;
-	if (f->mapping != m)		/* truncated under us */
-		return 0;
 	folio_start_writeback(f);
+	if (!folio_clear_dirty_for_io(f) || f->mapping != m) {
+		/* Clean already, or truncated under us. */
+		folio_end_writeback(f);
+		return 0;
+	}
 	err = m->a_ops && m->a_ops->write_folio ? m->a_ops->write_folio(m, f) : -EIO;
 	if (err) {
 		folio_set_error(f);
@@ -519,6 +600,8 @@ static int writeback_one(struct address_space *m, struct folio *f)
 		spin_unlock(&m->tree_lock);
 	}
 	folio_end_writeback(f);
+	if (!err && folio_test_dirty(f))
+		return 1;		/* redirtied by the backend */
 	return err;
 }
 
@@ -562,8 +645,10 @@ static struct folio **collect_dirty(struct address_space *m, pgoff_t first,
 	return arr;
 }
 
+/* Write the dirty folios in range once. *redirtied (may be NULL) counts
+ * the folios the backend handed back dirty. */
 static int write_range(struct address_space *m, pgoff_t first, pgoff_t last,
-		       u64 older_than_ns)
+		       u64 older_than_ns, int *redirtied)
 {
 	size_t n, i;
 	struct folio **arr = collect_dirty(m, first, last, older_than_ns, &n);
@@ -574,11 +659,37 @@ static int write_range(struct address_space *m, pgoff_t first, pgoff_t last,
 		e = writeback_one(m, arr[i]);
 		folio_unlock(arr[i]);
 		folio_put(arr[i]);
-		if (e && !err)
+		if (e > 0) {
+			if (redirtied)
+				(*redirtied)++;
+		} else if (e && !err) {
 			err = e;
+		}
 	}
 	free(arr);
 	return err;
+}
+
+/* Synchronous flush: retry re-dirtied folios a bounded number of times
+ * (the backend's trylock target is normally released within microseconds).
+ * If the caller itself holds that lock the retries just cost
+ * WB_REDIRTY_RETRIES * WB_REDIRTY_BACKOFF_US and the folio stays dirty for
+ * the background writer, exactly as in the kernel. */
+#define WB_REDIRTY_RETRIES	16
+#define WB_REDIRTY_BACKOFF_US	1000
+
+static int write_range_sync(struct address_space *m, pgoff_t first, pgoff_t last)
+{
+	int attempt, err;
+
+	for (attempt = 0; ; attempt++) {
+		int redirtied = 0;
+
+		err = write_range(m, first, last, 0, &redirtied);
+		if (err || !redirtied || attempt >= WB_REDIRTY_RETRIES)
+			return err;
+		usleep(WB_REDIRTY_BACKOFF_US);
+	}
 }
 
 /* Wait for in-flight write-back of folios in range (caller holds nothing). */
@@ -628,8 +739,8 @@ int filemap_fdatawrite_range(struct address_space *mapping, loff_t start, loff_t
 {
 	if (!idx_of(mapping))
 		return 0;
-	return write_range(mapping, byte_to_index(start),
-			   end < 0 ? (pgoff_t)-1 : byte_to_index(end), 0);
+	return write_range_sync(mapping, byte_to_index(start),
+				end < 0 ? (pgoff_t)-1 : byte_to_index(end));
 }
 
 int filemap_fdatawait_range(struct address_space *mapping, loff_t start, loff_t end)
@@ -665,14 +776,21 @@ int filemap_flush(struct address_space *mapping)
 
 /*
  * Remove @f from the table. Caller holds the folio lock and a reference and
- * the tree_lock is NOT held. Drops the table's reference.
+ * the tree_lock is NOT held. Drops the table's reference. With @only_unused
+ * the removal happens only if nobody but the table and the caller holds a
+ * reference and the folio is clean and not under write-back; that check is
+ * made under tree_lock, where lookups take their references, so it is
+ * atomic with them (the kernel's folio_ref_freeze() under the xarray lock).
+ * Returns true if the folio was removed.
  */
-static void __remove_locked(struct address_space *m, struct folio *f)
+static bool __remove_locked_cond(struct address_space *m, struct folio *f, bool only_unused)
 {
 	spin_lock(&m->tree_lock);
-	if (f->mapping != m) {
+	if (f->mapping != m ||
+	    (only_unused && (atomic_read(&f->_refcount) != 2 || folio_test_dirty(f) ||
+			     folio_test_writeback(f)))) {
 		spin_unlock(&m->tree_lock);
-		return;
+		return false;
 	}
 	__folio_clear_dirty(m, f);
 	idx_remove(idx_of(m), f);
@@ -681,6 +799,12 @@ static void __remove_locked(struct address_space *m, struct folio *f)
 	f->mapping = NULL;
 	spin_unlock(&m->tree_lock);
 	folio_put(f);
+	return true;
+}
+
+static void __remove_locked(struct address_space *m, struct folio *f)
+{
+	__remove_locked_cond(m, f, false);
 }
 
 /* Snapshot of every folio in [first, last], each referenced. */
@@ -740,22 +864,20 @@ static long drop_range(struct address_space *m, pgoff_t first, pgoff_t last, int
 				folio_put(f);
 				continue;
 			}
-			/* Our ref + table ref == 2 means nobody else. */
-			if (atomic_read(&f->_refcount) != 2 || folio_test_dirty(f) ||
-			    folio_test_writeback(f)) {
-				folio_unlock(f);
-				folio_put(f);
-				continue;
-			}
+			/* Our ref + table ref == 2 means nobody else; decided
+			 * under tree_lock so a concurrent lookup cannot hand
+			 * out a folio we are dropping. */
+			if (__remove_locked_cond(m, f, true))
+				dropped++;
 		} else {
 			folio_lock(f);
 			folio_wait_writeback(f);
 			if (mode == 2 && atomic_read(&f->_refcount) != 2 && !err)
 				err = -EBUSY;
-		}
-		if (f->mapping == m) {
-			__remove_locked(m, f);
-			dropped++;
+			if (f->mapping == m) {
+				__remove_locked(m, f);
+				dropped++;
+			}
 		}
 		folio_unlock(f);
 		folio_put(f);
@@ -820,27 +942,30 @@ int invalidate_inode_pages2_range(struct address_space *mapping, pgoff_t start, 
 /* Writer thread                                                       */
 
 static void mapping_busy_inc(struct pc_index *ix) { ix->busy++; }	/* registry_lock held */
-static void mapping_busy_dec(struct pc_index *ix)
+static void mapping_busy_dec(struct pc_index *ix)	/* registry_lock held */
 {
+	/* busy is read by address_space_destroy() under state_lock. */
 	pthread_mutex_lock(&state_lock);
 	ix->busy--;
-	pthread_cond_broadcast(&state_cond);
 	pthread_mutex_unlock(&state_lock);
+	state_changed();
 }
 
 /*
  * Run @fn(mapping) for every registered mapping (optionally only those of
- * @sb) without holding registry_lock across the call.
+ * @sb) without holding registry_lock across the call, in registration
+ * order or, with @reverse, newest first.
  */
-static int for_each_mapping(struct super_block *sb, int (*fn)(struct address_space *, void *),
-			    void *arg)
+static int for_each_mapping(struct super_block *sb, bool reverse,
+			    int (*fn)(struct address_space *, void *), void *arg)
 {
 	struct pc_index cursor = { .mapping = NULL };	/* skipped by others */
 	struct list_head *pos;
 	int err = 0;
 
 	pthread_mutex_lock(&registry_lock);
-	for (pos = g_registry.next; pos != &g_registry; pos = pos->next) {
+	for (pos = reverse ? g_registry.prev : g_registry.next; pos != &g_registry;
+	     pos = reverse ? pos->prev : pos->next) {
 		struct pc_index *ix = list_entry(pos, struct pc_index, registry);
 		struct address_space *m = ix->mapping;
 		int e;
@@ -848,9 +973,13 @@ static int for_each_mapping(struct super_block *sb, int (*fn)(struct address_spa
 			continue;	/* another iterator's cursor */
 		if (sb && (!m->host || m->host->i_sb != sb))
 			continue;
-		/* Park a cursor after ix so a concurrent destroy of ix cannot
-		 * strand us; busy>0 keeps ix's memory alive meanwhile. */
-		list_add(&cursor.registry, pos);
+		/* Park a cursor next to ix (on the side we came from) so a
+		 * concurrent destroy of ix cannot strand us; busy>0 keeps
+		 * ix's memory alive meanwhile. */
+		if (reverse)
+			list_add_tail(&cursor.registry, pos);	/* before ix */
+		else
+			list_add(&cursor.registry, pos);	/* after ix */
 		mapping_busy_inc(ix);
 		pthread_mutex_unlock(&registry_lock);
 		e = fn(m, arg);
@@ -858,7 +987,8 @@ static int for_each_mapping(struct super_block *sb, int (*fn)(struct address_spa
 			err = e;
 		pthread_mutex_lock(&registry_lock);
 		mapping_busy_dec(ix);
-		pos = cursor.registry.prev;	/* loop advances to cursor.next */
+		/* Resume from the cursor: the loop step moves past it. */
+		pos = reverse ? cursor.registry.next : cursor.registry.prev;
 		list_del(&cursor.registry);
 	}
 	pthread_mutex_unlock(&registry_lock);
@@ -868,11 +998,11 @@ static int for_each_mapping(struct super_block *sb, int (*fn)(struct address_spa
 static int writer_pass_fn(struct address_space *m, void *arg)
 {
 	u64 cutoff = *(u64 *)arg;
-	int err = write_range(m, 0, (pgoff_t)-1, cutoff);
+	int err = write_range(m, 0, (pgoff_t)-1, cutoff, NULL);
 	long over;
 
 	/* Global reclaim when over the cap. */
-	over = (long)atomic64_read(&g_nr_folios) - (long)NTFS_PAGECACHE_MAX_FOLIOS;
+	over = folios_over_cap();
 	if (over > 0) {
 		spin_lock(&m->tree_lock);
 		__reclaim_from(m, over);
@@ -881,9 +1011,32 @@ static int writer_pass_fn(struct address_space *m, void *arg)
 	return err;
 }
 
+/*
+ * pagecache_sync_sb ordering. NTFS has no ordering guarantee from the
+ * kernel either, but for crash consistency the MFT records that reference
+ * clusters, index blocks and MFT-record slots should hit the device after
+ * the structures they point at: a bitmap written without its MFT record
+ * leaks space (chkdsk reclaims it), an MFT record written without its
+ * bitmap bit lets the next allocation reuse live clusters/records. So the
+ * mappings of inode 0 ($MFT/$DATA and its attribute inodes, e.g.
+ * $MFT/$BITMAP, which the driver gives i_ino 0 as well) go in a second pass,
+ * newest first, which puts $MFT/$BITMAP (created after $MFT/$DATA) before
+ * the MFT data itself. Note that mft.c writes MFT records synchronously
+ * through bios in write_inode; this ordering covers the folios flushed by
+ * the cache (bitmaps, index allocations, resident-attribute views, and MFT
+ * folios dirtied in place).
+ */
+static bool mapping_syncs_last(const struct address_space *m)
+{
+	return m->host && m->host->i_ino == 0;
+}
+
 static int sync_fn(struct address_space *m, void *arg)
 {
-	(void)arg;
+	bool last_pass = *(bool *)arg;
+
+	if (mapping_syncs_last(m) != last_pass)
+		return 0;
 	return filemap_write_and_wait(m);
 }
 
@@ -903,7 +1056,7 @@ static void *writer_main(void *arg)
 			break;
 		pthread_mutex_unlock(&writer_lock);
 		cutoff = now_ns() - (u64)NTFS_WRITEBACK_INTERVAL_MS * NSEC_PER_MSEC;
-		for_each_mapping(NULL, writer_pass_fn, &cutoff);
+		for_each_mapping(NULL, false, writer_pass_fn, &cutoff);
 		pthread_mutex_lock(&writer_lock);
 	}
 	writer_state = 0;
@@ -944,7 +1097,12 @@ void pagecache_writeback_stop(void)
 
 int pagecache_sync_sb(struct super_block *sb)
 {
-	return for_each_mapping(sb, sync_fn, NULL);
+	bool first = false, last = true;
+	int err, e;
+
+	err = for_each_mapping(sb, false, sync_fn, &first);
+	e = for_each_mapping(sb, true, sync_fn, &last);
+	return err ? err : e;
 }
 
 /* ------------------------------------------------------------------ */
@@ -991,10 +1149,7 @@ void address_space_destroy(struct address_space *mapping, bool discard)
 	pthread_mutex_lock(&registry_lock);
 	list_del_init(&ix->registry);
 	pthread_mutex_unlock(&registry_lock);
-	pthread_mutex_lock(&state_lock);
-	while (ix->busy)
-		pthread_cond_wait(&state_cond, &state_lock);
-	pthread_mutex_unlock(&state_lock);
+	state_wait_while(ix->busy);
 
 	if (!discard)
 		filemap_write_and_wait(mapping);

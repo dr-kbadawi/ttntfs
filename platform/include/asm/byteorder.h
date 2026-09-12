@@ -38,9 +38,13 @@
 #define be32_to_cpu(x) __builtin_bswap32((u32)(x))
 #define be64_to_cpu(x) __builtin_bswap64((u64)(x))
 
-static inline u16 le16_to_cpup(const __le16 *p) { u16 v; __builtin_memcpy(&v, p, 2); return v; }
-static inline u32 le32_to_cpup(const __le32 *p) { u32 v; __builtin_memcpy(&v, p, 4); return v; }
-static inline u64 le64_to_cpup(const __le64 *p) { u64 v; __builtin_memcpy(&v, p, 8); return v; }
+/* Pointer variants take void * (additive-compatible): the core hands them
+ * addresses inside packed on-disk structures (LZNT1 headers, index entries)
+ * that UBSan would otherwise flag as misaligned typed pointers. The memcpy
+ * makes the access alignment-agnostic. */
+static inline u16 le16_to_cpup(const void *p) { u16 v; __builtin_memcpy(&v, p, 2); return v; }
+static inline u32 le32_to_cpup(const void *p) { u32 v; __builtin_memcpy(&v, p, 4); return v; }
+static inline u64 le64_to_cpup(const void *p) { u64 v; __builtin_memcpy(&v, p, 8); return v; }
 static inline void le16_add_cpu(__le16 *var, u16 val) { *var = cpu_to_le16(le16_to_cpu(*var) + val); }
 static inline void le32_add_cpu(__le32 *var, u32 val) { *var = cpu_to_le32(le32_to_cpu(*var) + val); }
 static inline void le64_add_cpu(__le64 *var, u64 val) { *var = cpu_to_le64(le64_to_cpu(*var) + val); }

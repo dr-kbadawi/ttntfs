@@ -3,10 +3,11 @@
  * Memory for the user-space port: kmalloc family, page allocation,
  * kmem_cache with constructors, and vmap (linux/slab.h, linux/pagemap.h).
  *
- * Pages returned by alloc_page() are standalone folios laid out exactly
- * like the page cache's own (PAGE_SIZE-aligned data, initialised lock,
- * refcount 1) so put_page()/folio_put() from platform/pagecache can free
- * them, as compress.c does.
+ * Pages returned by alloc_page() are standalone folios allocated by the
+ * page cache itself (folio_alloc_standalone: PAGE_SIZE-aligned data,
+ * initialised lock, refcount 1, counted in its live-folio total) so
+ * put_page()/folio_put() from platform/pagecache free them, as compress.c
+ * does.
  *
  * vmap() cannot alias memory in user space (a folio is 4 KiB, the host page
  * 16 KiB), so it returns a contiguous copy. vunmap() of a writable mapping
@@ -121,20 +122,9 @@ void free_page(unsigned long addr)
 
 struct page *alloc_page(gfp_t gfp)
 {
-	struct folio *f = calloc(1, sizeof(*f));
-
-	if (!f)
-		return NULL;
-	f->data = page_aligned_alloc(PAGE_SIZE, gfp);
-	if (!f->data) {
-		free(f);
-		return NULL;
-	}
-	atomic_set(&f->_refcount, 1);
-	mutex_init(&f->lock);
-	INIT_LIST_HEAD(&f->lru);
-	INIT_LIST_HEAD(&f->dirty_list);
-	return (struct page *)f;
+	/* Allocated by the page cache so its live-folio accounting (which
+	 * folio_put() decrements on free) stays balanced. */
+	return (struct page *)folio_alloc_standalone(gfp);
 }
 
 void __free_page(struct page *page)

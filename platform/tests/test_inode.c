@@ -20,11 +20,23 @@ static int failures;
 struct test_inode {
 	unsigned long key;
 	int payload;
+	int evicts;
+	int freed;
+	struct test_inode *quarantine_next;
 	struct inode vfs_inode;
 };
 #define TI(i) container_of(i, struct test_inode, vfs_inode)
 
 static int n_alloc, n_free, n_evict, n_write;
+/* When set, freed inodes are kept (and released at the end of the test) so
+ * a racing thread that still holds a pointer touches valid memory. */
+static int quarantine_on;
+static struct test_inode *quarantine_list;
+static pthread_mutex_t quarantine_lock = PTHREAD_MUTEX_INITIALIZER;
+/* i_ino of the inodes handed to write_inode, in order. */
+#define WRITE_ORDER_MAX 16
+static struct inode *write_order[WRITE_ORDER_MAX];
+static int write_order_n;
 
 static struct inode *t_alloc_inode(struct super_block *sb)
 {
@@ -34,6 +46,9 @@ static struct inode *t_alloc_inode(struct super_block *sb)
 		return NULL;
 	ti->key = 0;
 	ti->payload = 0;
+	ti->evicts = 0;
+	ti->freed = 0;
+	ti->quarantine_next = NULL;
 	inode_init_once(&ti->vfs_inode);
 	n_alloc++;
 	return &ti->vfs_inode;
@@ -41,22 +56,50 @@ static struct inode *t_alloc_inode(struct super_block *sb)
 
 static void t_free_inode(struct inode *inode)
 {
-	n_free++;
+	__atomic_add_fetch(&n_free, 1, __ATOMIC_RELAXED);
+	pthread_mutex_lock(&quarantine_lock);
+	if (TI(inode)->freed++) {		/* freed twice: leave it alone */
+		CHECK(0);
+		pthread_mutex_unlock(&quarantine_lock);
+		return;
+	}
+	if (quarantine_on) {
+		TI(inode)->quarantine_next = quarantine_list;
+		quarantine_list = TI(inode);
+		pthread_mutex_unlock(&quarantine_lock);
+		return;
+	}
+	pthread_mutex_unlock(&quarantine_lock);
 	free(TI(inode));
+}
+
+static void quarantine_release(void)
+{
+	pthread_mutex_lock(&quarantine_lock);
+	while (quarantine_list) {
+		struct test_inode *ti = quarantine_list;
+		quarantine_list = ti->quarantine_next;
+		free(ti);
+	}
+	pthread_mutex_unlock(&quarantine_lock);
 }
 
 static void t_evict_inode(struct inode *inode)
 {
-	n_evict++;
+	__atomic_add_fetch(&n_evict, 1, __ATOMIC_RELAXED);
+	/* An inode reaches evict exactly once and with nobody holding it. */
+	CHECK(atomic_read(&inode->i_count) == 0);
+	CHECK(++TI(inode)->evicts == 1);
 	truncate_inode_pages_final(&inode->i_data);
 	clear_inode(inode);
 }
 
 static int t_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
-	(void)inode;
 	CHECK(wbc->sync_mode == WB_SYNC_ALL);
 	n_write++;
+	if (write_order_n < WRITE_ORDER_MAX)
+		write_order[write_order_n++] = inode;
 	return 0;
 }
 
@@ -311,6 +354,114 @@ static void test_lru_cap(void)
 	CHECK(n_alloc == n_free);
 }
 
+/* --- igrab() against the last iput() ----------------------------------- */
+
+/*
+ * The kernel makes the last-reference decision in iput() atomic with
+ * igrab() (both under i_lock). A thread holding a pointer to a live inode
+ * hammers igrab()/iput() while the owner drops the last reference of an
+ * unlinked inode: igrab() must either succeed before the eviction decision
+ * (then the inode is not evicted underneath it) or fail. Frees are
+ * quarantined so the grabber's pointer stays valid memory after eviction.
+ */
+struct grab_arg { struct inode *volatile target; int stop; long grabbed; };
+
+static void *grabber_main(void *arg)
+{
+	struct grab_arg *g = arg;
+
+	while (!__atomic_load_n(&g->stop, __ATOMIC_ACQUIRE)) {
+		struct inode *inode = __atomic_load_n(&g->target, __ATOMIC_ACQUIRE);
+		struct inode *got;
+
+		if (!inode)
+			continue;
+		got = igrab(inode);
+		if (!got)
+			continue;
+		g->grabbed++;
+		/* Holding a reference: it cannot be under eviction. */
+		CHECK(!(inode_state_read_once(got) & (I_FREEING | I_CLEAR)));
+		CHECK(TI(got)->evicts == 0);
+		iput(got);
+	}
+	return NULL;
+}
+
+static void test_igrab_race(void)
+{
+	struct super_block *sb = sb_alloc();
+	enum { NGRAB = 3, ITER = 40000 };
+	pthread_t th[NGRAB];
+	struct grab_arg g[NGRAB];
+	unsigned long key;
+	int i, fails = failures;
+
+	sb->s_op = &t_sops;
+	pthread_mutex_lock(&quarantine_lock);
+	quarantine_on = 1;
+	pthread_mutex_unlock(&quarantine_lock);
+	memset(g, 0, sizeof(g));
+	for (i = 0; i < NGRAB; i++)
+		pthread_create(&th[i], NULL, grabber_main, &g[i]);
+	for (key = 10000; key < 10000 + ITER && failures == fails; key++) {
+		struct inode *inode = get(sb, key);
+		CHECK(inode != NULL);
+		clear_nlink(inode);		/* last iput evicts */
+		for (i = 0; i < NGRAB; i++)
+			__atomic_store_n(&g[i].target, inode, __ATOMIC_RELEASE);
+		iput(inode);
+	}
+	for (i = 0; i < NGRAB; i++)
+		__atomic_store_n(&g[i].stop, 1, __ATOMIC_RELEASE);
+	for (i = 0; i < NGRAB; i++)
+		pthread_join(th[i], NULL);
+	{
+		long grabbed = 0;
+		for (i = 0; i < NGRAB; i++)
+			grabbed += g[i].grabbed;
+		printf("igrab race: %ld successful grabs over %d iterations\n", grabbed, ITER);
+	}
+	sb_free(sb);
+	pthread_mutex_lock(&quarantine_lock);
+	quarantine_on = 0;
+	pthread_mutex_unlock(&quarantine_lock);
+	quarantine_release();
+	CHECK(n_alloc == n_free);
+}
+
+/* --- sync_inodes_sb ordering ------------------------------------------- */
+
+/* System inodes 1..15 first, then user inodes, then inode 0 ($MFT and its
+ * attribute inodes, newest first): see docs/progress/platform-review.md. */
+static void test_sync_order(void)
+{
+	struct super_block *sb = sb_alloc();
+	struct inode *mft, *root, *user, *mftbmp;
+
+	sb->s_op = &t_sops;
+	mft = get(sb, 0);
+	root = get(sb, 5);
+	user = get(sb, 20);
+	mftbmp = new_inode(sb);		/* attribute inode: i_ino 0 as well */
+	mftbmp->i_ino = 0;
+	CHECK(mft && root && user && mftbmp);
+	mark_inode_dirty(mft);
+	mark_inode_dirty(user);
+	mark_inode_dirty(root);
+	mark_inode_dirty(mftbmp);
+	write_order_n = 0;
+	CHECK(sync_inodes_sb(sb) == 0);
+	CHECK(write_order_n == 4);
+	CHECK(write_order[0] == root);
+	CHECK(write_order[1] == user);
+	/* Both are inode 0; the attribute inode (newer) must come first. */
+	CHECK(write_order[2] == mftbmp);
+	CHECK(write_order[3] == mft);
+	iput(mft); iput(root); iput(user); iput(mftbmp);
+	sb_free(sb);
+}
+
 /* --- default (no s_op) inodes and block size helpers ------------------- */
 
 static int plain_set(struct inode *inode, void *data) { inode->i_ino = *(unsigned long *)data; return 0; }
@@ -339,6 +490,8 @@ int main(void)
 	test_race();
 	test_new_and_failed();
 	test_lru_cap();
+	test_igrab_race();
+	test_sync_order();
 	test_plain();
 	pagecache_writeback_stop();
 	if (failures) {

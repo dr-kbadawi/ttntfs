@@ -37,3 +37,7 @@ int platform_warn(const char *file, int line, const char *func, const char *expr
 
 struct timespec64 current_time(struct inode *inode)
 { struct timespec64 ts; (void)inode; ktime_get_coarse_real_ts64(&ts); return ts; }
+
+/* mem.c's page allocator, for the standalone build. */
+struct page *alloc_page(gfp_t gfp) { return (struct page *)folio_alloc_standalone(gfp); }
+void __free_page(struct page *page) { if (page) folio_put(page_folio(page)); }

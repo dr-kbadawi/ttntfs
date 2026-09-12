@@ -162,8 +162,23 @@ static inline void file_ra_state_init(struct file_ra_state *ra, struct address_s
 /* Background writer thread. One per process; started on first mapping. */
 int  pagecache_writeback_start(void);
 void pagecache_writeback_stop(void);
-/* Flush every dirty folio of every mapping belonging to @sb (NULL = all). */
+/* Flush every dirty folio of every mapping belonging to @sb (NULL = all).
+ * Ordering (platform review, see docs/progress/platform-review.md): mappings
+ * whose host inode is not inode 0 are flushed first, in creation order; the
+ * mappings of inode 0 ($MFT/$DATA and its attribute inodes such as
+ * $MFT/$BITMAP) go last, newest first, so bitmaps and index blocks reach the
+ * device before the MFT records that reference them. */
 struct super_block;
 int  pagecache_sync_sb(struct super_block *sb);
+
+/* additive (platform review): a folio that belongs to no mapping, laid out
+ * and accounted exactly like a cache folio; released with folio_put().
+ * alloc_page() (platform/src/mem.c) is built on it. */
+struct folio *folio_alloc_standalone(gfp_t gfp);
+/* additive (platform review): number of live folios (cached + standalone),
+ * and a runtime override of NTFS_PAGECACHE_MAX_FOLIOS for tests (0 = the
+ * compile-time default). */
+long pagecache_nr_folios(void);
+void pagecache_set_max_folios(unsigned long max);
 
 #endif /* _LINUX_PAGEMAP_H */

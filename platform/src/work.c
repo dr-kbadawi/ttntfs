@@ -7,6 +7,10 @@
  * item is neither pending nor running; cancel_work_sync() dequeues a
  * pending item and waits for a running one. system_wq is created on first
  * use.
+ *
+ * "Running" is recorded in the queue (wq->running), never in the item: as
+ * in the kernel, a work function may free its own work_struct, so the
+ * worker must not touch the item once the function has returned.
  */
 #include <stdlib.h>
 #include <stdio.h>
@@ -17,7 +21,6 @@
 #include <linux/workqueue.h>
 
 #define WORK_PENDING	1UL
-#define WORK_RUNNING	2UL
 
 struct workqueue_struct {
 	pthread_t thread;
@@ -48,15 +51,15 @@ static void *worker_main(void *arg)
 			break;
 		work = list_first_entry(&wq->pending, struct work_struct, entry);
 		list_del_init(&work->entry);
-		work->state = (work->state & ~WORK_PENDING) | WORK_RUNNING;
+		work->state &= ~WORK_PENDING;
 		wq->running = work;
 		pthread_mutex_unlock(&wq->lock);
 
 		work->func(work);
+		/* @work may be gone now. */
 
 		pthread_mutex_lock(&wq->lock);
 		wq->running = NULL;
-		work->state &= ~WORK_RUNNING;
 		pthread_cond_broadcast(&wq->cond);
 	}
 	pthread_mutex_unlock(&wq->lock);
@@ -150,7 +153,7 @@ bool flush_work(struct work_struct *work)
 	if (!work || !(wq = work->wq))
 		return false;
 	pthread_mutex_lock(&wq->lock);
-	while (work->state & (WORK_PENDING | WORK_RUNNING)) {
+	while ((work->state & WORK_PENDING) || wq->running == work) {
 		waited = true;
 		pthread_cond_wait(&wq->cond, &wq->lock);
 	}
@@ -171,7 +174,7 @@ bool cancel_work_sync(struct work_struct *work)
 		work->state &= ~WORK_PENDING;
 		was_pending = true;
 	}
-	while (work->state & WORK_RUNNING)
+	while (wq->running == work)
 		pthread_cond_wait(&wq->cond, &wq->lock);
 	pthread_mutex_unlock(&wq->lock);
 	return was_pending;

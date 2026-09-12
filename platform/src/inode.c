@@ -4,13 +4,22 @@
  * shaped icache. The file-system specific parts come through
  * super_operations (alloc/free/drop/evict/write_inode).
  *
- * Locking: sb->s_inode_list_lock protects the per-sb hash, the sb inode
- * list, the LRU of unreferenced inodes, and every i_count transition that
- * touches zero (lookups take their reference under it, iput drops the last
- * one under it). inode->i_lock protects i_state. i_new_lock is held by the
- * creator of an I_NEW inode until unlock_new_inode(); waiters lock/unlock
- * it to block. Inodes being torn down carry I_WILL_FREE/I_FREEING and are
- * skipped by lookups, which wait for them to leave the hash.
+ * Locking (outer to inner): sb->s_inode_list_lock > inode->i_lock >
+ * lru_lock.
+ *  - The sb lock protects the per-sb hash and the sb inode list; lookups
+ *    take their reference under it.
+ *  - i_lock protects i_state and, as in the kernel, makes the last-reference
+ *    decision of iput() atomic with igrab(): iput() drops the count and, if
+ *    it decides to evict, marks the inode I_WILL_FREE before releasing
+ *    i_lock; igrab() checks that mark under the same lock. Eviction from the
+ *    LRU (cap, unmount) claims its victim the same way, so an igrab() that
+ *    wins the race simply revives the inode.
+ *  - lru_lock (global, innermost) protects the per-sb LRU lists so igrab(),
+ *    which may run without the sb lock, can leave the LRU safely.
+ *  - i_new_lock is held by the creator of an I_NEW inode until
+ *    unlock_new_inode(); waiters lock/unlock it to block. Inodes being torn
+ *    down carry I_WILL_FREE/I_FREEING and are skipped by lookups, which wait
+ *    for them to leave the hash.
  *
  * Caching: the last iput() of a cacheable inode (nlink > 0, still hashed,
  * drop_inode says no) parks it on the sb's LRU instead of evicting it. Once
@@ -84,22 +93,12 @@ static inline bool inode_dying(const struct inode *inode)
 }
 
 /* ------------------------------------------------------------------ */
-/* LRU of unreferenced inodes (sb locked)                              */
+/* LRU of unreferenced inodes (lru_lock, innermost)                    */
 
 unsigned long inode_cache_global_count;
+static pthread_mutex_t lru_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void lru_add(struct inode *inode)
-{
-	struct super_block *sb = inode->i_sb;
-
-	if (list_empty(&inode->i_lru)) {
-		list_add_tail(&inode->i_lru, &sb->s_inode_lru);
-		sb->s_nr_inode_lru++;
-		__atomic_fetch_add(&inode_cache_global_count, 1, __ATOMIC_RELAXED);
-	}
-}
-
-static void lru_remove(struct inode *inode)
+static void __lru_remove_locked(struct inode *inode)
 {
 	if (!list_empty(&inode->i_lru)) {
 		list_del_init(&inode->i_lru);
@@ -108,11 +107,62 @@ static void lru_remove(struct inode *inode)
 	}
 }
 
+static void lru_add(struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+
+	pthread_mutex_lock(&lru_lock);
+	if (list_empty(&inode->i_lru)) {
+		list_add_tail(&inode->i_lru, &sb->s_inode_lru);
+		sb->s_nr_inode_lru++;
+		__atomic_fetch_add(&inode_cache_global_count, 1, __ATOMIC_RELAXED);
+	}
+	pthread_mutex_unlock(&lru_lock);
+}
+
+static void lru_remove(struct inode *inode)
+{
+	pthread_mutex_lock(&lru_lock);
+	__lru_remove_locked(inode);
+	pthread_mutex_unlock(&lru_lock);
+}
+
+/* Pop the oldest cached inode if the cap is exceeded; sb locked. */
+static struct inode *lru_pop_over_cap(struct super_block *sb)
+{
+	struct inode *victim = NULL;
+
+	pthread_mutex_lock(&lru_lock);
+	if (sb->s_nr_inode_lru > NTFS_INODE_CACHE_MAX) {
+		victim = list_first_entry(&sb->s_inode_lru, struct inode, i_lru);
+		__lru_remove_locked(victim);
+	}
+	pthread_mutex_unlock(&lru_lock);
+	return victim;
+}
+
 /* Take a reference; sb locked. A 0->1 transition leaves the LRU. */
 static void __iget(struct inode *inode)
 {
 	if (atomic_inc_return(&inode->i_count) == 1)
 		lru_remove(inode);
+}
+
+/*
+ * Claim an unreferenced inode for eviction: with i_lock held, verify that
+ * nobody revived it (igrab) meanwhile and mark it I_WILL_FREE so nobody
+ * can from now on. Returns false if it is referenced or already dying.
+ */
+static bool claim_for_eviction(struct inode *inode)
+{
+	bool ok;
+
+	spin_lock(&inode->i_lock);
+	ok = atomic_read(&inode->i_count) == 0 && !inode_dying(inode);
+	if (ok)
+		inode->i_state |= I_WILL_FREE;
+	spin_unlock(&inode->i_lock);
+	return ok;
 }
 
 unsigned long inode_cache_count(void)
@@ -442,12 +492,10 @@ struct inode *igrab(struct inode *inode)
 
 	spin_lock(&inode->i_lock);
 	if (!inode_dying(inode)) {
-		/* A 0->1 transition here must leave the LRU; do it lazily
-		 * (the sb lock is either already held by our caller, as in
-		 * find_inode_nowait's match callback, or the inode is
-		 * referenced). lru_remove is idempotent, so a later iput
-		 * that finds it listed simply re-parks it. */
-		if (atomic_inc_return(&inode->i_count) == 1 && !list_empty(&inode->i_lru))
+		/* Atomic with iput()'s last-reference decision (i_lock). A
+		 * 0->1 transition revives a cached inode: leave the LRU
+		 * (lru_lock nests inside i_lock). */
+		if (atomic_inc_return(&inode->i_count) == 1)
 			lru_remove(inode);
 		ret = inode;
 	}
@@ -515,18 +563,15 @@ static void evict(struct inode *inode)
 	free_inode_mem(inode);
 }
 
-/* Write back a cacheable inode and evict it. Called with the sb lock held
- * and i_count == 0; returns with it dropped. */
+/* Write back (if @write) and evict an inode that has been claimed
+ * (I_WILL_FREE set, i_count == 0, off the LRU). Called with the sb lock
+ * held; returns with it dropped. */
 static void evict_unreferenced_locked(struct inode *inode, bool write)
 {
 	struct super_block *sb = inode->i_sb;
 	unsigned long state;
 
-	lru_remove(inode);
 	if (write) {
-		spin_lock(&inode->i_lock);
-		inode->i_state |= I_WILL_FREE;
-		spin_unlock(&inode->i_lock);
 		sb_unlock(sb);
 		write_inode_now(inode, 1);
 		sb_lock(sb);
@@ -541,14 +586,23 @@ static void evict_unreferenced_locked(struct inode *inode, bool write)
 
 static void shrink_lru(struct super_block *sb)
 {
-	sb_lock(sb);
-	while (sb->s_nr_inode_lru > NTFS_INODE_CACHE_MAX) {
-		struct inode *victim = list_first_entry(&sb->s_inode_lru, struct inode, i_lru);
+	for (;;) {
+		struct inode *victim;
 
-		evict_unreferenced_locked(victim, victim->i_nlink != 0);
 		sb_lock(sb);
+		victim = lru_pop_over_cap(sb);
+		if (!victim) {
+			sb_unlock(sb);
+			return;
+		}
+		if (!claim_for_eviction(victim)) {
+			/* Revived by igrab() after we popped it; it goes back
+			 * on the LRU with its next iput(). */
+			sb_unlock(sb);
+			continue;
+		}
+		evict_unreferenced_locked(victim, victim->i_nlink != 0);
 	}
-	sb_unlock(sb);
 }
 
 void iput(struct inode *inode)
@@ -562,7 +616,9 @@ void iput(struct inode *inode)
 	sb = inode->i_sb;
 	op = sb->s_op;
 	sb_lock(sb);
+	spin_lock(&inode->i_lock);
 	if (atomic_dec_return(&inode->i_count) > 0) {
+		spin_unlock(&inode->i_lock);
 		sb_unlock(sb);
 		return;
 	}
@@ -570,10 +626,14 @@ void iput(struct inode *inode)
 	drop = op && op->drop_inode ? op->drop_inode(inode) : generic_drop_inode(inode);
 	if (!drop && (sb->s_flags & SB_ACTIVE)) {
 		lru_add(inode);
+		spin_unlock(&inode->i_lock);
 		sb_unlock(sb);
 		shrink_lru(sb);
 		return;
 	}
+	/* Evicting: from here on igrab() fails (it checks under i_lock). */
+	inode->i_state |= I_WILL_FREE;
+	spin_unlock(&inode->i_lock);
 	evict_unreferenced_locked(inode, !drop);
 }
 
@@ -625,12 +685,31 @@ int write_inode_now(struct inode *inode, int sync)
 	return err;
 }
 
-/* Snapshot the sb's inodes (referenced) so callbacks run unlocked. */
+/*
+ * Write-back order for sync_inodes_sb() (see docs/progress/platform-review.md):
+ * system inodes 1..15 ($MFTMirr, $LogFile, $Volume, root, $Bitmap, ...)
+ * first, then user inodes, then inode 0 ($MFT/$DATA and its attribute inodes
+ * such as $MFT/$BITMAP) last, newest first, so the bitmaps reach the device
+ * before the MFT records whose allocations they cover. Within one inode,
+ * write_inode_now() flushes its folios (index blocks, data) before its MFT
+ * record.
+ */
+static int sync_rank(const struct inode *inode)
+{
+	if (inode->i_ino == 0)
+		return 2;
+	return inode->i_ino < 16 ? 0 : 1;
+}
+
+/* Snapshot the sb's inodes (referenced) so callbacks run unlocked; the
+ * array is in sync_rank order, and in list order (newest first) within a
+ * rank. */
 static struct inode **snapshot_inodes(struct super_block *sb, size_t *count, bool dirty_only)
 {
 	struct inode **arr = NULL;
 	struct inode *inode;
-	size_t n = 0, cap = 0;
+	size_t n = 0, cap = 0, i, j;
+	int rank;
 
 	sb_lock(sb);
 	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
@@ -651,6 +730,14 @@ static struct inode **snapshot_inodes(struct super_block *sb, size_t *count, boo
 		arr[n++] = inode;
 	}
 	sb_unlock(sb);
+	/* Stable partition by rank. */
+	for (rank = 0, j = 0; rank < 3; rank++)
+		for (i = j; i < n; i++)
+			if (sync_rank(arr[i]) == rank) {
+				struct inode *t = arr[i];
+				memmove(&arr[j + 1], &arr[j], (i - j) * sizeof(*arr));
+				arr[j++] = t;
+			}
 	*count = n;
 	return arr;
 }
@@ -705,6 +792,8 @@ void evict_inodes(struct super_block *sb)
 		list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
 			if (atomic_read(&inode->i_count) || inode_dying(inode))
 				continue;
+			if (!claim_for_eviction(inode))
+				continue;
 			victim = inode;
 			break;
 		}
@@ -712,6 +801,7 @@ void evict_inodes(struct super_block *sb)
 			sb_unlock(sb);
 			break;
 		}
+		lru_remove(victim);
 		evict_unreferenced_locked(victim, victim->i_nlink != 0);
 	}
 	sb_lock(sb);

@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /* Functional tests for the user-space page cache. */
 #include <unistd.h>
+#include <stdint.h>
 #include "fake_disk.h"
 
 static void test_read_hit_miss(struct inode *in)
@@ -25,6 +26,24 @@ static void test_read_hit_miss(struct inode *in)
 	/* Out of range index → read error propagates and nothing is cached. */
 	CHECK(PTR_ERR(read_mapping_folio(m, REGION_PAGES + 1, NULL)) == -EIO);
 	CHECK(m->nrpages == 1);
+}
+
+/* read_cache_folio semantics: an uptodate folio is returned without its
+ * lock, so mapping the $MFT folio again while holding it locked (mft.c's
+ * extent-record allocation) must not deadlock. */
+static void test_read_while_locked(struct inode *in)
+{
+	struct address_space *m = in->i_mapping;
+	struct folio *f = read_mapping_folio(m, 6, NULL), *g;
+	CHECK(!IS_ERR(f));
+	folio_lock(f);
+	g = read_mapping_folio(m, 6, NULL);	/* same thread, folio locked */
+	CHECK(g == f);
+	CHECK(folio_test_locked(f));
+	folio_put(g);
+	folio_unlock(f);
+	folio_put(f);
+	CHECK(atomic_read(&f->_refcount) == 1);	/* table only */
 }
 
 static void test_dirty_background(struct inode *in)
@@ -183,34 +202,154 @@ static void test_fgp_flags(struct inode *in)
 	folio_put(f);
 }
 
+/* Standalone pages (alloc_page, as compress.c uses) must not disturb the
+ * cache's folio accounting: every alloc/free cycle used to leave the global
+ * counter one lower, which eventually disabled reclaim for good. */
+static void test_standalone_accounting(void)
+{
+	long n0 = pagecache_nr_folios();
+	for (int i = 0; i < 100; i++) {
+		struct page *p = alloc_page(GFP_KERNEL | __GFP_ZERO);
+		CHECK(p != NULL);
+		CHECK(((unsigned char *)page_address(p))[PAGE_SIZE - 1] == 0);
+		CHECK(pagecache_nr_folios() == n0 + 1);
+		__free_page(p);
+		CHECK(pagecache_nr_folios() == n0);
+	}
+}
+
 static void test_reclaim(void)
 {
-	/* Use a dedicated inode; fill beyond the cap. The cap is large by
-	 * default (64k folios), so this test only runs when built with a small
-	 * NTFS_PAGECACHE_MAX_FOLIOS; otherwise it just checks the counters. */
+	/* Dedicated inode, runtime cap of 64 folios above what is cached now. */
 	struct inode in;
 	fake_inode_init(&in, 3);
 	struct address_space *m = in.i_mapping;
+	long base = pagecache_nr_folios();
+	unsigned long cap = (unsigned long)base + 64;
+	pagecache_set_max_folios(cap);
 	struct folio *pin = read_mapping_folio(m, 0, NULL);
 	struct folio *dirty = read_mapping_folio(m, 1, NULL);
 	folio_lock(dirty); folio_mark_dirty(dirty); folio_unlock(dirty);
 	folio_put(dirty);
-	unsigned long n = NTFS_PAGECACHE_MAX_FOLIOS + 64;
-	if (n > REGION_PAGES - 2) n = REGION_PAGES - 2;
-	for (unsigned long i = 2; i < n; i++) {
+	for (unsigned long i = 2; i < 1000; i++) {
 		struct folio *f = read_mapping_folio(m, i, NULL);
 		CHECK(!IS_ERR(f));
 		folio_put(f);
 	}
-	if (NTFS_PAGECACHE_MAX_FOLIOS < REGION_PAGES) {
-		CHECK(m->nrpages <= NTFS_PAGECACHE_MAX_FOLIOS + 8);
-		CHECK(pin->mapping == m);			/* referenced: kept */
-		CHECK(!IS_ERR(filemap_get_folio(m, 1)));	/* dirty: kept */
-		folio_put(filemap_get_folio(m, 1));
+	CHECK(m->nrpages <= 64 + 8);
+	CHECK(pin->mapping == m);			/* referenced: kept */
+	CHECK(!IS_ERR(filemap_get_folio(m, 1)));	/* dirty: kept */
+	folio_put(filemap_get_folio(m, 1));
+	/* Standalone pages come and go (compress.c); the cap must still hold. */
+	for (int i = 0; i < 300; i++) {
+		struct page *p = alloc_page(GFP_KERNEL);
+		CHECK(p != NULL);
+		__free_page(p);
+	}
+	for (unsigned long i = 1000; i < 2000; i++) {
+		struct folio *f = read_mapping_folio(m, i, NULL);
+		CHECK(!IS_ERR(f));
+		folio_put(f);
+	}
+	CHECK(m->nrpages <= 64 + 8);
+	/* A reclaimed folio is really gone: re-read comes from disk. */
+	{
+		s64 r0 = atomic64_read(&fake_reads);
+		struct folio *f = read_mapping_folio(m, 2, NULL);
+		CHECK(!IS_ERR(f) && atomic64_read(&fake_reads) == r0 + 1);
+		folio_put(f);
 	}
 	folio_put(pin);
 	address_space_destroy(m, false);
+	pagecache_set_max_folios(0);
 	CHECK(fake_addr(m, 1) != NULL);
+}
+
+/*
+ * filemap_write_and_wait_range() must not return before a write that
+ * another thread has in flight for the same folio has reached the disk.
+ */
+struct sv_arg { struct address_space *m; int stop; };
+static void *sv_flusher(void *arg)
+{
+	struct sv_arg *a = arg;
+	while (!__atomic_load_n(&a->stop, __ATOMIC_ACQUIRE))
+		filemap_fdatawrite_range(a->m, 7 * PAGE_SIZE, 7 * PAGE_SIZE + PAGE_SIZE - 1);
+	return NULL;
+}
+static void test_sync_visibility(struct inode *in)
+{
+	struct address_space *m = in->i_mapping;
+	struct sv_arg a = { .m = m };
+	pthread_t th[3];
+	struct folio *f = read_mapping_folio(m, 7, NULL);
+	int bad = 0;
+	CHECK(!IS_ERR(f));
+	for (int i = 0; i < 3; i++)
+		pthread_create(&th[i], NULL, sv_flusher, &a);
+	for (uint32_t iter = 1; iter <= 20000 && !bad; iter++) {
+		uint32_t ondisk;
+		folio_lock(f);
+		*(uint32_t *)f->data = iter;
+		folio_mark_dirty(f);
+		folio_unlock(f);
+		CHECK(filemap_write_and_wait_range(m, 7 * PAGE_SIZE, 7 * PAGE_SIZE + PAGE_SIZE - 1) == 0);
+		pthread_mutex_lock(&fake_lock);
+		ondisk = *(uint32_t *)fake_addr(m, 7);
+		pthread_mutex_unlock(&fake_lock);
+		if (ondisk != iter) {
+			fprintf(stderr, "sync_visibility: iter %u, disk has %u\n", iter, ondisk);
+			bad = 1;
+		}
+	}
+	__atomic_store_n(&a.stop, 1, __ATOMIC_RELEASE);
+	for (int i = 0; i < 3; i++)
+		pthread_join(th[i], NULL);
+	folio_put(f);
+	CHECK(!bad);
+}
+
+/* A backend that re-dirties (mrec_lock busy) must not make a synchronous
+ * flush report success with the folio still dirty. */
+static void test_sync_retries_redirty(struct inode *in)
+{
+	struct address_space *m = in->i_mapping;
+	struct folio *f = read_mapping_folio(m, 60, NULL);
+	CHECK(!IS_ERR(f));
+	folio_lock(f); memset(f->data, 0x77, PAGE_SIZE); folio_mark_dirty(f); folio_unlock(f);
+	pthread_mutex_lock(&fake_lock); fake_redirty_left = 3; pthread_mutex_unlock(&fake_lock);
+	CHECK(filemap_write_and_wait(m) == 0);
+	CHECK(!folio_test_dirty(f));
+	CHECK(m->nrdirty == 0);
+	CHECK(fake_addr(m, 60)[5] == 0x77);
+	pthread_mutex_lock(&fake_lock); CHECK(fake_redirty_left == 0); pthread_mutex_unlock(&fake_lock);
+	folio_put(f);
+}
+
+/* pagecache_sync_sb: inode-0 mappings ($MFT and its attribute inodes) are
+ * written after everything else; among them, newest first (so $MFT/$BITMAP,
+ * created after $MFT/$DATA, precedes it). */
+static void test_sync_sb_order(void)
+{
+	struct inode mft, user, mftbmp;
+	fake_inode_init(&mft, 0);	/* created first, like vol->mft_ino */
+	fake_inode_init(&user, 2);
+	fake_inode_init(&mftbmp, 0);	/* attribute inode of inode 0 */
+	struct inode *dirty_order[3] = { &mft, &user, &mftbmp };
+	for (int i = 0; i < 3; i++) {
+		struct folio *f = read_mapping_folio(dirty_order[i]->i_mapping, 40 + i, NULL);
+		CHECK(!IS_ERR(f));
+		folio_lock(f); folio_mark_dirty(f); folio_unlock(f); folio_put(f);
+	}
+	pthread_mutex_lock(&fake_lock); fake_write_order_n = 0; pthread_mutex_unlock(&fake_lock);
+	CHECK(pagecache_sync_sb(&fake_sb) == 0);
+	CHECK(fake_write_order_n == 3);
+	CHECK(fake_write_order[0] == &user);
+	CHECK(fake_write_order[1] == &mftbmp);
+	CHECK(fake_write_order[2] == &mft);
+	address_space_destroy(mft.i_mapping, true);
+	address_space_destroy(user.i_mapping, true);
+	address_space_destroy(mftbmp.i_mapping, true);
 }
 
 static void test_destroy(void)
@@ -238,12 +377,15 @@ int main(void)
 	fake_disk_init();
 	fake_inode_init(&in, 0);
 	test_read_hit_miss(&in);
+	test_read_while_locked(&in);
 	test_dirty_background(&in);
 	test_sync_and_ordering(&in);
 	test_write_error(&in);
 	test_truncate(&in);
 	test_invalidate(&in);
 	test_fgp_flags(&in);
+	test_sync_visibility(&in);
+	test_sync_retries_redirty(&in);
 	/* sync_sb flushes this inode's dirty folios through its sb. */
 	{
 		struct folio *f = read_mapping_folio(in.i_mapping, 400, NULL);
@@ -252,7 +394,9 @@ int main(void)
 		CHECK(in.i_mapping->nrdirty == 0);
 	}
 	address_space_destroy(in.i_mapping, false);
+	test_standalone_accounting();
 	test_reclaim();
+	test_sync_sb_order();
 	test_destroy();
 	pagecache_writeback_stop();
 	printf("pagecache: all tests passed (reads=%lld writes=%lld)\n",

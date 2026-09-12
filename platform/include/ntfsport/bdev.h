@@ -67,5 +67,10 @@ static inline void ntfs_bdev_close(struct ntfs_bdev *dev) { if (dev && dev->ops 
 struct ntfs_bdev *ntfs_bdev_open_path(const char *path, bool read_only);
 /* Wrap an already-open file descriptor (not closed on close()). */
 struct ntfs_bdev *ntfs_bdev_open_fd(int fd, bool read_only, const char *name);
+/* additive (platform review): apply the raw-device I/O rules (requests must
+ * be multiples of @block_size; others are bounced through a read-modify-
+ * write) to a file-backed device. Tests use it to exercise that path on a
+ * plain image; the backend also reports the new logical block size. */
+void ntfs_bdev_file_set_alignment(struct ntfs_bdev *dev, u32 block_size);
 
 #endif /* NTFSPORT_BDEV_H */
