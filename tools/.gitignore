@@ -1,0 +1,10 @@
+# Built ntfsprogs + libntfs-3g, downloaded sources, pip-installed cmake
+.local/
+# Generated fixture images and manifests
+images/
+# CMake build trees
+build/
+*/build/
+# mkfixtures build outputs
+mkfixtures/mkfixtures
+mkfixtures/*.dSYM/
