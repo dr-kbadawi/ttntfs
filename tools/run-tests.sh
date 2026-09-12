@@ -388,7 +388,7 @@ write_steps() {	# IMG
 
 	wstep "mkdir $d/sub" "$cli" mkdir "$img" "$d/sub"
 	wstep "mv big.bin -> sub/moved.bin" "$cli" mv "$img" "$d/big.bin" "$d/sub/moved.bin"
-	wcheck "ntfsls after mv" "$(printf '%s\t%s\n%s\n%s\t%s' "$d/small.txt" "$bigsize" "$d/sub/" "$d/sub/moved.bin" "$bigsize")" \
+	wcheck "ntfsls after mv" "$(printf '%s\n%s\t%s\n%s\n%s\t%s' "$d/" "$d/small.txt" "$bigsize" "$d/sub/" "$d/sub/moved.bin" "$bigsize")" \
 		"$(ntfsls -R -l -F "$img" 2>/dev/null | norm_ntfsls | grep "^$d/")"
 	wstep "mv sub/moved.bin over small.txt (replace)" "$cli" mv "$img" "$d/sub/moved.bin" "$d/small.txt"
 	wcheck "ntfscat after replacing mv" "$bigsha" "$(ntfscat "$img" "$d/small.txt" 2>/dev/null | sha)"
