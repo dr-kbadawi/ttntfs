@@ -14,6 +14,8 @@ fskit/
   Shared/                      MountStatus.swift, compiled into both targets
   Bridge/                      ObjC: struct ntfs_bdev over FSBlockDeviceResource, bridging header
   scripts/mount-test.sh        end-to-end mount test once the appex is signed
+  scripts/enable-module.sh     enable/disable the module (System Settings cannot)
+  scripts/bench.sh             throughput + metadata benchmark of a mounted volume
 ```
 
 ## Build
@@ -93,11 +95,28 @@ load an extension whose provisioning profile does not carry it.
    Do not ad-hoc sign or strip the entitlement to "make it load": it will not.
 4. **Install and register.** Copy `TT NTFS Native.app` to `/Applications` and launch it
    once (LaunchServices registers the appex; `pluginkit -m -i
-   ch.techtag.ntfs.extension -v` lists it).
-5. **Enable.** System Settings → General → Login Items & Extensions → File
-   System Extensions (the ⓘ button) → enable **NTFS**. `pluginkit -e use -i
-   ch.techtag.ntfs.extension` may do the same from a terminal. The menu-bar
-   app shows the state via `FSClient.installedExtensions` and deep-links there.
+   ch.techtag.ntfs.extension -v` lists it). Launch it **before** step 5: the
+   first launch re-registers the bundle with a new plugin UUID, pkd then kills
+   every running instance of the extension (unmounting its volumes, seen
+   2026-09-13 as `launchd: remove all extension instances: caller = pkd`) and
+   `fskit_agent` keeps the old UUID until it is restarted (step 5 does that).
+5. **Enable.** `fskit/scripts/enable-module.sh`. The System Settings switch
+   (General → Login Items & Extensions → File System Extensions ⓘ) does **not**
+   work on macOS 26.3: LoginItems.appex calls fskitd as an unentitled
+   `FSClient` (it lacks `com.apple.private.LiveFS.connection`, which only the
+   never-consulted FSKitModuleManagement.appex holds) and fskitd answers
+   EPERM — `log show` shows `Failed to enabled FSExtension:
+   NSPOSIXErrorDomain Code=1` one millisecond after every click, with no
+   `fskit_agent` activity. Any third-party client gets the same EPERM, team ID
+   or not. The switch that matters is `fskit_agent`'s list
+   `~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist`,
+   read only at agent start; the script appends the bundle ID, SIGKILLs the
+   agent (SIGTERM is ignored, `launchctl kickstart` refused) so launchd respawns
+   it, and sets the `pluginkit` election too. Verified 2026-09-13: afterwards
+   `FSClient.installedExtensions` reports `enabled=1` and the mount test
+   passes. Re-run the script after every reinstall (unregistering the old
+   bundle drops the ID from the list). The menu-bar app shows the state via
+   `FSClient.installedExtensions`.
 6. **Mount.** Plug in an NTFS drive: Disk Arbitration probes registered modules
    in `FSProbeOrder` order. Ours claims `Windows_NTFS` at 500 (Apple's kernel
    `ntfs.fs` uses 1000, its FSKit exfat module also probes NTFS partitions at
@@ -124,6 +143,30 @@ create/rename/remove; the `mount-status.json` the extension wrote is printed;
 Failures print the step and a `log stream` predicate for the extension's
 subsystem `ch.techtag.ntfs`. Fixtures come from `make -C tools/mkfixtures
 fixtures` (see tools/README.md).
+
+## Known issues (macOS 26.3)
+
+- The System Settings switch for File System Extensions cannot enable a
+  third-party module; use `scripts/enable-module.sh`. It will keep showing the
+  module as off even while it is enabled and mounting — `FSClient` and the
+  menu-bar app report the true state.
+- Launching or relaunching the host app re-registers the extension, which kills
+  the running module and unmounts its volumes. Do not launch it while a `ttntfs`
+  volume is mounted.
+- `mount -F -t ttntfs` on a *physical* disk fails with EACCES opening
+  `/dev/rdiskN` even as the owning user (acknowledged by Apple DTS). Mounts
+  initiated by Disk Arbitration — plugging the disk in, `diskutil mount` — work.
+  Disk images attached with `hdiutil` are fine for `mount -F`, which is what
+  `scripts/mount-test.sh` uses.
+- Once Disk Arbitration has staged a module for a volume it keeps using it, so
+  disabling the module is not enough to hand the disk to Apple's driver for a
+  comparison: unplug and replug. Right after `enable-module.sh` the first mount
+  may still fall back to Apple's driver; unmount and mount again.
+- The extension does not yet write `mount-status.json`, so the menu-bar app
+  cannot show the read-only reason. `diskutil info` reports the personality of
+  our mounts as "MS-DOS".
+- Closing a read-only probe handle logs harmless `flush: Input/output error`
+  lines; the core should not flush a handle it opened read-only.
 
 ## Design notes
 
@@ -172,6 +215,29 @@ fixtures` (see tools/README.md).
   (`group.ch.techtag.ntfs`, keys in `SharedSettings.swift` ↔ `Options.swift`),
   overridable per mount with `-o ro,rw,hidehidden,showsystem,allowillegal,
   discard,casesensitive`; FSKit's `--rdonly` and `-f` are recognised too.
+- **Probe result is always `.usable`.** Disk Arbitration's FSKit bridge
+  (`DASupport.m`, `DAProbeWithFSKit`) treats only `usable` as success;
+  `notRecognized` is ENOENT and anything else, `usableButLimited` included, is
+  EIO, logged as `unable to probe /dev/diskNsM (status code 0x00000005)`, and
+  the disk then goes to Apple's read-only `ntfs` driver. The probe handle DA
+  hands over is opened read-only, so `isWritable` must not feed the result.
+  Verified 2026-09-13 on a 1 TB USB disk: with `usableButLimited` DA fell back
+  to Apple's driver every time although our probe had succeeded.
+- **Performance (measured 2026-09-13).** On a 1 TB USB SSD behind a JMicron
+  bridge, same disk and files, `F_NOCACHE` reads: ours 59.2 MB/s sequential and
+  141 IOPS / 7.1 ms random 4 KiB, versus Apple's built-in `ntfs` at 48.4 MB/s
+  and 108 IOPS / 9.23 ms. We are faster on both. The ceiling is the enclosure:
+  the link is USB 3.0 SuperSpeed but the bridge speaks Bulk-Only Transport
+  (`bInterfaceProtocol=80`, not UAS), so one command is in flight at a time;
+  `iostat` shows our 1 MiB file reads map to exactly one 1 MiB device transfer
+  at ~17.5 ms, a fixed ~7 ms per command plus ~97 MB/s streaming. Do not tune
+  against this enclosure; use UAS or internal media. Still worth fixing: a
+  4 KiB random read fetches 16 KiB from the device, and we keep only one device
+  request outstanding with no readahead. Benchmark with `scripts/bench.sh`.
+- **DA probing runs our module twice** (a limited probe, then a full one); each
+  `ntfs_probe` currently mounts the volume to read the label, about 2 s per
+  call on a 1 TB disk. DA showed no timeout, but a boot-sector-only probe
+  would be cheaper.
 - **Ownership**: `doesNotSupportSettingFilePermissions` + uid/gid of the
   mounting user (PORTING.md §6 noowners); chown/chmod are accepted or ignored,
   never failed. UF_HIDDEN ↔ FILE_ATTR_HIDDEN; `doesNotSupportImmutableFiles`.

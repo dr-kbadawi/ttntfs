@@ -52,12 +52,14 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         let name = NTFSFileSystem.label(from: info)
         let containerID = FSContainerIdentifier(uuid: NTFSFileSystem.uuid(fromSerial: info.serial))
         log.info("probe \(block.bsdName, privacy: .public): NTFS '\(name, privacy: .public)' v\(info.major_ver).\(info.minor_ver) dirty=\(info.dirty) hib=\(info.hibernated) log=\(info.logfile_clean)")
-        // "usableButLimited": recognized, but we will only offer read-only access.
-        if info.dirty || info.hibernated || !info.logfile_clean || !block.isWritable {
-            reply(.usableButLimited(name: name.isEmpty ? "NTFS" : name, containerID: containerID), nil)
-        } else {
-            reply(.usable(name: name.isEmpty ? "NTFS" : name, containerID: containerID), nil)
-        }
+        // Always `.usable`. Disk Arbitration (DASupport.m, DAProbeWithFSKit) maps
+        // only FSMatchResultUsable to success; notRecognized is ENOENT and
+        // everything else, `usableButLimited` included, is EIO, after which the
+        // disk falls through to Apple's read-only ntfs driver. The probe handle
+        // DA gives us is always opened read-only, so `block.isWritable` says
+        // nothing about the media, and dirty/hibernated volumes are handled by
+        // the read-only fallback in NTFSVolume.activate.
+        reply(.usable(name: name.isEmpty ? "NTFS" : name, containerID: containerID), nil)
     }
 
     // MARK: Load / unload
