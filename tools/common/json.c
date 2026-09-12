@@ -88,7 +88,10 @@ static char *parse_string_raw(struct p *p)
 			default: goto bad;
 			}
 		} else {
-			put_utf8(&out, &cap, &len, c);
+			/* Raw byte of an already UTF-8 encoded string: append as is.
+			 * (put_utf8 would re-encode bytes >= 0x80 as code points.) */
+			if (len + 2 > cap) { cap = (cap + 64) * 2; out = realloc(out, cap); }
+			out[len++] = (char)c;
 		}
 	}
 bad:
