@@ -24,7 +24,9 @@ struct MenuView: View {
                 ForEach(inventory.partitions) { partition in
                     PartitionRow(
                         partition: partition,
-                        reason: monitor.volumes.first { $0.bsdName == partition.bsdName }?.reason ?? "",
+                        reason: partition.readOnlyReason.isEmpty
+                            ? (monitor.volumes.first { $0.bsdName == partition.bsdName }?.reason ?? "")
+                            : partition.readOnlyReason,
                         mount: { Task { await inventory.mount(partition); monitor.refresh() } },
                         eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
                         handOver: {

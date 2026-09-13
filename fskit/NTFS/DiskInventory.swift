@@ -27,7 +27,11 @@ struct Partition: Identifiable, Equatable {
 
     var mountPoint: String?
     var fsType: String?                 // as the kernel reports it, once mounted
+    /// True when the kernel mounted it read-only *or* our driver is refusing
+    /// writes in software.
     var mountedReadOnly: Bool = false
+    /// Why, when our driver decided it. Empty when read/write.
+    var readOnlyReason: String = ""
     var servedByOurDriver: Bool = false
 
     var id: String { bsdName }
@@ -91,11 +95,22 @@ final class DiskInventory: ObservableObject {
         // the filesystem the kernel reports once it is mounted.
         var found = Self.leafPartitions()
         let mounts = Self.mountTable()
+        // Our driver enforces read-only in software (EROFS per operation) when a
+        // volume is dirty, hibernated or has an unclean journal -- FSKit has no
+        // way to flip MNT_RDONLY after load -- so the kernel still reports the
+        // mount as read/write. The extension's own status file is the only place
+        // that truth exists, and without it the app would cheerfully claim a
+        // volume is writable when every write will fail.
+        let status = MountStatus.readAll()
         for index in found.indices {
             if let m = mounts[found[index].bsdName] {
                 found[index].mountPoint = m.mountPoint
                 found[index].fsType = m.fsType
                 found[index].mountedReadOnly = m.readOnly
+            }
+            if let s = status[found[index].bsdName], s.readOnly {
+                found[index].mountedReadOnly = true
+                found[index].readOnlyReason = s.roReasonText
             }
             found[index].servedByOurDriver = ModuleEnabler.deviceIsServedByModule(found[index].device)
         }

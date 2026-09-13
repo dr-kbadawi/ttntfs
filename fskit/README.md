@@ -190,6 +190,14 @@ fixtures` (see tools/README.md).
   drag leaves the module in FSKit's enabled list and the bundle registered, so
   System Settings keeps listing an extension that no longer exists.
   `scripts/uninstall.sh` is the same thing for a machine without the app.
+- **Read-only is invisible to the kernel.** When the core refuses writes because
+  a volume is dirty, hibernated or has an unclean journal, it enforces that per
+  operation with EROFS — FSKit cannot flip `MNT_RDONLY` after load — so
+  `getmntinfo` still reports the mount as read/write. `mount-status.json` is the
+  only place that truth exists, so `DiskInventory` merges it in; trusting the
+  kernel alone made the app advertise a volume as writable when every write
+  would fail. Seen on a Windows recovery partition, which mounts read-only
+  because its `$LogFile` is unclean.
 - **The menu lists every NTFS partition, mounted or not** (`DiskInventory`),
   with Mount, Eject, and "Use This Driver" for one another driver holds.
   Partitions come from IOKit (every leaf `IOMedia`), mount state from
