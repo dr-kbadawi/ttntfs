@@ -181,6 +181,11 @@ fixtures` (see tools/README.md).
   launches — and if that is a build directory that later gets deleted, probes
   fail and the disk falls back to Apple's driver. `enable-module.sh` now
   unregisters any copy that is not the installed app.
+- A Login Item record can only be removed by the app itself. Switch **Open at
+  login** off in the app's Settings *before* deleting the bundle, or the record
+  is orphaned under System Settings → General → Login Items & Extensions →
+  Open at Login and has to be deleted there by hand; Background Task Management
+  has no per-item command line. `scripts/uninstall.sh` says so before it runs.
 - The app registers itself as a login item on its first run (`LoginItem.swift`,
   `SMAppService.mainApp`), so the menu bar comes back after a restart; Settings
   has an "Open at login" switch, and switching it off is remembered. macOS shows

@@ -57,13 +57,13 @@ final class ModuleEnabler: ObservableObject {
     func enable() async {
         outcome = .working
 
-        // Restarting the agent drops every FSKit-backed volume, and on macOS 26
-        // that includes the ones Apple's own ntfs driver serves. Rather than
-        // guess which module owns which disk, refuse while any NTFS volume is
-        // mounted and let the user eject.
-        let mounted = Self.mountedNTFSVolumes()
-        if !mounted.isEmpty {
-            outcome = .blocked("Eject \(mounted.map { ($0 as NSString).lastPathComponent }.formatted(.list(type: .and))) first — enabling restarts a system service that would drop the volume.")
+        // Restarting the agent drops volumes *our* module is serving. Volumes
+        // mounted by Apple's ntfs driver survive it — verified 2026-09-13 on
+        // 26.6.2 — which matters because the common case is a user plugging in
+        // an NTFS disk, macOS mounting it read-only, and only then installing
+        // this app. Refusing there would be wrong, so the test is narrow.
+        if Self.moduleIsServingAVolume() {
+            outcome = .blocked("Eject the NTFS volume this driver is serving first — enabling restarts a system service that would drop it.")
             return
         }
 
@@ -141,9 +141,39 @@ final class ModuleEnabler: ObservableObject {
 
     // MARK: System queries
 
-    /// Mount points of every mounted NTFS volume, whoever mounted it. Our volumes
-    /// are indistinguishable from Apple's in the mount table on macOS 26, so this
-    /// deliberately does not try to tell them apart.
+    /// Whether one of our extension processes is currently serving a mounted
+    /// volume. The mount table cannot answer this — our mounts look exactly like
+    /// Apple's "ntfs ... fskit" — and the module process lingers indefinitely
+    /// after an unmount, so neither is usable. What does track it is the block
+    /// device: the module holds one descriptor on /dev/diskN while serving and
+    /// none when idle.
+    static func moduleIsServingAVolume() -> Bool {
+        pids(named: "NTFSExtension").contains(where: holdsBlockDevice)
+    }
+
+    private static func holdsBlockDevice(_ pid: pid_t) -> Bool {
+        let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
+        guard size > 0 else { return false }
+        var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / MemoryLayout<proc_fdinfo>.size)
+        let written = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, size)
+        guard written > 0 else { return false }
+
+        for entry in fds.prefix(Int(written) / MemoryLayout<proc_fdinfo>.size)
+        where entry.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
+            var info = vnode_fdinfowithpath()
+            let got = proc_pidfdinfo(pid, entry.proc_fd, PROC_PIDFDVNODEPATHINFO, &info,
+                                     Int32(MemoryLayout<vnode_fdinfowithpath>.size))
+            guard got > 0 else { continue }
+            let path = withUnsafeBytes(of: &info.pvip.vip_path) { raw in
+                String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+            }
+            if path.hasPrefix("/dev/disk") || path.hasPrefix("/dev/rdisk") { return true }
+        }
+        return false
+    }
+
+    /// Mount points of every mounted NTFS volume, whoever mounted it. Used only
+    /// for reporting, never to decide whether enabling is safe.
     static func mountedNTFSVolumes() -> [String] {
         var buffer: UnsafeMutablePointer<statfs>?
         let count = getmntinfo(&buffer, MNT_NOWAIT)
