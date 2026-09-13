@@ -81,6 +81,10 @@ Owner: vfs agent. Paths: `core/vfs/`, `core/include/`.
   variant on the base inode for ADS writes.
 
 ## Next
-- Windows `chkdsk /f` round trip on real media (phase 2 gate needs the PC).
+- Windows `chkdsk /f` round trip on real media (phase 2 gate needs the PC). More
+  urgent since 6835a53: `ntfs_glue_logfile_clean()` had required the journal to
+  be both closed and flagged clean, which held nearly every real Windows volume
+  at read-only. With the rule corrected to match `logfile.h`, the unvalidated
+  write path now runs on ordinary disks rather than on fixtures alone.
 - Hand `readdir` want_attr the index entry's sizes/times without an iget (needs a dir.c hook).
 - Compressed-file writes/truncate beyond what upstream supports; encrypted files stay refused.

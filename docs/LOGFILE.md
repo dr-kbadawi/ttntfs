@@ -90,7 +90,15 @@ UTF-16 name @20 (`"NTFS"`).
 
 **State decision** (`ntfs_logfile_is_clean`, same as the Linux drivers): EMPTY (both
 pages 0xff), CLOSED (no client in use) or `VOLUME_IS_CLEAN` ⇒ clean, mount rw
-without replay. Otherwise DIRTY. CORRUPT (no usable page) and UNSUPPORTED
+without replay. Otherwise DIRTY.
+
+> The three are **alternatives**. Requiring CLOSED *and* the flag looks like the
+> safer reading and is wrong: XP and later leave the log open across a clean
+> shutdown, so a healthy modern volume is CLOSED=false and the flag is the only
+> discriminator. `ntfs_glue_logfile_clean()` in `core/vfs/super_glue.c` made
+> exactly that mistake and denied write access to every cleanly dismounted
+> Windows volume while this module reported the same journal clean (fixed
+> 6835a53). Any second implementation of this decision must match this one. CORRUPT (no usable page) and UNSUPPORTED
 (version) are never clean. A dirty volume must not be mounted rw without replay
 and must never be "fixed" by resetting the log (PORTING.md §6).
 

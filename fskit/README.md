@@ -363,7 +363,11 @@ fixtures` (see tools/README.md).
   exposes; it is also what covers the device write cache). It does not use the
   kernel buffer cache (`metadataRead/Write`) because the core has its own
   metadata cache. Swift only sees the device as an `OpaquePointer`. No TRIM:
-  the resource has no discard primitive on macOS 26.
+  the resource has no discard primitive on macOS 26. It must also call
+  `ntfs_bdev_attach_mapping()`: kernel code reaches for `sb->s_bdev->bd_mapping`
+  to read ahead and write back device bytes through the page cache, never checks
+  it for NULL, and `ntfs_empty_logfile()` does both on every read-write mount of
+  a volume whose journal is not empty.
 - **Read-only fallback**: the core is always asked with
   `NTFS_MOUNT_RDONLY_FALLBACK`; when `ntfs_volume_info.read_only` comes back
   (dirty, hibernated, unclean `$LogFile`, write-protected device, requested),
@@ -372,7 +376,9 @@ fixtures` (see tools/README.md).
   Application Support/mount-status.json`, which the menu-bar app polls every
   2 s and shows under the volume. FSKit has no API to flip MNT_RDONLY after
   load; `--rdonly` is only passed when the kernel already wants it (that also
-  marks the bdev read-only). Probe answers `usableButLimited` for such media.
+  marks the bdev read-only). The probe still answers `.usable` for such media:
+  Disk Arbitration treats anything else as EIO and hands the disk to Apple's
+  driver, so read-only media would stop reaching us at all.
 - **Options**: mount defaults come from the app group `UserDefaults`
   (`group.ch.techtag.ntfs`, keys in `SharedSettings.swift` ↔ `Options.swift`),
   overridable per mount with `-o ro,rw,hidehidden,showsystem,allowillegal,

@@ -32,7 +32,10 @@ Owner: fskit agent. Paths: `fskit/`, `tools/windows/` (round 2).
   menu-bar app polls it and shows the reason under the volume row. Settings toggles map onto
   `ntfs_mount_options.flags` (`Options.swift`); `-o ro,rw,hidehidden,showsystem,allowillegal,
   discard,casesensitive`, `--rdonly`, `-f` parsed from load/activate/mount task options.
-- `probe` answers `usableButLimited` for dirty/hibernated/unclean-log/write-protected media.
+- `probe` answers `.usable` for everything it recognises, including dirty/hibernated/
+  write-protected media. It once answered `usableButLimited` for those; Disk Arbitration
+  maps anything but `usable` to EIO and hands the disk to Apple's driver, so that lost us
+  every such volume. The read-only decision belongs to mount, not probe.
 - Stub still linked in `NTFS_CORE_MODE = stub`; `NTFS_CORE_MODE=real` on the xcodebuild command
   line links `build/libntfscore.a` (verified: stub excluded, 481 core symbols, no undefined
   platform symbols, arm64).
@@ -56,8 +59,9 @@ Add `NTFS_CORE_MODE=real` for the real core.
 ## API uncertainties (FSKit, macOS 26 SDK)
 - There is no API for a module to *declare* a volume read-only after load; FSKit passes `--rdonly`
   only when the kernel already wants MNT_RDONLY. A dirty volume therefore mounts with the kernel
-  believing it is rw; we return EROFS on every write and publish the reason. `usableButLimited`
-  from probe may make the system mount read-only — unverified.
+  believing it is rw; we return EROFS on every write and publish the reason. Answering
+  `usableButLimited` from probe does *not* achieve a read-only mount: DA treats it as a
+  probe failure (verified 2026-09-13).
 - `--rdonly` is documented for `loadResource`; whether `-o ro` also reaches `activate` (via
   `FSActivateOptionSyntax "o:"`) vs `mount` is handled by parsing both.
 - `closeItem(keepingModes:)` semantics assumed: modes that remain open after this close.
