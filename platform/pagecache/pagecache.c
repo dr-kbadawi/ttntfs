@@ -990,6 +990,11 @@ static void mapping_note_dirty(struct address_space *m)
 	if (list_empty(&ix->dirty_registry))
 		list_add_tail(&ix->dirty_registry, &g_dirty);
 	pthread_mutex_unlock(&registry_lock);
+	/* sync_inodes_sb() selects inodes whose *mapping* is dirty as well as
+	 * those whose metadata is, so its list needs to hear about this too.
+	 * Outside registry_lock: that lock is above the inode's sb_lock. */
+	if (m->host)
+		inode_note_dirty(m->host);
 }
 
 /*

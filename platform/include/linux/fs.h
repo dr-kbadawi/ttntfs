@@ -112,6 +112,15 @@ struct inode {
 	/* Inode table bookkeeping (platform/src/inode.c). */
 	struct hlist_node	i_hash;
 	struct list_head	i_sb_list;
+	/* Allocation order, newest highest. sync_inodes_sb() writes the newest
+	 * inode of a rank first, so $MFT's attribute inodes (created after it,
+	 * carrying the bitmaps) reach the device before $MFT itself. That used to
+	 * fall out of s_inodes being newest-first; with a dirty list to walk it
+	 * has to be said explicitly. */
+	unsigned long		i_seq;
+	/* On sb->s_dirty_inodes when this inode may need writing back. See
+	 * inode_note_dirty(): everything dirty is listed, listed may be clean. */
+	struct list_head	i_dirty_list;
 	struct mutex		i_new_lock;	/* held while I_NEW */
 	/* additive (compat stream): unreferenced-inode LRU, see inode.c */
 	struct list_head	i_lru;
@@ -154,6 +163,7 @@ struct super_block {
 	/* Inode table (platform/src/inode.c). */
 	spinlock_t		s_inode_list_lock;
 	struct list_head	s_inodes;
+	struct list_head	s_dirty_inodes;	/* subset of s_inodes, see i_dirty_list */
 	struct hlist_head	*s_inode_hash;
 	unsigned int		s_inode_hash_bits;
 	struct list_head	s_inode_lru;	/* unreferenced cached inodes, oldest first */
@@ -205,6 +215,7 @@ static inline unsigned long inode_state_read_once(const struct inode *i) { retur
  * the port flushes them through s_op->write_inode from pagecache_sync_sb()
  * and on iput of the last reference. */
 void __mark_inode_dirty(struct inode *inode, int flags);
+void inode_note_dirty(struct inode *inode);
 static inline void mark_inode_dirty(struct inode *i) { __mark_inode_dirty(i, I_DIRTY); }
 static inline void mark_inode_dirty_sync(struct inode *i) { __mark_inode_dirty(i, I_DIRTY_SYNC); }
 int write_inode_now(struct inode *inode, int sync);

@@ -27,6 +27,7 @@
  * and evicted. evict_inodes() (unmount) drains everything unreferenced.
  */
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <pthread.h>
 #include <linux/kernel.h>
@@ -177,12 +178,22 @@ unsigned long inode_cache_count(void)
 /* ------------------------------------------------------------------ */
 /* Allocation / initialisation                                         */
 
+/* Monotonic, so "newer" survives a walk over any list order. */
+static unsigned long next_inode_seq(void)
+{
+	static _Atomic unsigned long seq;
+
+	return atomic_fetch_add(&seq, 1) + 1;
+}
+
 void inode_init_once(struct inode *inode)
 {
 	memset(inode, 0, sizeof(*inode));
 	INIT_HLIST_NODE(&inode->i_hash);
 	INIT_LIST_HEAD(&inode->i_sb_list);
+	INIT_LIST_HEAD(&inode->i_dirty_list);
 	INIT_LIST_HEAD(&inode->i_lru);
+	inode->i_seq = next_inode_seq();
 	spin_lock_init(&inode->i_lock);
 	init_rwsem(&inode->i_rwsem);
 	mutex_init(&inode->i_new_lock);
@@ -215,7 +226,9 @@ static int inode_init_always(struct super_block *sb, struct inode *inode)
 	memset(&inode->i_ctime, 0, sizeof(inode->i_ctime));
 	INIT_HLIST_NODE(&inode->i_hash);
 	INIT_LIST_HEAD(&inode->i_sb_list);
+	INIT_LIST_HEAD(&inode->i_dirty_list);
 	INIT_LIST_HEAD(&inode->i_lru);
+	inode->i_seq = next_inode_seq();
 	address_space_init(&inode->i_data, inode, NULL);
 	inode->i_mapping = &inode->i_data;
 	return 0;
@@ -558,6 +571,7 @@ static void evict(struct inode *inode)
 	sb_lock(sb);
 	__remove_hash_locked(inode);
 	list_del_init(&inode->i_sb_list);
+	list_del_init(&inode->i_dirty_list);
 	sb_unlock(sb);
 	address_space_destroy(&inode->i_data, true);
 	free_inode_mem(inode);
@@ -640,11 +654,40 @@ void iput(struct inode *inode)
 /* ------------------------------------------------------------------ */
 /* Dirty state and write-back                                          */
 
+/*
+ * Put @inode on its sb's maybe-dirty list. Same one-sided invariant as the page
+ * cache's g_dirty (see pagecache.c): everything that needs writing back is
+ * listed, something listed may already be clean. sync_inodes_sb() used to walk
+ * every inode on the volume on every sync, and FSKit syncs about every second
+ * operation, which made each unlink O(cached inodes).
+ *
+ * Called with no lock held: i_lock is dropped first, so this never nests.
+ */
+void inode_note_dirty(struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+
+	if (!sb)
+		return;
+	sb_lock(sb);
+	if (list_empty(&inode->i_dirty_list) && !list_empty(&inode->i_sb_list))
+		list_add_tail(&inode->i_dirty_list, &sb->s_dirty_inodes);
+	sb_unlock(sb);
+}
+
 void __mark_inode_dirty(struct inode *inode, int flags)
 {
+	bool was, now;
+
 	spin_lock(&inode->i_lock);
+	was = (inode->i_state & I_DIRTY_ALL) != 0;
 	inode->i_state |= flags & I_DIRTY_ALL;
+	now = (inode->i_state & I_DIRTY_ALL) != 0;
 	spin_unlock(&inode->i_lock);
+	/* Only the clean -> dirty edge: while it stays dirty it stays listed,
+	 * because pruning requires it to be clean. */
+	if (!was && now)
+		inode_note_dirty(inode);
 }
 
 int write_inode_now(struct inode *inode, int sync)
@@ -701,18 +744,35 @@ static int sync_rank(const struct inode *inode)
 	return inode->i_ino < 16 ? 0 : 1;
 }
 
-/* Snapshot the sb's inodes (referenced) so callbacks run unlocked; the
- * array is in sync_rank order, and in list order (newest first) within a
- * rank. */
+static int cmp_sync_order(const void *a, const void *b)
+{
+	const struct inode *x = *(struct inode * const *)a;
+	const struct inode *y = *(struct inode * const *)b;
+	int rx = sync_rank(x), ry = sync_rank(y);
+
+	if (rx != ry)
+		return rx < ry ? -1 : 1;
+	if (x->i_seq != y->i_seq)
+		return x->i_seq > y->i_seq ? -1 : 1;	/* newest first */
+	return 0;
+}
+
+/* Snapshot the sb's inodes (referenced) so callbacks run unlocked; the array is
+ * in sync_rank order, and newest first within a rank. */
 static struct inode **snapshot_inodes(struct super_block *sb, size_t *count, bool dirty_only)
 {
 	struct inode **arr = NULL;
 	struct inode *inode;
-	size_t n = 0, cap = 0, i, j;
-	int rank;
+	struct list_head *head, *pos;
+	size_t n = 0, cap = 0;
 
 	sb_lock(sb);
-	list_for_each_entry(inode, &sb->s_inodes, i_sb_list) {
+	/* Explicit traversal: the list member differs between the two lists and
+	 * list_for_each_entry() takes it as a token, not a value. */
+	head = dirty_only ? &sb->s_dirty_inodes : &sb->s_inodes;
+	for (pos = head->next; pos != head; pos = pos->next) {
+		inode = dirty_only ? list_entry(pos, struct inode, i_dirty_list)
+				   : list_entry(pos, struct inode, i_sb_list);
 		if (inode_dying(inode) || (inode_state_read_once(inode) & I_NEW))
 			continue;
 		if (dirty_only && !(inode_state_read_once(inode) & I_DIRTY_ALL) &&
@@ -730,14 +790,9 @@ static struct inode **snapshot_inodes(struct super_block *sb, size_t *count, boo
 		arr[n++] = inode;
 	}
 	sb_unlock(sb);
-	/* Stable partition by rank. */
-	for (rank = 0, j = 0; rank < 3; rank++)
-		for (i = j; i < n; i++)
-			if (sync_rank(arr[i]) == rank) {
-				struct inode *t = arr[i];
-				memmove(&arr[j + 1], &arr[j], (i - j) * sizeof(*arr));
-				arr[j++] = t;
-			}
+	/* Rank ascending, then newest first within a rank. i_seq is unique, so
+	 * this is a total order and qsort's instability does not matter. */
+	qsort(arr, n, sizeof(*arr), cmp_sync_order);
 	*count = n;
 	return arr;
 }
@@ -753,6 +808,23 @@ int sync_inodes_sb(struct super_block *sb)
 		int e = write_inode_now(arr[i], 1);
 		if (e && !err)
 			err = e;
+		/*
+		 * Drop it from the maybe-dirty list only here. write_inode_now()
+		 * with sync=1 has just flushed the mapping and waited for its
+		 * writeback, so this is the one point where "clean" also means
+		 * "nothing in flight". sb_lock serialises against a concurrent
+		 * dirtier, which either sets the state before this check or adds
+		 * the inode back afterwards.
+		 */
+		if (!e) {
+			struct inode *in = arr[i];
+
+			sb_lock(sb);
+			if (!(inode_state_read_once(in) & I_DIRTY_ALL) &&
+			    !(in->i_mapping && in->i_mapping->nrdirty))
+				list_del_init(&in->i_dirty_list);
+			sb_unlock(sb);
+		}
 		iput(arr[i]);
 	}
 	free(arr);
@@ -828,6 +900,7 @@ struct super_block *sb_alloc(void)
 		return NULL;
 	}
 	INIT_LIST_HEAD(&sb->s_inodes);
+	INIT_LIST_HEAD(&sb->s_dirty_inodes);
 	INIT_LIST_HEAD(&sb->s_inode_lru);
 	spin_lock_init(&sb->s_inode_list_lock);
 	init_rwsem(&sb->s_umount);

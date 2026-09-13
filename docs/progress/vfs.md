@@ -122,11 +122,21 @@ platform-review.md); the B-tree code is untouched.
 | 4000 | 362 | ~615 |
 | 8000 | 224 | ~445 |
 
-Still not flat: `sync_inodes_sb()` -> `snapshot_inodes()` walks `sb->s_inodes`
-on every sync for the same reason, and is the remaining O(n). Creates cost
-~10-15% more than before (the sync walk now also prunes, and during a create
-burst most mappings really are dirty, so the list is not shorter than the
-registry).
+The inode side had the same problem and got the same treatment (finding 16), so
+the final figures are:
+
+| files | delete/s before | mappings only | both |
+|---|---|---|---|
+| 500 | 854 | ~900 | ~1000 |
+| 1000 | 654 | ~830 | ~890 |
+| 2000 | 478 | ~740 | ~945 |
+| 4000 | 362 | ~615 | ~906 |
+| 8000 | 224 | ~445 | ~720 |
+
+3.2x at 8000 files, and the degradation across a 16x growth in directory size
+drops from 3.8x to about 1.35x. Creates cost ~12% (850 -> ~750): the sync pass
+now prunes as well, and during a create burst nearly everything is genuinely
+dirty, so neither list is shorter than the full walk it replaced.
 
 ## Next
 - Windows `chkdsk /f` round trip on real media (phase 2 gate needs the PC). More
