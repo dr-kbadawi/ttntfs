@@ -164,6 +164,118 @@ static int read_mft_record(struct ntfs_image *img, uint64_t no, uint8_t *rec)
 	return 0;
 }
 
+/*
+ * UTF-16LE to UTF-8, sized for a volume label. Self-contained on purpose: this
+ * file is deliberately free of the kernel compat headers the rest of the core
+ * uses, and a label is at most 128 UTF-16 code units.
+ */
+static void utf16le_to_utf8(const uint8_t *in, size_t in_bytes, char *out, size_t out_size)
+{
+	size_t i = 0, o = 0;
+
+	if (!out_size)
+		return;
+	while (i + 1 < in_bytes) {
+		uint32_t c = (uint32_t)in[i] | ((uint32_t)in[i + 1] << 8);
+
+		i += 2;
+		if (c >= 0xd800 && c < 0xdc00 && i + 1 < in_bytes) {
+			uint32_t lo = (uint32_t)in[i] | ((uint32_t)in[i + 1] << 8);
+
+			if (lo >= 0xdc00 && lo < 0xe000) {
+				c = 0x10000 + ((c - 0xd800) << 10) + (lo - 0xdc00);
+				i += 2;
+			}
+		}
+		if (!c)
+			break;
+		if (c < 0x80) {
+			if (o + 1 >= out_size) break;
+			out[o++] = (char)c;
+		} else if (c < 0x800) {
+			if (o + 2 >= out_size) break;
+			out[o++] = (char)(0xc0 | (c >> 6));
+			out[o++] = (char)(0x80 | (c & 0x3f));
+		} else if (c < 0x10000) {
+			if (o + 3 >= out_size) break;
+			out[o++] = (char)(0xe0 | (c >> 12));
+			out[o++] = (char)(0x80 | ((c >> 6) & 0x3f));
+			out[o++] = (char)(0x80 | (c & 0x3f));
+		} else {
+			if (o + 4 >= out_size) break;
+			out[o++] = (char)(0xf0 | (c >> 18));
+			out[o++] = (char)(0x80 | ((c >> 12) & 0x3f));
+			out[o++] = (char)(0x80 | ((c >> 6) & 0x3f));
+			out[o++] = (char)(0x80 | (c & 0x3f));
+		}
+	}
+	out[o] = '\0';
+}
+
+#define NTFS_MFT_NO_VOLUME	3	/* $Volume */
+
+int ntfs_image_volume_info(struct ntfs_image *img, char *label, size_t label_size,
+			   uint8_t *major, uint8_t *minor, uint16_t *vol_flags)
+{
+	uint32_t o, rs;
+	uint8_t *rec;
+	int err;
+
+	if (!img || img->raw)
+		return -EINVAL;
+	if (label && label_size)
+		label[0] = '\0';
+	rs = img->mft_record_size;
+	rec = malloc(rs);
+	if (!rec)
+		return -ENOMEM;
+	err = read_mft_record(img, NTFS_MFT_NO_VOLUME, rec);
+	if (err)
+		goto out;
+
+	err = -ENOENT;
+	o = lf_get16(rec + MR_ATTRS_OFFSET);
+	while (o + AT_RESIDENT_SIZE <= rs) {
+		uint32_t type = lf_get32(rec + o + AT_TYPE), len = lf_get32(rec + o + AT_LENGTH);
+		uint32_t vlen, voff;
+
+		if (type == ATTR_TYPE_END)
+			break;
+		if (len < AT_RESIDENT_SIZE || (len & 7) || o + len > rs) {
+			err = -EINVAL;
+			goto out;
+		}
+		/* Both attributes are resident on every volume Windows creates;
+		 * a non-resident one is not worth a run list walk here. */
+		if (rec[o + AT_NON_RESIDENT])
+			goto next;
+		vlen = lf_get32(rec + o + AT_VALUE_LENGTH);
+		voff = lf_get16(rec + o + AT_VALUE_OFFSET);
+		if (voff > len || vlen > len - voff)
+			goto next;
+		if (type == ATTR_TYPE_VOLUME_NAME) {
+			if (label && label_size)
+				utf16le_to_utf8(rec + o + voff, vlen, label, label_size);
+			err = 0;
+		} else if (type == ATTR_TYPE_VOLUME_INFORMATION && vlen >= 12) {
+			const uint8_t *v = rec + o + voff;
+
+			if (major)
+				*major = v[8];
+			if (minor)
+				*minor = v[9];
+			if (vol_flags)
+				*vol_flags = lf_get16(v + 10);
+			err = 0;
+		}
+next:
+		o += len;
+	}
+out:
+	free(rec);
+	return err;
+}
+
 static int find_data_runs(struct ntfs_image *img, const uint8_t *rec, struct ntfs_img_run **runs,
 			  uint32_t *n, uint64_t *data_size)
 {

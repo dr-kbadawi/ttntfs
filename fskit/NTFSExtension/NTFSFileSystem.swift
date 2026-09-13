@@ -38,8 +38,12 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         }
         defer { ntfs_bdev_fskit_close(dev) }
 
+        // Light: boot sector plus $Volume, no mount. DA probes twice per mount
+        // and the full probe mounts and unmounts, which on a 1 TB disk is about
+        // two seconds each. Nothing here needs free space, the hibernation state
+        // or the journal state; the mount decides all three for itself.
         var info = ntfs_volume_info()
-        let rc = ntfs_probe(dev, &info)
+        let rc = ntfs_probe_light(dev, &info)
         if hostErrno(rc) == ENXIO && rc < 0 {
             log.info("probe \(block.bsdName, privacy: .public): not NTFS")
             reply(.notRecognized, nil)
@@ -51,7 +55,9 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         }
         let name = NTFSFileSystem.label(from: info)
         let containerID = FSContainerIdentifier(uuid: NTFSFileSystem.uuid(fromSerial: info.serial))
-        log.info("probe \(block.bsdName, privacy: .public): NTFS '\(name, privacy: .public)' v\(info.major_ver).\(info.minor_ver) dirty=\(info.dirty) hib=\(info.hibernated) log=\(info.logfile_clean)")
+        // Only what the light probe actually read: hibernation and journal state
+        // need the mounted volume and are reported by activate().
+        log.info("probe \(block.bsdName, privacy: .public): NTFS '\(name, privacy: .public)' v\(info.major_ver).\(info.minor_ver) dirty=\(info.dirty)")
         // Always `.usable`. Disk Arbitration (DASupport.m, DAProbeWithFSKit) maps
         // only FSMatchResultUsable to success; notRecognized is ENOENT and
         // everything else, `usableButLimited` included, is EIO, after which the
@@ -77,8 +83,10 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
             reply(nil, posixError(ENOMEM, "load: bdev"))
             return
         }
+        // Light again: this only needs the label and the serial. activate()
+        // mounts the volume straight afterwards and learns the rest there.
         var info = ntfs_volume_info()
-        let rc = ntfs_probe(dev, &info)
+        let rc = ntfs_probe_light(dev, &info)
         if rc < 0 {
             ntfs_bdev_fskit_close(dev)
             containerStatus = .notReady(status: posixError(rc, "load: probe"))

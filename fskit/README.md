@@ -445,10 +445,19 @@ fixtures` (see tools/README.md).
   against this enclosure; use UAS or internal media. Still worth fixing: a
   4 KiB random read fetches 16 KiB from the device, and we keep only one device
   request outstanding with no readahead. Benchmark with `scripts/bench.sh`.
-- **DA probing runs our module twice** (a limited probe, then a full one); each
-  `ntfs_probe` currently mounts the volume to read the label, about 2 s per
-  call on a 1 TB disk. DA showed no timeout, but a boot-sector-only probe
-  would be cheaper.
+- **DA probing runs our module twice** (a limited probe, then a full one), and
+  `loadResource` asks again, so a plug-in used to pay three full mounts before
+  Finder showed anything. `ntfs_probe()` mounts the volume read-only and
+  unmounts it, which is how free space, hibernation and the journal state are
+  known, and it costs about 1.4 s on a 1 TB disk. Probe and load do not need
+  any of those, so they call `ntfs_probe_light()` instead: boot sector plus
+  `$Volume` (one MFT record, read with `core/logfile`'s parser rather than a
+  second NTFS reader), measured at 4 ms on the same disk. `startCheck` keeps the
+  full probe, since reporting the volume's state is its whole job.
+  What remains, and is not ours: after the check task finishes, fskitd stops the
+  extension instance and DA's mount then sits silent for ~5 s before FSKit
+  launches the instance that serves the volume. That gap is the same with either
+  probe and dominates the ~8 s a plug-in now takes.
 - **Ownership**: `doesNotSupportSettingFilePermissions` + uid/gid of the
   mounting user (PORTING.md §6 noowners); chown/chmod are accepted or ignored,
   never failed. UF_HIDDEN ↔ FILE_ATTR_HIDDEN; `doesNotSupportImmutableFiles`.

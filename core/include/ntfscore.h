@@ -104,8 +104,19 @@ struct ntfs_volume_info {
 
 /* Probe: returns 0 if @dev holds an NTFS volume, -ENXIO otherwise, or
  * another negative errno on I/O failure. Fills @info label/serial/sizes
- * when non-NULL. Does not mount. */
+ * when non-NULL.
+ *
+ * This one mounts the volume read-only and unmounts it again, because
+ * free space, the hibernation state and the journal state are only knowable
+ * that way. On a 1 TB disk it costs a couple of seconds, so use it only where
+ * those fields are actually wanted -- a check task, not a probe. */
 int ntfs_probe(struct ntfs_bdev *dev, struct ntfs_volume_info *info);
+
+/* Probe without mounting: boot sector plus $Volume (one MFT record). Fills
+ * label, serial, geometry, version and @dirty. Leaves free space at zero and
+ * @hibernated / @logfile_clean false, since both need the full volume. This is
+ * what identifying a volume needs, and Disk Arbitration asks twice per mount. */
+int ntfs_probe_light(struct ntfs_bdev *dev, struct ntfs_volume_info *info);
 
 int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	       ntfs_volume_t **vol_out);

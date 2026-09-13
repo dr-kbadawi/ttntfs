@@ -44,6 +44,8 @@
 #undef ntfs_getattr
 #undef ntfs_setattr
 #include "glue.h"
+/* The journal tools' volume parser: one MFT record for the label, no mount. */
+#include "../logfile/ntfs_image.h"
 
 extern struct file_system_type ntfs_fs_type;	/* super.c (PORT: exported) */
 
@@ -313,6 +315,59 @@ static int ntfs_glue_check_boot_sector(struct ntfs_bdev *dev,
 		info->sector_size = sector_size;
 		info->mft_record_size = mft_record_size;
 		info->total_clusters = le64_to_cpu(b->number_of_sectors) / spc;
+	}
+	return 0;
+}
+
+static int glue_img_pread(void *ctx, uint64_t off, void *buf, size_t len)
+{
+	struct ntfs_bdev *d = ctx;
+	ssize_t n;
+
+	if (!d->ops || !d->ops->pread)
+		return -ENOTSUP;
+	n = d->ops->pread(d, buf, len, off);
+	if (n < 0)
+		return (int)n;
+	return (size_t)n == len ? 0 : -EIO;
+}
+
+/*
+ * Identify a volume without mounting it.
+ *
+ * ntfs_probe() below mounts and unmounts, which on a 1 TB disk takes a couple
+ * of seconds; Disk Arbitration probes twice per mount and loadResource asks
+ * again, so plugging a disk in cost four mounts before Finder showed it. The
+ * label is the only thing a probe actually needs that the boot sector does not
+ * carry, and it lives in $Volume -- one MFT record, read with the same parser
+ * the tools use rather than a second NTFS reader.
+ */
+int ntfs_probe_light(struct ntfs_bdev *dev, struct ntfs_volume_info *info)
+{
+	struct ntfs_image_io io = { .ctx = dev, .pread = glue_img_pread };
+	struct ntfs_boot_sector b;
+	struct ntfs_image img;
+	uint16_t vol_flags = 0;
+	int err;
+
+	if (!dev)
+		return -EINVAL;
+	err = ntfs_glue_check_boot_sector(dev, &b, info);
+	if (err || !info)
+		return err;
+
+	/* The label is a convenience: a volume whose $Volume cannot be read is
+	 * still a mountable NTFS volume, so report it as one and let the mount
+	 * produce the real error. */
+	if (ntfs_image_open_io(&img, &io, dev->size_bytes, false) == 0) {
+		if (ntfs_image_volume_info(&img, info->label, sizeof(info->label),
+					   &info->major_ver, &info->minor_ver,
+					   &vol_flags) == 0)
+			/* 0x0001 = VOLUME_IS_DIRTY. Spelled out because layout.h
+			 * defines it as an le16 constant and vol_flags is already
+			 * in host order. */
+			info->dirty = (vol_flags & 0x0001u) != 0;
+		ntfs_image_close(&img);
 	}
 	return 0;
 }

@@ -58,6 +58,13 @@ int ntfs_image_open_io(struct ntfs_image *img, const struct ntfs_image_io *io,
 		       uint64_t size, bool writable);
 void ntfs_image_close(struct ntfs_image *img);
 
+/* Read $Volume (MFT record 3) and report the label (UTF-8, NUL-terminated),
+ * the NTFS version and the volume flags. One MFT record is read; the volume is
+ * not mounted. Any output may be NULL. Returns 0 if either attribute was found,
+ * -ENOENT if neither, or -errno. */
+int ntfs_image_volume_info(struct ntfs_image *img, char *label, size_t label_size,
+			   uint8_t *major, uint8_t *minor, uint16_t *vol_flags);
+
 /* Fill the module's I/O and apply vtables. */
 void ntfs_image_log_io(struct ntfs_image *img, struct ntfs_log_io *io);
 void ntfs_image_geometry(const struct ntfs_image *img, struct ntfs_log_geometry *g);
