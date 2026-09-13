@@ -33,8 +33,14 @@ MODE=enable
 # What does track a live volume is the block device: the module holds one open
 # fd on /dev/diskN while serving, and none when idle.
 serving=
+# Capture, then match. Piping into `grep -q` is what broke this guard before:
+# grep exits at the first match, lsof takes SIGPIPE, and `set -o pipefail` turns
+# that into a failed pipeline -- so the `if` read false and the script cheerfully
+# restarted fskit_agent out from under a mounted volume (seen 2026-09-13, it
+# unmounted the user's disk).
 for pid in $(pgrep -f 'Contents/Extensions/NTFSExtension' 2>/dev/null); do
-    if lsof -p "$pid" 2>/dev/null | grep -qE '/dev/r?disk'; then serving=$pid; break; fi
+    fds=$(lsof -p "$pid" 2>/dev/null || true)
+    case "$fds" in *'/dev/disk'*|*'/dev/rdisk'*) serving=$pid; break;; esac
 done
 if [ -n "$serving" ]; then
     echo "a ttntfs volume is mounted (module pid $serving holds a block device open);" >&2
@@ -61,8 +67,13 @@ if [ -x "$LSREGISTER" ]; then
         # /private/tmp and /tmp are the same place; compare canonical paths.
         [ "$(cd "$found" 2>/dev/null && pwd -P)" = "$(cd "$APP" 2>/dev/null && pwd -P)" ] && continue
         echo "unregistering stray copy: $found"
-        "$LSREGISTER" -u "$found" >/dev/null 2>&1
-        pluginkit -r "$found/Contents/Extensions/NTFSExtension.appex" >/dev/null 2>&1
+        # Best effort, and it must stay that way: pluginkit -r exits 1 for a copy
+        # whose appex is gone or was never registered -- a Trash copy, typically --
+        # and under `set -e` inside this `| while` subshell that killed the whole
+        # script right here, after the echo, silently, leaving the module NOT
+        # enabled while the run looked like it had merely been quiet.
+        "$LSREGISTER" -u "$found" >/dev/null 2>&1 || true
+        pluginkit -r "$found/Contents/Extensions/NTFSExtension.appex" >/dev/null 2>&1 || true
     done
 fi
 
@@ -91,4 +102,21 @@ sleep 1
 if [ "$MODE" = enable ]; then pluginkit -e use -i "$ID"; else pluginkit -e ignore -i "$ID"; fi
 STATE=$(pluginkit -m -i "$ID" | cut -c1-1)
 echo "pluginkit: ${STATE:-?} $ID   (+ enabled, - disabled)"
+
+# Say what the state actually is rather than what was attempted. A silent early
+# exit once left the module disabled and the run looked successful.
+LISTED=$(python3 -c "
+import plistlib, sys
+with open(sys.argv[1], 'rb') as f:
+    print('yes' if sys.argv[2] in plistlib.load(f) else 'no')
+" "$PLIST" "$ID")
+if [ "$MODE" = enable ] && [ "$LISTED" != yes ]; then
+    echo "FAILED: $ID is not in the enabled list" >&2
+    exit 1
+fi
+if [ "$MODE" = disable ] && [ "$LISTED" = yes ]; then
+    echo "FAILED: $ID is still in the enabled list" >&2
+    exit 1
+fi
+echo "$ID is now ${MODE}d"
 echo "verify:  fskit/scripts/mount-test.sh"
