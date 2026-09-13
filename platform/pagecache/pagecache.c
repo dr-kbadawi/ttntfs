@@ -55,11 +55,26 @@ struct pc_index {
 	unsigned long count;
 	unsigned long busy;		/* writer / sync passes in progress */
 	struct list_head registry;	/* on g_registry */
+	struct list_head dirty_registry;	/* on g_dirty, when it may be dirty */
 	struct address_space *mapping;
 };
 
 static pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
 static LIST_HEAD(g_registry);
+/*
+ * Mappings that may hold dirty folios, so a sync does not have to walk every
+ * mapping on the volume. A sync used to cost O(all cached mappings): with 8000
+ * files cached and FSKit asking for a sync roughly every second operation, that
+ * made each unlink O(directory size) and deleting a directory quadratic.
+ *
+ * The invariant is one-sided on purpose: every mapping with a dirty folio is on
+ * this list, but a mapping on it may already be clean. Over-inclusion only
+ * costs a wasted visit; under-inclusion would lose data. Entries are added on
+ * the 0 -> 1 dirty transition and removed only by a sync that has just waited
+ * for the mapping's writeback, which is the one moment "clean" also means
+ * "nothing in flight".
+ */
+static LIST_HEAD(g_dirty);
 
 /* Waiters for folio state transitions (unlock, writeback end, busy==0).
  * state_waiters is bumped under state_lock before the condition is checked
@@ -280,6 +295,8 @@ void folio_mark_uptodate(struct folio *folio) { set_bit(PG_uptodate, &folio->fla
 void folio_clear_uptodate(struct folio *folio) { clear_bit(PG_uptodate, &folio->flags); }
 void folio_set_error(struct folio *folio) { set_bit(PG_error, &folio->flags); }
 
+static void mapping_note_dirty(struct address_space *m);
+
 /* Caller holds tree_lock. */
 static bool __folio_set_dirty(struct address_space *m, struct folio *f)
 {
@@ -304,13 +321,20 @@ static bool __folio_clear_dirty(struct address_space *m, struct folio *f)
 bool folio_mark_dirty(struct folio *folio)
 {
 	struct address_space *m = folio->mapping;
-	bool newly;
+	bool newly, first;
 
 	if (!m)
 		return false;		/* truncated away; nothing to write */
 	spin_lock(&m->tree_lock);
 	newly = __folio_set_dirty(m, folio);
+	/* Only the 0 -> 1 transition needs the registry: above one dirty folio the
+	 * mapping is certainly still listed, because pruning requires nrdirty == 0.
+	 * Without this a thousand-folio write took registry_lock a thousand times
+	 * and contended with the sync walk that holds it. */
+	first = newly && m->nrdirty == 1;
 	spin_unlock(&m->tree_lock);
+	if (first)
+		mapping_note_dirty(m);	/* after tree_lock: registry_lock is above it */
 	return newly;
 }
 
@@ -956,6 +980,80 @@ static void mapping_busy_dec(struct pc_index *ix)	/* registry_lock held */
  * @sb) without holding registry_lock across the call, in registration
  * order or, with @reverse, newest first.
  */
+static void mapping_note_dirty(struct address_space *m)
+{
+	struct pc_index *ix = idx_of(m);
+
+	if (!ix)
+		return;
+	pthread_mutex_lock(&registry_lock);
+	if (list_empty(&ix->dirty_registry))
+		list_add_tail(&ix->dirty_registry, &g_dirty);
+	pthread_mutex_unlock(&registry_lock);
+}
+
+/*
+ * Like for_each_mapping(), but over the maybe-dirty list, and it prunes.
+ *
+ * @prune drops a mapping from the list once @fn has returned and the mapping
+ * is clean. That check runs under registry_lock, which the adder also takes, so
+ * a folio dirtied concurrently either raises nrdirty before we look (we keep
+ * the entry) or adds the entry back after we drop it. It runs under tree_lock
+ * as well, which is legal here and nowhere near a lock-order inversion:
+ * registry_lock is the outer lock (see the header comment).
+ *
+ * Pruning is only correct on a pass that waited for the mapping's writeback --
+ * nrdirty reaches 0 the moment writeback starts, not when it finishes -- so the
+ * caller passes prune only for a pass that ran filemap_write_and_wait().
+ */
+static int for_each_dirty_mapping(struct super_block *sb, bool reverse, bool prune,
+				  int (*fn)(struct address_space *, void *), void *arg)
+{
+	struct pc_index cursor = { .mapping = NULL };
+	struct list_head *pos;
+	int err = 0;
+
+	pthread_mutex_lock(&registry_lock);
+	for (pos = reverse ? g_dirty.prev : g_dirty.next; pos != &g_dirty;
+	     pos = reverse ? pos->prev : pos->next) {
+		struct pc_index *ix = list_entry(pos, struct pc_index, dirty_registry);
+		struct address_space *m = ix->mapping;
+		bool drop = false;
+		int e;
+
+		if (!m)
+			continue;	/* another iterator's cursor */
+		if (sb && (!m->host || m->host->i_sb != sb))
+			continue;
+		if (reverse)
+			list_add_tail(&cursor.dirty_registry, pos);
+		else
+			list_add(&cursor.dirty_registry, pos);
+		mapping_busy_inc(ix);
+		pthread_mutex_unlock(&registry_lock);
+		e = fn(m, arg);
+		if (e && !err)
+			err = e;
+		pthread_mutex_lock(&registry_lock);
+		mapping_busy_dec(ix);
+		if (prune && !e) {
+			spin_lock(&m->tree_lock);
+			drop = m->nrdirty == 0;
+			spin_unlock(&m->tree_lock);
+		}
+		/* Unlink ix BEFORE reading the resume position out of the cursor.
+		 * The cursor sits next to ix, so the resume node is ix itself;
+		 * dropping ix afterwards left pos on a node whose next pointed at
+		 * itself and the walk span forever. */
+		if (drop)
+			list_del_init(&ix->dirty_registry);
+		pos = reverse ? cursor.dirty_registry.next : cursor.dirty_registry.prev;
+		list_del(&cursor.dirty_registry);
+	}
+	pthread_mutex_unlock(&registry_lock);
+	return err;
+}
+
 static int for_each_mapping(struct super_block *sb, bool reverse,
 			    int (*fn)(struct address_space *, void *), void *arg)
 {
@@ -1100,8 +1198,8 @@ int pagecache_sync_sb(struct super_block *sb)
 	bool first = false, last = true;
 	int err, e;
 
-	err = for_each_mapping(sb, false, sync_fn, &first);
-	e = for_each_mapping(sb, true, sync_fn, &last);
+	err = for_each_dirty_mapping(sb, false, false, sync_fn, &first);
+	e = for_each_dirty_mapping(sb, true, true, sync_fn, &last);
 	return err ? err : e;
 }
 
@@ -1132,6 +1230,7 @@ void address_space_init(struct address_space *mapping, struct inode *host,
 	}
 	ix->mapping = mapping;
 	mapping->tree = ix;
+	INIT_LIST_HEAD(&ix->dirty_registry);
 	pthread_mutex_lock(&registry_lock);
 	list_add_tail(&ix->registry, &g_registry);
 	pthread_mutex_unlock(&registry_lock);
@@ -1148,6 +1247,7 @@ void address_space_destroy(struct address_space *mapping, bool discard)
 	/* Unregister, then wait for any pass that still holds us busy. */
 	pthread_mutex_lock(&registry_lock);
 	list_del_init(&ix->registry);
+	list_del_init(&ix->dirty_registry);
 	pthread_mutex_unlock(&registry_lock);
 	state_wait_while(ix->busy);
 

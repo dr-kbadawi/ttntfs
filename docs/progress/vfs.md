@@ -107,9 +107,26 @@ attributes, which does not depend on directory size) -> `ntfs_index_remove`
 the lookup, which is O(log n). Not yet diagnosed further, and not yet fixed:
 changing B-tree deletion in ported kernel code needs its own test coverage.
 
-This is the concrete form of the phase 5 metadata gap: delete was already the
-one operation outside 2x of Apple's exFAT module (0.30x on 1000 files), and it
-gets worse as directories grow.
+**Cause and fix (same day).** It was not the B-tree. `sample` put the time in
+`NTFSVolume.synchronize` -> `ntfs_volume_sync` -> `sync_filesystem`, and FSKit
+asks for a sync about every second operation. `pagecache_sync_sb()` walked every
+mapping on the volume twice per sync, so each unlink cost O(cached mappings).
+Fixed in the platform layer with a maybe-dirty mapping list (finding 15 in
+platform-review.md); the B-tree code is untouched.
+
+| files | delete/s before | delete/s after |
+|---|---|---|
+| 500 | 854 | ~900 |
+| 1000 | 654 | ~830 |
+| 2000 | 478 | ~740 |
+| 4000 | 362 | ~615 |
+| 8000 | 224 | ~445 |
+
+Still not flat: `sync_inodes_sb()` -> `snapshot_inodes()` walks `sb->s_inodes`
+on every sync for the same reason, and is the remaining O(n). Creates cost
+~10-15% more than before (the sync walk now also prunes, and during a create
+burst most mappings really are dirty, so the list is not shorter than the
+registry).
 
 ## Next
 - Windows `chkdsk /f` round trip on real media (phase 2 gate needs the PC). More
