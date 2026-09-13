@@ -160,6 +160,30 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
             } else {
                 task.logMessage(quick ? "ttntfs: quick check: volume appears clean" : "ttntfs: volume appears clean")
             }
+            // Journal analysis: read-only, so it is safe to run on anything and
+            // is the only way to see what replay *would* do while replay itself
+            // stays refused (docs/LOGFILE.md). Skipped for a quick check.
+            if !quick {
+                var analysis = ntfs_logfile_analysis()
+                let rc = ntfs_logfile_analyse(volume.device, &analysis)
+                if rc < 0 {
+                    task.logMessage("ttntfs: journal could not be read (errno \(hostErrno(rc)))")
+                } else {
+                    let state = withUnsafeBytes(of: &analysis.state) { raw in
+                        String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+                    }
+                    let message = withUnsafeBytes(of: &analysis.message) { raw in
+                        String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+                    }
+                    task.logMessage("ttntfs: journal \(state) (v\(analysis.log_version_major).\(analysis.log_version_minor))")
+                    task.logMessage("ttntfs: \(message)")
+                    if !analysis.clean && analysis.supported && !analysis.needs_chkdsk {
+                        task.logMessage("ttntfs: this is an analysis only — nothing was written. "
+                                        + "Replay is not enabled: the log layout it relies on has not "
+                                        + "yet been checked against a journal Windows wrote.")
+                    }
+                }
+            }
             task.didComplete(error: nil)
         }
         return progress

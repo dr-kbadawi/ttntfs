@@ -42,7 +42,7 @@ target_compile_options(ntfslogfile PRIVATE ${NTFS_LOGFILE_WARNINGS})
 if(PROJECT_IS_TOP_LEVEL OR NTFS_LOGFILE_TOOLS)
 	# Minimal NTFS image access (boot sector, MFT record 0/2, run lists)
 	# shared by the CLI and the tests.
-	add_library(ntfslogimg STATIC cli/ntfs_image.c)
+	add_library(ntfslogimg STATIC ntfs_image.c)
 	target_include_directories(ntfslogimg PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cli)
 	target_link_libraries(ntfslogimg PUBLIC ntfslogfile)
 	target_compile_options(ntfslogimg PRIVATE ${NTFS_LOGFILE_WARNINGS})
@@ -53,7 +53,7 @@ if(PROJECT_IS_TOP_LEVEL OR NTFS_LOGFILE_TOOLS)
 
 	# Tests: the whole module is recompiled with sanitizers.
 	set(NTFS_LOGFILE_SAN -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
-	add_executable(test_logfile tests/test_logfile.c cli/ntfs_image.c ${NTFS_LOGFILE_SOURCES})
+	add_executable(test_logfile tests/test_logfile.c ntfs_image.c ${NTFS_LOGFILE_SOURCES})
 	target_include_directories(test_logfile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/cli)
 	target_compile_options(test_logfile PRIVATE ${NTFS_LOGFILE_WARNINGS} ${NTFS_LOGFILE_SAN})
 	target_link_options(test_logfile PRIVATE ${NTFS_LOGFILE_SAN})

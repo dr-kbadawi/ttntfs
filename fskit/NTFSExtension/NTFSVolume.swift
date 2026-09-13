@@ -102,6 +102,26 @@ final class NTFSVolume: FSVolume {
     /// EROFS guard for every mutating operation.
     private var writable: Bool { !isReadOnly }
 
+    /// A read-only look at what replaying the journal would do, run only when
+    /// the journal is why the volume is read-only. Writes nothing: the replay
+    /// engine's changes go to an in-memory overlay. It is the only thing we can
+    /// honestly offer for this case -- replay itself stays refused because the
+    /// log layout it depends on has never been checked against a journal
+    /// Windows wrote (docs/LOGFILE.md).
+    private func journalSummary(_ info: ntfs_volume_info) -> String {
+        guard !info.logfile_clean else { return "" }
+        var analysis = ntfs_logfile_analysis()
+        guard ntfs_logfile_analyse(device, &analysis) >= 0 else { return "" }
+        func text(_ field: inout some Any) -> String {
+            withUnsafeBytes(of: &field) { raw in
+                String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+            }
+        }
+        let state = text(&analysis.state), message = text(&analysis.message)
+        log.notice("\(self.bsdName, privacy: .public): journal \(state, privacy: .public) v\(analysis.log_version_major).\(analysis.log_version_minor) clean=\(analysis.clean) supported=\(analysis.supported) chkdsk=\(analysis.needs_chkdsk) records=\(analysis.records_analyzed) redo=\(analysis.records_redone) undo=\(analysis.records_undone)")
+        return "Journal: \(state), version \(analysis.log_version_major).\(analysis.log_version_minor). \(message)"
+    }
+
     private func publishStatus(_ info: ntfs_volume_info) {
         let label = withUnsafePointer(to: info.label) { p in
             p.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
@@ -111,7 +131,8 @@ final class NTFSVolume: FSVolume {
             readOnly: isReadOnly, roReason: Int(roReason),
             roReasonText: isReadOnly ? MountStatus.reasonText(Int(roReason)) : "",
             dirty: info.dirty, hibernated: info.hibernated, logfileClean: info.logfile_clean,
-            coreVersion: String(cString: ntfs_core_version()), mountedAt: Date()))
+            coreVersion: String(cString: ntfs_core_version()), mountedAt: Date(),
+            journalSummary: journalSummary(info)))
     }
 }
 

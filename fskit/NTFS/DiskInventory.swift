@@ -36,6 +36,8 @@ struct Partition: Identifiable, Equatable {
     /// Writing to it would corrupt the filesystem when Windows resumes, so the
     /// driver refuses until the saved session is discarded.
     var hibernated: Bool = false
+    /// What replaying the journal would do, when that is why it is read-only.
+    var journalSummary: String = ""
     var servedByOurDriver: Bool = false
 
     var id: String { bsdName }
@@ -122,6 +124,7 @@ final class DiskInventory: ObservableObject {
                     found[index].readOnlyReason = s.roReasonText
                 }
                 found[index].hibernated = s.hibernated
+                found[index].journalSummary = s.journalSummary
             }
             found[index].servedByOurDriver = ModuleEnabler.deviceIsServedByModule(found[index].device)
         }

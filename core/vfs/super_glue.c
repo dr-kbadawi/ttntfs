@@ -616,7 +616,7 @@ int ntfs_logfile_check(ntfs_volume_t *h, bool *clean)
 	return 0;
 }
 
-int ntfs_logfile_replay(ntfs_volume_t *h)
+int ntfs_volume_replay_journal(ntfs_volume_t *h)
 {
 	(void)h;
 	return -ENOSYS;		/* phase 4 (core/logfile) */

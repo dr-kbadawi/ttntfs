@@ -192,6 +192,15 @@ struct PartitionRow: View {
                         .foregroundStyle(partition.servedByOurDriver ? Color.secondary : Color.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                // Read-only analysis of the journal: what a replay would do.
+                // Shown because it is the only thing we can offer for an
+                // unclean journal, and it explains the read-only state
+                // concretely rather than just naming it.
+                if !partition.journalSummary.isEmpty {
+                    Text(partition.journalSummary)
+                        .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer()
             action

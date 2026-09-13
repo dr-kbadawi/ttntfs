@@ -15,6 +15,34 @@ static int seterr(struct ntfs_image *img, int err, const char *msg)
 	return err;
 }
 
+static int pread_all(int fd, uint64_t off, void *buf, size_t len);
+static int pwrite_all(int fd, uint64_t off, const void *buf, size_t len);
+
+static int img_fd_pread(void *ctx, uint64_t off, void *buf, size_t len)
+{
+	return pread_all(((struct ntfs_image *)ctx)->fd, off, buf, len);
+}
+
+static int img_fd_pwrite(void *ctx, uint64_t off, const void *buf, size_t len)
+{
+	return pwrite_all(((struct ntfs_image *)ctx)->fd, off, buf, len);
+}
+
+static int ntfs_image_parse(struct ntfs_image *img, uint32_t cluster_size,
+			    uint32_t mft_record_size, bool allow_raw);
+
+static int img_pread(struct ntfs_image *img, uint64_t off, void *buf, size_t len)
+{
+	return img->io.pread(img->io.ctx, off, buf, len);
+}
+
+static int img_pwrite(struct ntfs_image *img, uint64_t off, const void *buf, size_t len)
+{
+	if (!img->io.pwrite)
+		return -EROFS;
+	return img->io.pwrite(img->io.ctx, off, buf, len);
+}
+
 static int pread_all(int fd, uint64_t off, void *buf, size_t len)
 {
 	uint8_t *p = buf;
@@ -125,7 +153,7 @@ static int read_mft_record(struct ntfs_image *img, uint64_t no, uint8_t *rec)
 				     no * img->mft_record_size);
 	if (off == UINT64_MAX)
 		return -ENOENT;
-	err = pread_all(img->fd, off, rec, img->mft_record_size);
+	err = img_pread(img, off, rec, img->mft_record_size);
 	if (err)
 		return err;
 	if (lf_get32(rec) != LFS_MAGIC_FILE)
@@ -162,32 +190,47 @@ static int find_data_runs(struct ntfs_image *img, const uint8_t *rec, struct ntf
 	return -ENOENT;
 }
 
-int ntfs_image_open(struct ntfs_image *img, const char *path, bool writable,
-		    uint32_t cluster_size, uint32_t mft_record_size)
+/*
+ * Parse the volume: boot sector geometry, then the $MFT and $LogFile run lists.
+ * Split out of ntfs_image_open() so a caller that already has the bytes -- the
+ * driver, over its own block device -- gets the same parser rather than a
+ * second, subtly different NTFS reader.
+ */
+int ntfs_image_open_io(struct ntfs_image *img, const struct ntfs_image_io *io,
+		       uint64_t size, bool writable)
+{
+	if (!img || !io || !io->pread)
+		return -EINVAL;
+	memset(img, 0, sizeof(*img));
+	img->fd = -1;
+	img->io = *io;
+	img->writable = writable;
+	img->file_size = size;
+	return ntfs_image_parse(img, 0, 0, false);
+}
+
+/*
+ * Geometry and run lists from the bytes already reachable through img->io.
+ * Shared by both entry points so a volume is read exactly one way.
+ */
+static int ntfs_image_parse(struct ntfs_image *img, uint32_t cluster_size,
+			    uint32_t mft_record_size, bool allow_raw)
 {
 	uint8_t bs[512];
-	struct stat st;
 	int err;
 	uint32_t magic;
 	int8_t cpr;
 	uint8_t *rec;
 
-	memset(img, 0, sizeof(*img));
-	img->fd = open(path, writable ? O_RDWR : O_RDONLY);
-	if (img->fd < 0)
-		return seterr(img, -errno, "cannot open file");
-	img->writable = writable;
-	if (fstat(img->fd, &st))
-		return seterr(img, -errno, "fstat failed");
-	img->file_size = (uint64_t)st.st_size;
 	if (img->file_size < 512)
-		return seterr(img, -EINVAL, "file too small");
-	err = pread_all(img->fd, 0, bs, sizeof(bs));
+		return seterr(img, -EINVAL, "volume too small");
+	err = img_pread(img, 0, bs, sizeof(bs));
 	if (err)
 		return seterr(img, err, "cannot read first sector");
 	magic = lf_get32(bs);
-	if (magic == LFS_MAGIC_RSTR || magic == LFS_MAGIC_CHKD || magic == LFS_MAGIC_EMPTY ||
-	    magic == LFS_MAGIC_RCRD) {
+	if (allow_raw &&
+	    (magic == LFS_MAGIC_RSTR || magic == LFS_MAGIC_CHKD || magic == LFS_MAGIC_EMPTY ||
+	     magic == LFS_MAGIC_RCRD)) {
 		img->raw = true;
 		img->cluster_size = cluster_size ? cluster_size : 4096;
 		img->mft_record_size = mft_record_size ? mft_record_size : 1024;
@@ -240,6 +283,26 @@ int ntfs_image_open(struct ntfs_image *img, const char *path, bool writable,
 	return 0;
 }
 
+int ntfs_image_open(struct ntfs_image *img, const char *path, bool writable,
+		    uint32_t cluster_size, uint32_t mft_record_size)
+{
+	struct stat st;
+
+	memset(img, 0, sizeof(*img));
+	img->io.ctx = img;
+	img->io.pread = img_fd_pread;
+	img->io.pwrite = writable ? img_fd_pwrite : NULL;
+	img->io.sync = NULL;
+	img->fd = open(path, writable ? O_RDWR : O_RDONLY);
+	if (img->fd < 0)
+		return seterr(img, -errno, "cannot open file");
+	img->writable = writable;
+	if (fstat(img->fd, &st))
+		return seterr(img, -errno, "fstat failed");
+	img->file_size = (uint64_t)st.st_size;
+	return ntfs_image_parse(img, cluster_size, mft_record_size, true);
+}
+
 void ntfs_image_close(struct ntfs_image *img)
 {
 	if (img->fd >= 0)
@@ -257,7 +320,7 @@ static int log_rw(struct ntfs_image *img, uint64_t off, void *buf, size_t len, b
 	uint8_t *p = buf;
 
 	if (img->raw)
-		return write ? pwrite_all(img->fd, off, buf, len) : pread_all(img->fd, off, buf, len);
+		return write ? img_pwrite(img, off, buf, len) : img_pread(img, off, buf, len);
 	while (len) {
 		uint64_t phys = ntfs_image_map(img->log_runs, img->n_log_runs, img->cluster_size, off);
 		size_t n = img->cluster_size - (size_t)(off % img->cluster_size);
@@ -269,7 +332,7 @@ static int log_rw(struct ntfs_image *img, uint64_t off, void *buf, size_t len, b
 				return -EIO;
 			memset(p, 0xff, n);
 		} else {
-			err = write ? pwrite_all(img->fd, phys, p, n) : pread_all(img->fd, phys, p, n);
+			err = write ? img_pwrite(img, phys, p, n) : img_pread(img, phys, p, n);
 			if (err)
 				return err;
 		}
@@ -315,7 +378,7 @@ static int ap_read_mft(void *ctx, uint64_t no, void *buf)
 				      no * img->mft_record_size);
 	if (off == UINT64_MAX)
 		return -ENOENT;
-	return pread_all(img->fd, off, buf, img->mft_record_size);
+	return img_pread(img, off, buf, img->mft_record_size);
 }
 
 static int ap_write_mft(void *ctx, uint64_t no, const void *buf)
@@ -326,25 +389,27 @@ static int ap_write_mft(void *ctx, uint64_t no, const void *buf)
 	if (off == UINT64_MAX)
 		return -ENOENT;
 	img->writes_mft++;
-	return pwrite_all(img->fd, off, buf, img->mft_record_size);
+	return img_pwrite(img, off, buf, img->mft_record_size);
 }
 
 static int ap_read_clusters(void *ctx, uint64_t lcn, uint32_t count, void *buf)
 {
 	struct ntfs_image *img = ctx;
-	return pread_all(img->fd, lcn * img->cluster_size, buf, (size_t)count * img->cluster_size);
+	return img_pread(img, lcn * img->cluster_size, buf, (size_t)count * img->cluster_size);
 }
 
 static int ap_write_clusters(void *ctx, uint64_t lcn, uint32_t count, const void *buf)
 {
 	struct ntfs_image *img = ctx;
 	img->writes_clusters += count;
-	return pwrite_all(img->fd, lcn * img->cluster_size, buf, (size_t)count * img->cluster_size);
+	return img_pwrite(img, lcn * img->cluster_size, buf, (size_t)count * img->cluster_size);
 }
 
 static int ap_sync(void *ctx)
 {
 	struct ntfs_image *img = ctx;
+	if (img->io.sync)
+		return img->io.sync(img->io.ctx);
 	return fsync(img->fd) ? -errno : 0;
 }
 

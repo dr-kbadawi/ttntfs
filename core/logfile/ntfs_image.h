@@ -17,7 +17,20 @@ struct ntfs_img_run {
 	uint64_t vcn, lcn, len;		/* lcn == UINT64_MAX: hole */
 };
 
+/*
+ * Where the bytes come from. The tools open a file; the driver hands over its
+ * own block device, which is the same flat address space and lets the core run
+ * the analysis on a real volume without a second NTFS reader.
+ */
+struct ntfs_image_io {
+	void *ctx;
+	int (*pread)(void *ctx, uint64_t off, void *buf, size_t len);
+	int (*pwrite)(void *ctx, uint64_t off, const void *buf, size_t len);   /* NULL: read-only */
+	int (*sync)(void *ctx);                                                /* optional */
+};
+
 struct ntfs_image {
+	struct ntfs_image_io io;
 	int fd;
 	bool writable;
 	bool raw;			/* file is a raw $LogFile dump, not a volume */
@@ -38,6 +51,11 @@ struct ntfs_image {
  * come from the arguments (0 = 4096/1024). Returns 0 or -errno. */
 int ntfs_image_open(struct ntfs_image *img, const char *path, bool writable,
 		    uint32_t cluster_size, uint32_t mft_record_size);
+
+/* Same, over caller-supplied I/O: @io->pread must be set, @io->pwrite only for
+ * a writable image. @size is the addressable length. Never a raw log dump. */
+int ntfs_image_open_io(struct ntfs_image *img, const struct ntfs_image_io *io,
+		       uint64_t size, bool writable);
 void ntfs_image_close(struct ntfs_image *img);
 
 /* Fill the module's I/O and apply vtables. */

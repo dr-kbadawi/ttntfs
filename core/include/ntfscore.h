@@ -233,7 +233,37 @@ int ntfs_validate_name(ntfs_volume_t *vol, const char *name);
 
 /* Journal. Replay is phase 4; until then check reports state only. */
 int ntfs_logfile_check(ntfs_volume_t *vol, bool *clean);
-int ntfs_logfile_replay(ntfs_volume_t *vol);
+int ntfs_volume_replay_journal(ntfs_volume_t *vol);
+
+/*
+ * Read-only journal analysis: what replaying $LogFile would do, without
+ * touching the volume. Works on a device, mounted or not, and needs only read
+ * access -- the replay engine's every write goes to an in-memory overlay.
+ *
+ * This is offered while ntfs_logfile_replay() is still refused because the two
+ * carry completely different risk: the v2.0 log layout used by every dirty
+ * volume from a current Windows PC is inferred rather than observed
+ * (docs/LOGFILE.md section 5), so applying it could corrupt a filesystem, while
+ * reading it cannot -- and what this reports is the evidence needed to decide
+ * whether that inference holds.
+ *
+ * Returns 0 when the analysis ran, filling @out (including the case "this
+ * journal cannot be analysed", explained in @message); negative errno if the
+ * volume could not be read at all.
+ */
+struct ntfs_logfile_analysis {
+	bool log_present;
+	bool clean;			/* no replay needed */
+	bool supported;			/* log version understood */
+	bool needs_chkdsk;		/* a record could not be applied safely */
+	uint16_t log_version_major, log_version_minor;
+	char state[32];			/* empty / clean / dirty / chkdsk / ... */
+	uint32_t records_analyzed, records_redone, records_undone;
+	uint32_t transactions_active, transactions_committed;
+	uint32_t mft_records_written, clusters_written;
+	char message[256];		/* one sentence for the user */
+};
+int ntfs_logfile_analyse(struct ntfs_bdev *dev, struct ntfs_logfile_analysis *out);
 
 /* Diagnostics */
 typedef void (*ntfs_log_fn)(int level, const char *msg, void *ctx);

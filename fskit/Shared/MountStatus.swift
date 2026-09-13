@@ -24,6 +24,10 @@ struct MountStatus: Codable, Equatable {
     var logfileClean: Bool
     var coreVersion: String
     var mountedAt: Date
+    /// What a journal replay would do, when the volume mounted read-only
+    /// because its journal is unclean. Read-only analysis; nothing was written.
+    /// Empty when the journal is clean or the analysis did not run.
+    var journalSummary: String = ""
 
     /// Human text for ntfs_ro_reason (kept here so the app does not need the C header).
     static func reasonText(_ reason: Int, deviceReadOnly: Bool = false) -> String {

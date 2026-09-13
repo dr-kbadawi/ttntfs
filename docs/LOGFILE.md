@@ -325,6 +325,29 @@ commit `f5ba6ba`):
 | ≥ 2.1, ≥ 3 | `NTFS_LOG_UNSUPPORTED`, never clean | — | refused | — |
 | `CHKD` restart page | reported `CHKDSK` | — | refused ("let Windows finish") | — |
 
+## 6.1 Read-only analysis on a real volume
+
+`ntfs_logfile_analyse(struct ntfs_bdev *, struct ntfs_logfile_analysis *)`
+(core/logfile/logfile_analyse.c) runs the analysis, redo and undo passes with
+`dry_run`, so every write goes to the in-memory overlay and nothing reaches the
+disk. It works on a device rather than a mounted volume, reusing the same
+geometry parser the tools use for images (`ntfs_image_open_io`), and needs only
+read access. The extension runs it whenever a volume mounts read-only because
+its journal is unclean, and publishes the one-sentence result through
+`mount-status.json`, so the app can say what a replay *would* do while replay
+itself stays refused.
+
+This is the honest answer to "let the user replay at their own risk": the risk
+is not that replay fails, it is that an inferred v2.0 layout silently
+restructures a filesystem. Reading cannot do that, and what it reports is the
+evidence section 7 asks for.
+
+First real-volume result (2026-09-13, a Windows recovery partition on a USB
+disk): `state = no usable restart page, version 0.0`. Not a v2.0 log at all —
+the restart pages are unusable, so there is nothing to replay and nothing to
+learn from it. The same code reports `empty (never written)` on the clean
+fixtures, matching `ntfslog`, so the bridge itself is sound.
+
 ## 7. Capture list for the Windows PC
 
 Goal: real dirty logs (1.1 and 2.0), plus Windows' own replay result as ground

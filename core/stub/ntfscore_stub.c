@@ -66,4 +66,5 @@ int ntfs_listxattr(ntfs_inode_t *ni, char *buf, size_t size, size_t *len) { (voi
 
 int ntfs_validate_name(ntfs_volume_t *vol, const char *name) { (void)vol; (void)name; return -ENOSYS; }
 int ntfs_logfile_check(ntfs_volume_t *vol, bool *clean) { (void)vol; *clean = false; return -ENOSYS; }
-int ntfs_logfile_replay(ntfs_volume_t *vol) { (void)vol; return -ENOSYS; }
+int ntfs_volume_replay_journal(ntfs_volume_t *vol) { (void)vol; return -ENOSYS; }
+int ntfs_logfile_analyse(struct ntfs_bdev *dev, struct ntfs_logfile_analysis *out) { (void)dev; (void)out; return -ENOSYS; }
