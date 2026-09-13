@@ -150,9 +150,17 @@ fixtures` (see tools/README.md).
   third-party module; use `scripts/enable-module.sh`. It will keep showing the
   module as off even while it is enabled and mounting — `FSClient` and the
   menu-bar app report the true state.
-- Launching or relaunching the host app re-registers the extension, which kills
-  the running module and unmounts its volumes. Do not launch it while a `ttntfs`
-  volume is mounted.
+- The **first** launch of a freshly installed app bundle re-registers the
+  extension, which kills the running module and unmounts its volumes
+  (`launchd: remove all extension instances: caller = pkd`). Later launches of
+  an already-registered bundle are harmless — verified 2026-09-13 on 26.6.2
+  with a volume mounted: it stayed mounted and the plugin UUID did not change.
+  So the install order matters (copy, launch once, then `enable-module.sh`,
+  then mount), but day-to-day launching does not.
+- The app does not register itself as a login item, so it does not start at
+  boot; nothing in `NTFS/` calls `SMAppService`. The driver does not need it —
+  the extension is launched on demand by `fskit_agent` — but the menu-bar
+  status and settings are simply absent until the user opens the app.
 - `mount -F -t ttntfs` on a *physical* disk fails with EACCES opening
   `/dev/rdiskN` even as the owning user (acknowledged by Apple DTS). Mounts
   initiated by Disk Arbitration — plugging the disk in, `diskutil mount` — work.
