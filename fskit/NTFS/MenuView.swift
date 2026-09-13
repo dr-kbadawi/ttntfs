@@ -7,8 +7,6 @@ struct MenuView: View {
     @EnvironmentObject var status: ExtensionStatus
     @EnvironmentObject var enabler: ModuleEnabler
     @EnvironmentObject var inventory: DiskInventory
-    @State private var discardTarget: Partition?
-    @State private var replayTarget: Partition?
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -43,8 +41,8 @@ struct MenuView: View {
                             : partition.readOnlyReason,
                         mount: { Task { await inventory.mount(partition); monitor.refresh() } },
                         eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
-                        discardHibernation: { discardTarget = partition },
-                        replayJournal: { replayTarget = partition },
+                        discardHibernation: { confirmDiscard(partition) },
+                        replayJournal: { confirmReplay(partition) },
                         note: inventory.note?.bsdName == partition.bsdName
                             ? inventory.note?.text : nil,
                         busy: inventory.busy,
@@ -65,38 +63,6 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 340)
-        .confirmationDialog("Replay the journal on \(replayTarget?.displayName ?? "")?",
-                            isPresented: Binding(get: { replayTarget != nil },
-                                                 set: { if !$0 { replayTarget = nil } })) {
-            Button("Replay and Mount Read/Write", role: .destructive) {
-                if let target = replayTarget {
-                    Task { await inventory.replayJournal(target); monitor.refresh() }
-                }
-                replayTarget = nil
-            }
-            Button("Cancel", role: .cancel) { replayTarget = nil }
-        } message: {
-            Text("This finishes the writes Windows left unfinished, using a journal format "
-                 + "this driver has worked out rather than one it has verified against Windows. "
-                 + "If that reading is wrong it can damage the file system, and the damage may "
-                 + "not be obvious straight away. Back up anything you cannot lose first. "
-                 + "The safe alternative is to plug the disk into Windows and eject it properly.")
-        }
-        .confirmationDialog("Discard the saved Windows session on \(discardTarget?.displayName ?? "")?",
-                            isPresented: Binding(get: { discardTarget != nil },
-                                                 set: { if !$0 { discardTarget = nil } })) {
-            Button("Discard and Mount Read/Write", role: .destructive) {
-                if let target = discardTarget {
-                    Task { await inventory.discardHibernation(target); monitor.refresh() }
-                }
-                discardTarget = nil
-            }
-            Button("Cancel", role: .cancel) { discardTarget = nil }
-        } message: {
-            Text("Windows saved a suspended session on this volume with Fast Startup. "
-                 + "Anything left open in Windows will be lost and Windows will start fresh next time. "
-                 + "Your files are not affected.")
-        }
         .task { monitor.start(); inventory.start(); status.refresh() }
     }
 
@@ -115,6 +81,29 @@ struct MenuView: View {
             window.makeKeyAndOrderFront(nil)
             window.orderFrontRegardless()
         }
+    }
+
+    private func confirmReplay(_ partition: Partition) {
+        guard Confirm.destructive(
+            title: "Replay the journal on \(partition.displayName)?",
+            message: "This finishes the writes Windows left unfinished, using a journal format "
+                   + "this driver has worked out rather than one it has verified against Windows. "
+                   + "If that reading is wrong it can damage the file system, and the damage may "
+                   + "not be obvious straight away.\n\n"
+                   + "Back up anything you cannot lose first. The safe alternative is to plug the "
+                   + "disk into Windows and eject it properly.",
+            proceed: "Replay and Mount Read/Write") else { return }
+        Task { await inventory.replayJournal(partition); monitor.refresh() }
+    }
+
+    private func confirmDiscard(_ partition: Partition) {
+        guard Confirm.destructive(
+            title: "Discard the saved Windows session on \(partition.displayName)?",
+            message: "Windows saved a suspended session on this volume with Fast Startup. "
+                   + "Anything left open in Windows will be lost and Windows will start fresh "
+                   + "next time.\n\nYour files are not affected.",
+            proceed: "Discard and Mount Read/Write") else { return }
+        Task { await inventory.discardHibernation(partition); monitor.refresh() }
     }
 
     /// Partitions grouped by the physical disk they live on, in a stable order.

@@ -232,6 +232,14 @@ fixtures` (see tools/README.md).
   A `busy` flag disables the buttons while this runs: pressing again mid-flight
   starts a second unmount/mount race against the first, which is how a volume
   ended up unmounted with an error on screen.
+- **Destructive confirmations use `NSAlert`, not `.confirmationDialog`.**
+  Presenting a SwiftUI confirmation dialog from a `MenuBarExtra` panel closes
+  the panel that owns it, and the panel's dismissal does not reset the
+  presentation binding — so Cancel made the whole menu vanish and reopening it
+  showed the same dialog again, still unanswered. An `NSAlert` has no tie to the
+  panel, has room for the explanation these actions need, and lets **Cancel** be
+  the default button, which is the right default for something that can damage a
+  file system (`Confirm.swift`).
 - **Safe removal is a whole-disk operation.** Ejecting one volume leaves the
   other partitions mounted and the device powered, so pulling the cable then
   risks whatever was still live -- the per-volume Eject was never safe removal.

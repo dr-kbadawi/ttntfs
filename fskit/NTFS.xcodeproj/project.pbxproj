@@ -18,6 +18,7 @@
 		A03A39F6CA160CE1691A5427 /* NTFSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D80DAAE4977838464ED6255 /* NTFSApp.swift */; };
 		A2549823DEA9B9023D99262B /* ModuleEnabler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46E9124D88A86CA415124E8A /* ModuleEnabler.swift */; };
 		A47E2521C83A6E5A365131F8 /* ntfscore_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = 21592494DAEE07BF86761556 /* ntfscore_stub.c */; };
+		A9090B2620C46562ADB1AB0B /* Confirm.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F792F8227F5EA72F72433B /* Confirm.swift */; };
 		A91E3637C8414C21A3AA8901 /* Options.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A89785ABD0C6A5D4BE75297 /* Options.swift */; };
 		ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */; };
 		B918A3CCC2D1D2E71DA50A82 /* MenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88488AA353AAC885FE74E9F9 /* MenuView.swift */; };
@@ -65,6 +66,7 @@
 		444E775DBFFDA6F5791982DE /* ntfs_bdev_fskit.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ntfs_bdev_fskit.h; sourceTree = "<group>"; };
 		46E9124D88A86CA415124E8A /* ModuleEnabler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleEnabler.swift; sourceTree = "<group>"; };
 		49CC0869C89E4C38774395AC /* MountStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountStatus.swift; sourceTree = "<group>"; };
+		58F792F8227F5EA72F72433B /* Confirm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Confirm.swift; sourceTree = "<group>"; };
 		67642D3967176F0F3848BF48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7A89785ABD0C6A5D4BE75297 /* Options.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Options.swift; sourceTree = "<group>"; };
 		7D80DAAE4977838464ED6255 /* NTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSApp.swift; sourceTree = "<group>"; };
@@ -104,6 +106,7 @@
 		041363860B3DB1C67B5D663E /* NTFS */ = {
 			isa = PBXGroup;
 			children = (
+				58F792F8227F5EA72F72433B /* Confirm.swift */,
 				B26FF508F1A90A37416CBD99 /* DiskInventory.swift */,
 				F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */,
 				67642D3967176F0F3848BF48 /* Info.plist */,
@@ -257,6 +260,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A9090B2620C46562ADB1AB0B /* Confirm.swift in Sources */,
 				1D98488B3CCD85AE5E2FE4D0 /* DiskInventory.swift in Sources */,
 				ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */,
 				5B2411379ACF6F4A93963E62 /* LoginItem.swift in Sources */,
