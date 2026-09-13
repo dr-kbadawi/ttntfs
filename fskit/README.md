@@ -157,10 +157,12 @@ fixtures` (see tools/README.md).
   with a volume mounted: it stayed mounted and the plugin UUID did not change.
   So the install order matters (copy, launch once, then `enable-module.sh`,
   then mount), but day-to-day launching does not.
-- The app does not register itself as a login item, so it does not start at
-  boot; nothing in `NTFS/` calls `SMAppService`. The driver does not need it —
-  the extension is launched on demand by `fskit_agent` — but the menu-bar
-  status and settings are simply absent until the user opens the app.
+- The app registers itself as a login item on its first run (`LoginItem.swift`,
+  `SMAppService.mainApp`), so the menu bar comes back after a restart; Settings
+  has an "Open at login" switch, and switching it off is remembered. macOS shows
+  its own "added a login item" notice the first time. The driver never needs the
+  app — `fskit_agent` launches the extension on demand — so this only affects
+  the status UI.
 - `mount -F -t ttntfs` on a *physical* disk fails with EACCES opening
   `/dev/rdiskN` even as the owning user (acknowledged by Apple DTS). Mounts
   initiated by Disk Arbitration — plugging the disk in, `diskutil mount` — work.

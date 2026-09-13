@@ -3,6 +3,7 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @EnvironmentObject private var loginItem: LoginItem
     @AppStorage(SharedSettings.readOnly, store: SharedSettings.store) private var readOnly = false
     @AppStorage(SharedSettings.showHidden, store: SharedSettings.store) private var showHidden = true
     @AppStorage(SharedSettings.showSystem, store: SharedSettings.store) private var showSystem = false
@@ -12,6 +13,19 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section("General") {
+                Toggle("Open at login", isOn: Binding(get: { loginItem.isEnabled },
+                                                      set: { loginItem.setEnabled($0) }))
+                if loginItem.requiresApproval {
+                    Text("Turned off in System Settings › General › Login Items & Extensions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else if let error = loginItem.lastError {
+                    Text(error).font(.caption).foregroundStyle(.red)
+                } else {
+                    Text("Only the menu-bar status needs the app; volumes mount without it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Mounting") {
                 Toggle("Mount volumes read-only", isOn: $readOnly)
                 Toggle("Show files Windows marks as hidden", isOn: $showHidden)
