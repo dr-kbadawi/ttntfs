@@ -133,10 +133,21 @@ the final figures are:
 | 4000 | 362 | ~615 | ~906 |
 | 8000 | 224 | ~445 | ~720 |
 
-3.2x at 8000 files, and the degradation across a 16x growth in directory size
-drops from 3.8x to about 1.35x. Creates cost ~12% (850 -> ~750): the sync pass
-now prunes as well, and during a create burst nearly everything is genuinely
-dirty, so neither list is shorter than the full walk it replaced.
+**Corrected by an A/B on the same machine, same session** (the earlier
+"before" column was measured hours earlier with different disks attached, and
+is not comparable). Building the pre-fix platform and the current one
+back-to-back on a freshly made image:
+
+| files | create/s pre | create/s now | delete/s pre | delete/s now |
+|---|---|---|---|---|
+| 500 | 669 | 675 | 800 | 1024 |
+| 2000 | 655 | 674 | 443 | 986 |
+| 8000 | 677 | 701 | 210 | 735 |
+
+Delete is 1.3x / 2.2x / 3.5x faster and close to flat. **Creates did not
+regress**; they are marginally faster. The ~12% create regression reported
+earlier was an artefact of comparing across sessions, not a real effect, and
+the claim in commits 08c6f10 and b58b5e8 is wrong.
 
 ## Next
 - Windows `chkdsk /f` round trip on real media (phase 2 gate needs the PC). More
