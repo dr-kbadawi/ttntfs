@@ -31,6 +31,7 @@
 import Foundation
 import FSKit
 import Darwin
+import DiskArbitration
 
 @MainActor
 final class ModuleEnabler: ObservableObject {
@@ -44,6 +45,19 @@ final class ModuleEnabler: ObservableObject {
     }
 
     @Published private(set) var outcome: Outcome = .idle
+    /// NTFS volumes another driver is serving, which can be handed to ours by
+    /// remounting. Populated after a successful enable: turning the module on
+    /// does nothing to disks that are already mounted, which looks like nothing
+    /// happened at all.
+    @Published private(set) var remountable: [Volume] = []
+    @Published private(set) var remountNote: String?
+
+    struct Volume: Equatable, Identifiable {
+        let device: String        // /dev/diskNsM
+        let mountPoint: String
+        var id: String { device }
+        var name: String { (mountPoint as NSString).lastPathComponent }
+    }
 
     static let moduleID = "ch.techtag.ntfs.extension"
 
@@ -79,6 +93,9 @@ final class ModuleEnabler: ObservableObject {
         // Read the result back rather than trusting the write.
         if await Self.waitUntilEnabled(timeout: .seconds(15)) {
             outcome = .succeeded
+            // Disk Arbitration only chooses a module when it probes, which it
+            // does on mount. Anything already mounted stays where it is.
+            remountable = Self.mountedNTFSVolumes()
         } else if killed == 0 {
             outcome = .failed("The module list was updated but fskit_agent was not running to restart. Log out and back in, then re-check.")
         } else {
@@ -152,12 +169,18 @@ final class ModuleEnabler: ObservableObject {
     }
 
     private static func holdsBlockDevice(_ pid: pid_t) -> Bool {
+        !openDevicePaths(pid).isEmpty
+    }
+
+    /// The /dev entries this process currently holds open.
+    private static func openDevicePaths(_ pid: pid_t) -> [String] {
         let size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
-        guard size > 0 else { return false }
+        guard size > 0 else { return [] }
         var fds = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(size) / MemoryLayout<proc_fdinfo>.size)
         let written = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, &fds, size)
-        guard written > 0 else { return false }
+        guard written > 0 else { return [] }
 
+        var paths: [String] = []
         for entry in fds.prefix(Int(written) / MemoryLayout<proc_fdinfo>.size)
         where entry.proc_fdtype == UInt32(PROX_FDTYPE_VNODE) {
             var info = vnode_fdinfowithpath()
@@ -167,27 +190,121 @@ final class ModuleEnabler: ObservableObject {
             let path = withUnsafeBytes(of: &info.pvip.vip_path) { raw in
                 String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
             }
-            if path.hasPrefix("/dev/disk") || path.hasPrefix("/dev/rdisk") { return true }
+            if path.hasPrefix("/dev/disk") || path.hasPrefix("/dev/rdisk") { paths.append(path) }
         }
-        return false
+        return paths
     }
 
-    /// Mount points of every mounted NTFS volume, whoever mounted it. Used only
-    /// for reporting, never to decide whether enabling is safe.
-    static func mountedNTFSVolumes() -> [String] {
+    /// Every mounted NTFS volume, whoever mounted it. Used for reporting and for
+    /// the remount offer, never to decide whether enabling is safe.
+    static func mountedNTFSVolumes() -> [Volume] {
         var buffer: UnsafeMutablePointer<statfs>?
         let count = getmntinfo(&buffer, MNT_NOWAIT)
         guard count > 0, let buffer else { return [] }
         return (0..<Int(count)).compactMap { i in
             var entry = buffer[i]
-            let type = withUnsafeBytes(of: &entry.f_fstypename) { raw in
-                String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+            func string(_ field: inout some Any) -> String {
+                withUnsafeBytes(of: &field) { raw in
+                    String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+                }
             }
-            guard type == "ntfs" else { return nil }
-            return withUnsafeBytes(of: &entry.f_mntonname) { raw in
-                String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
+            guard string(&entry.f_fstypename) == "ntfs" else { return nil }
+            return Volume(device: string(&entry.f_mntfromname),
+                          mountPoint: string(&entry.f_mntonname))
+        }
+    }
+
+    // MARK: Remount
+
+    /// Unmount and mount again so Disk Arbitration re-probes and picks our
+    /// module. Uses DiskArbitration rather than spawning `diskutil`; the session
+    /// is driven by a dispatch queue so this works with or without a run loop.
+    func remountAll() async {
+        remountNote = nil
+        var failures: [String] = []
+        var moved = 0
+        for volume in remountable {
+            if let problem = await Self.remount(volume) {
+                failures.append("\(volume.name): \(problem)")
+            } else {
+                moved += 1
             }
         }
+        remountable = Self.mountedNTFSVolumes()
+        if failures.isEmpty {
+            remountNote = moved == 1 ? "Remounted 1 volume." : "Remounted \(moved) volumes."
+        } else {
+            remountNote = failures.joined(separator: "; ")
+                + ". Close anything using the disk, or eject and reconnect it."
+        }
+    }
+
+    /// Remounting once is not enough. Enabling restarts fskit_agent, and the
+    /// first probe after that restart fails -- the agent still holds the
+    /// extension's previous identity, so fskitd cannot check the module in
+    /// ("invalid destination port", probe status 0x1003) and Disk Arbitration
+    /// falls through to Apple's ntfs driver. The second attempt succeeds. So:
+    /// remount, confirm our module actually took the device, and retry if not.
+    private static func remount(_ volume: Volume, attempts: Int = 3) async -> String? {
+        var lastProblem: String?
+        for attempt in 1...attempts {
+            if let problem = await remountOnce(volume) {
+                lastProblem = problem
+                if attempt == attempts { return problem }
+                continue
+            }
+            // Give the module a moment to open the device before judging.
+            try? await Task.sleep(for: .milliseconds(900))
+            if deviceIsServedByModule(volume.device) { return nil }
+            lastProblem = "another driver claimed it"
+        }
+        return lastProblem
+    }
+
+    /// Whether one of our extension processes holds this specific device open.
+    private static func deviceIsServedByModule(_ device: String) -> Bool {
+        let name = (device as NSString).lastPathComponent          // diskNsM
+        return pids(named: "NTFSExtension").contains { pid in
+            openDevicePaths(pid).contains { $0.hasSuffix("/" + name) || $0.hasSuffix("/r" + name) }
+        }
+    }
+
+    private static func remountOnce(_ volume: Volume) async -> String? {
+        let bsd = (volume.device as NSString).lastPathComponent
+        guard let session = DASessionCreate(kCFAllocatorDefault) else { return "no DiskArbitration session" }
+        let queue = DispatchQueue(label: "ch.techtag.ntfs.da")
+        DASessionSetDispatchQueue(session, queue)
+        defer { DASessionSetDispatchQueue(session, nil) }
+        guard let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, bsd) else {
+            return "no such device"
+        }
+        if let problem = await withCheckedContinuation({ (c: CheckedContinuation<String?, Never>) in
+            DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionDefault), { _, dissenter, ctx in
+                let cont = Unmanaged<ModuleEnabler.Box>.fromOpaque(ctx!).takeRetainedValue()
+                cont.resume(ModuleEnabler.describe(dissenter))
+            }, Unmanaged.passRetained(Box(c)).toOpaque())
+        }) { return problem }
+
+        return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+            DADiskMount(disk, nil, DADiskMountOptions(kDADiskMountOptionDefault), { _, dissenter, ctx in
+                let cont = Unmanaged<ModuleEnabler.Box>.fromOpaque(ctx!).takeRetainedValue()
+                cont.resume(ModuleEnabler.describe(dissenter))
+            }, Unmanaged.passRetained(Box(c)).toOpaque())
+        }
+    }
+
+    /// Boxes a continuation so it can travel through a C callback's context pointer.
+    fileprivate final class Box {
+        private let continuation: CheckedContinuation<String?, Never>
+        init(_ continuation: CheckedContinuation<String?, Never>) { self.continuation = continuation }
+        func resume(_ value: String?) { continuation.resume(returning: value) }
+    }
+
+    fileprivate static func describe(_ dissenter: DADissenter?) -> String? {
+        guard let dissenter else { return nil }
+        let status = DADissenterGetStatus(dissenter)
+        if let reason = DADissenterGetStatusString(dissenter) as String? { return reason }
+        return "error \(String(format: "0x%08X", status))"
     }
 
     /// PIDs of the current user's processes with this executable name.

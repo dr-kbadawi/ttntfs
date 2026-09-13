@@ -71,8 +71,29 @@ struct MenuView: View {
                 Text("Enabling…").font(.caption).foregroundStyle(.secondary)
             }
         case .succeeded:
-            Text("Enabled. Plug in an NTFS drive.")
-                .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                if let note = enabler.remountNote {
+                    Text(note).font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if enabler.remountable.isEmpty {
+                    Text("Enabled. Plug in an NTFS drive.")
+                        .font(.caption).foregroundStyle(.secondary)
+                } else {
+                    // Enabling changes nothing for disks that are already
+                    // mounted: Disk Arbitration only picks a module when it
+                    // probes, and it probes on mount.
+                    Text("\(enabler.remountable.map(\.name).formatted(.list(type: .and))) "
+                         + "\(enabler.remountable.count == 1 ? "is" : "are") still mounted by the system. "
+                         + "Remount to hand over to this driver.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button(enabler.remountable.count == 1 ? "Remount Volume" : "Remount Volumes") {
+                        Task { await enabler.remountAll(); monitor.start() }
+                    }
+                    .controlSize(.small)
+                }
+            }
         case .blocked(let why), .failed(let why):
             VStack(alignment: .leading, spacing: 6) {
                 Text(why)

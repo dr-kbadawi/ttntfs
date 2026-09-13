@@ -272,6 +272,19 @@ fixtures` (see tools/README.md).
   group container is only accessible when the group ID is authorized by an
   embedded provisioning profile (or the ID is team-prefixed), so the appex and
   the app both need a real profile — a Developer ID one for distribution.
+- **Enabling does nothing to disks that are already mounted.** Disk Arbitration
+  only chooses a module when it probes, and it probes on mount, so a volume
+  Apple's driver picked up before the module was enabled stays on it — which
+  looks to the user as though enabling did nothing. After a successful enable
+  the app offers to remount those volumes (`ModuleEnabler.remountAll`, via
+  DiskArbitration rather than spawning `diskutil`). It remounts up to three
+  times and checks each time whether our module actually took the device: the
+  first probe after an enable *always* loses, because enabling restarts
+  `fskit_agent`, the agent still holds the extension's previous identity, and
+  fskitd cannot check the module in — `invalid destination port`, probe status
+  `0x1003` — so Disk Arbitration falls through to Apple's `ntfs`. The second
+  attempt succeeds. The same one-retry pattern shows up after every agent
+  restart, which is why `enable-module.sh` and the mount tests loop too.
 - **The PlugInKit election is not what enables the module.** `pluginkit -e use`
   is cosmetic here: with the election set to `ignore`, FSKit still reported the
   module enabled and Disk Arbitration still mounted with it (verified
