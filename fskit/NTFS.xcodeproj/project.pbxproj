@@ -220,11 +220,9 @@
 				TargetAttributes = {
 					9727C5B03DACEC3085AC7BC5 = {
 						DevelopmentTeam = "$(NTFS_TEAM_ID)";
-						ProvisioningStyle = Automatic;
 					};
 					ACDDED9AC001243BCEC42613 = {
 						DevelopmentTeam = "$(NTFS_TEAM_ID)";
-						ProvisioningStyle = Automatic;
 					};
 				};
 			};
@@ -307,6 +305,7 @@
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs;
 				PRODUCT_NAME = "TT NTFS Native";
+				PROVISIONING_PROFILE_SPECIFIER = "TT NTFS Native PP";
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -331,6 +330,7 @@
 				OTHER_LDFLAGS = "$(inherited) $(NTFS_CORE_LDFLAGS_$(NTFS_CORE_MODE))";
 				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs.extension;
 				PRODUCT_NAME = NTFSExtension;
+				PROVISIONING_PROFILE_SPECIFIER = "TT NTFS Native Ext PP";
 				SDKROOT = macosx;
 				SWIFT_OBJC_BRIDGING_HEADER = "Bridge/NTFSExtension-Bridging-Header.h";
 			};
@@ -414,7 +414,9 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				CODE_SIGN_STYLE = Automatic;
+				CODE_SIGN_IDENTITY = "Developer ID Application";
+				CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO;
+				CODE_SIGN_STYLE = Manual;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = "$(NTFS_TEAM_ID)";
@@ -433,6 +435,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OTHER_CODE_SIGN_FLAGS = "--timestamp";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;

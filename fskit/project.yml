@@ -30,6 +30,18 @@ settings:
     Debug:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
       GCC_PREPROCESSOR_DEFINITIONS: DEBUG=1
+    # Release is the shipping configuration: Developer ID + hardened runtime +
+    # a secure timestamp, which is what notarization requires. The profiles are
+    # Developer ID ones from the portal (Xcode's automatic signing only ever
+    # makes development profiles), and the extension's is what authorizes the
+    # managed FSKit entitlement and the app group container on macOS 15+.
+    Release:
+      CODE_SIGN_STYLE: Manual
+      CODE_SIGN_IDENTITY: "Developer ID Application"
+      OTHER_CODE_SIGN_FLAGS: "--timestamp"
+      # Xcode otherwise injects com.apple.security.get-task-allow, which lets a
+      # debugger attach; the notary service rejects any binary carrying it.
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 
 targets:
   NTFS:
@@ -68,6 +80,9 @@ targets:
         PRODUCT_NAME: TT NTFS Native
         INFOPLIST_KEY_LSUIElement: YES
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: NO
+      configs:
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: "TT NTFS Native PP"
 
   NTFSExtension:
     type: extensionkit-extension
@@ -144,6 +159,9 @@ targets:
         # Core selection, see Config/Shared.xcconfig (NTFS_CORE_MODE = stub | real)
         EXCLUDED_SOURCE_FILE_NAMES: "$(NTFS_CORE_EXCLUDE_$(NTFS_CORE_MODE))"
         OTHER_LDFLAGS: "$(inherited) $(NTFS_CORE_LDFLAGS_$(NTFS_CORE_MODE))"
+      configs:
+        Release:
+          PROVISIONING_PROFILE_SPECIFIER: "TT NTFS Native Ext PP"
 
 schemes:
   NTFS:

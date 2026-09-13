@@ -85,7 +85,21 @@ load an extension whose provisioning profile does not carry it.
    stale profile is cached, delete `~/Library/MobileDevice/Provisioning Profiles/*`
    and let it regenerate). The entitlements files already contain
    `com.apple.developer.fskit.fsmodule` (extension) and the app group (both).
-3. **Build signed.** Drop `CODE_SIGNING_ALLOWED=NO`:
+3. **Build signed.** Debug uses automatic development signing. **Release is the
+   shipping configuration**: manual signing with `Developer ID Application`, the
+   two Developer ID profiles from the portal (`TT NTFS Native PP` and `TT NTFS
+   Native Ext PP` — Xcode's automatic signing only ever creates *development*
+   profiles, so these are made by hand at developer.apple.com → Profiles →
+   Developer ID), a hardened runtime, `--timestamp`, and
+   `CODE_SIGN_INJECT_BASE_ENTITLEMENTS = NO` because Xcode otherwise injects
+   `com.apple.security.get-task-allow`, which the notary service rejects.
+   The profiles matter for two entitlements that cannot be self-asserted: the
+   extension's managed `com.apple.developer.fskit.fsmodule`, and — since
+   macOS 15 — the app group, without which the app and extension get separate
+   containers and stop sharing settings. Both App IDs must exist explicitly
+   (a wildcard App ID cannot carry an app group) with the group
+   `group.ch.techtag.ntfs` assigned, and the group itself registered under
+   Identifiers → App Groups. Drop `CODE_SIGNING_ALLOWED=NO`:
    ```
    xcodebuild -project NTFS.xcodeproj -scheme NTFS -configuration Debug \
               -derivedDataPath build/DerivedData -allowProvisioningUpdates build
