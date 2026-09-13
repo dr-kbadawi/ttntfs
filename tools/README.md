@@ -20,6 +20,36 @@ tools/
   build/               CMake trees and test logs                      (ignored)
 ```
 
+## Checking what we wrote: ntfsprogs-plus
+
+`tools/build-ntfsprogs-plus.sh` builds [ntfsprogs-plus](https://github.com/ntfsprogs-plus/ntfsprogs-plus)
+(pinned to 1.0.0) into `tools/.local-plus`, for one binary: its `ntfsck`, also
+installed as `fsck.ntfs`. It is the only checker available without Windows that
+actually verifies structure, walking the MFT, the index B-trees and the cluster
+bitmap in six passes.
+
+`run-tests.sh write` runs it with `-n` (check, never repair) on every fixture
+after the write steps. Missing, it skips with a note; set `NTFS_REQUIRE_FSCK=1`
+to make absence a failure, which is what CI should do.
+
+Why it earns a second toolchain, demonstrated rather than argued: zero one
+in-use MFT record in `basic-4k.img` and
+
+| tool | verdict |
+|---|---|
+| Tuxera `ntfsfix -n` | "processed successfully", exit 0 |
+| Tuxera `ntfsck` | `Unsupported: check_volume()`, a stub in 2026.7.7 |
+| ntfsprogs-plus `ntfsck -n` | corrupt index entry, missing FILE magic, orphaned MFT, cluster bitmap mismatch; exit 4 |
+
+It keeps its own prefix because both projects install `ntfsck`, `ntfsfix` and
+`mkntfs`, and the suite needs Tuxera's `ntfsls`/`ntfscat`/`ntfsinfo` to stay the
+ones on `PATH`. It is addressed by full path, never by shadowing.
+
+It is not `chkdsk`. Windows defines NTFS, so agreement here is evidence rather
+than proof, and the phase 2 gate still wants a `chkdsk /f` round trip. What this
+buys is that the evidence arrives on every run instead of once per milestone.
+
+
 ## Quick start
 
 ```sh

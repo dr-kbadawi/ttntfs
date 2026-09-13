@@ -115,10 +115,22 @@ ensure_ntfsprogs() {
 		note "ntfsprogs not built; running build-ntfsprogs.sh"
 		"$NTFS_TOOLS_DIR/build-ntfsprogs.sh" || die "build-ntfsprogs.sh failed"
 	fi
-	for t in mkntfs ntfsls ntfscat ntfsinfo ntfsfix ntfsck ntfslabel; do
+	for t in mkntfs ntfsls ntfscat ntfsinfo ntfsfix ntfslabel; do
 		need_tool "$t" "(run tools/build-ntfsprogs.sh)" || exit 2
 	done
 }
+
+# ntfsprogs-plus's ntfsck is the only checker available here that actually
+# verifies structure: MFT records, index B-trees, the cluster bitmap. Tuxera's
+# ntfsck is a stub in 2026.7.7 and its ntfsfix only looks at $MFT/$MFTMirr and
+# the alternate boot sector -- an image with a zeroed in-use MFT record passes
+# ntfsfix and fails this one, which is why it is worth a second toolchain.
+#
+# Not built by default: it needs autotools, which macOS does not ship. Missing
+# means skip and say so, unless NTFS_REQUIRE_FSCK=1 makes it a hard failure for
+# CI, where a silently absent gate is worse than a red one.
+NTFSCK_PLUS="$NTFS_PLUS/sbin/ntfsck"
+have_fsck_plus() { [ -x "$NTFSCK_PLUS" ]; }
 
 ensure_fixtures() {
 	note "fixtures"
@@ -433,11 +445,17 @@ mode_write() {
 		# consistency as ntfs-3g sees it, whatever the steps did
 		if run "write-$n-ntfsfix" ntfsfix -n "$img"; then pass "write $n: ntfsfix -n clean"
 		else fail "write $n: ntfsfix -n" "$(grep -v '^\$ ' "$LOGDIR/write-$n-ntfsfix.log" | tail -1 | cut -c1-140)"; fi
-		run "write-$n-ntfsck" ntfsck "$img"; rc=$?
-		if grep -q 'Unsupported: check_volume' "$LOGDIR/write-$n-ntfsck.log"; then
-			skip "write $n: ntfsck" "ntfsck 2026.7.7 is a stub (check_volume unsupported)"
-		elif [ $rc = 0 ]; then pass "write $n: ntfsck clean"
-		else fail "write $n: ntfsck" "exit $rc: $(grep -v '^\$ ' "$LOGDIR/write-$n-ntfsck.log" | tail -1 | cut -c1-140)"; fi
+		# -n: check and never write. A checker that repaired the image would
+		# be measuring its own repair rather than what our driver wrote.
+		if have_fsck_plus; then
+			run "write-$n-fsck" "$NTFSCK_PLUS" -n "$img"; rc=$?
+			if [ $rc = 0 ]; then pass "write $n: fsck.ntfs (ntfsprogs-plus) clean"
+			else fail "write $n: fsck.ntfs" "exit $rc: $(grep -viE 'percent completed' "$LOGDIR/write-$n-fsck.log" | grep -v '^\$ ' | tail -2 | tr '\n' ' ' | cut -c1-160)"; fi
+		elif [ "${NTFS_REQUIRE_FSCK:-0}" = 1 ]; then
+			fail "write $n: fsck.ntfs" "not built and NTFS_REQUIRE_FSCK=1 (run tools/build-ntfsprogs-plus.sh)"
+		else
+			skip "write $n: fsck.ntfs" "ntfsprogs-plus not built (tools/build-ntfsprogs-plus.sh)"
+		fi
 		if ntfsls -R -l -F "$img" >"$LOGDIR/write-$n.after.raw" 2>"$LOGDIR/write-$n.ntfsls.err"; then
 			norm_ntfsls <"$LOGDIR/write-$n.after.raw" >"$LOGDIR/write-$n.after"
 			if diff "$LOGDIR/gt-$n.ntfsls.before" "$LOGDIR/write-$n.after" >"$LOGDIR/write-$n.names.diff"; then

@@ -1,5 +1,8 @@
-# Built ntfsprogs + libntfs-3g, downloaded sources, pip-installed cmake
+# Built ntfsprogs + libntfs-3g, downloaded sources, pip-installed cmake,
+# conda-installed autotools
 .local/
+# Built ntfsprogs-plus (its own prefix; both projects install an ntfsck)
+.local-plus/
 # Generated fixture images and manifests
 images/
 # CMake build trees

@@ -159,7 +159,7 @@ Design rules:
 |---|---|---|
 | 0 | Skeleton: `platform/` headers, Tier 0/1 files compile with clang on macOS, stubs for Tier 2 | `make` produces `libntfscore.a` for arm64 |
 | 1 | **Read path**: mount image, `ls`, `stat`, `cat`, compressed/sparse/ADS files, Unicode names | `ntfscli` output matches `ntfsls`/`ntfscat` and a Linux 7.1 mount on a corpus of Windows-formatted images |
-| 2 | **Write path**: create, write, truncate, mkdir, rename, unlink, xattr, timestamps, permissions | `chkdsk /f` reports clean after every test on a Windows VM; `fsck.ntfs` (ntfsprogs-plus) clean; xfstests-style cases pass in `ntfscli` |
+| 2 | **Write path**: create, write, truncate, mkdir, rename, unlink, xattr, timestamps, permissions | `chkdsk /f` reports clean after every test on a Windows VM; `fsck.ntfs` (ntfsprogs-plus) clean **[done 2026-09-13: all 7 fixtures, every run, see tools/README.md]**; xfstests-style cases pass in `ntfscli` |
 | 3 | **FSKit extension + host app**: probe, auto-mount, unmount, read-only fallback for dirty volumes, menu-bar status | An NTFS USB drive mounts in Finder on plug-in with no terminal, no Recovery, no reboot; survives unplug |
 | 4 | **`$LogFile` replay** — our own module; no open implementation currently works | Volumes left dirty by Windows Fast Startup mount rw and `chkdsk` agrees with the result |
 | 5 | Performance, x86_64 build, `mkfs`/`fsck` in the app, notarized DMG + Homebrew cask | Throughput at device speed on USB 3 / Thunderbolt SSDs; metadata ops within 2× of Apple's exFAT FSKit module |
