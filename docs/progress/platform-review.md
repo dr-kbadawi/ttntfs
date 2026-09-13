@@ -94,3 +94,51 @@ flushes the device.
 Done: findings 1–13 fixed and tested; `ctest` green in `build-review`,
 `build-review` with `-DNTFS_SANITIZE=ON`, standalone page cache under ASan
 and TSan (8× / 4× stress loops).
+
+## The gap this layer keeps falling into (2026-09-13)
+
+`platform/` is ~5,200 lines implementing ~174 Linux functions. Linux implements
+every one of them and has hardened them for two decades. We did not port them;
+we reimplemented them from their signatures and from what the driver appeared to
+need. That was a deliberate choice (PORTING.md §4: Tier 1 is kept line-for-line
+and "compiled against a compatibility layer"), and the reason not to vendor is
+sound: `fs/fs-writeback.c` pulls in backing-device info, workqueues, cgroup
+writeback and RCU, with no clean cut.
+
+But count where the defects come from. Of everything found on 2026-09-13, one
+bug was in ported NTFS code (the `$LogFile` clean rule, and that was a
+misreading of a rule `logfile.h` states plainly). The rest were ours:
+
+- sync walking every inode and every mapping (findings 15, 16)
+- the write-back order surviving only as an accident of list insertion (17)
+- a block device with no `bd_mapping` (14)
+- and, earlier, the writeback-visibility, lookup-vs-invalidate, work UAF and
+  RMW races in findings 1-13.
+
+The vendored driver has been comparatively quiet. The layer we invented is where
+the bugs live, and every fix converged on what Linux already does: the dirty
+lists are `wb->b_dirty`; the remaining random-write gap (a 4 KiB write dirties a
+16 KiB folio, so writes amplify 4x on Apple Silicon) is what buffer heads exist
+to solve. Those were reached with a profiler rather than from the reference,
+which is slower and less reliable than reading.
+
+**What is missing is a semantics table.** `docs/LOGFILE.md` §5 does exactly this
+for the journal: verified versus inferred, row by row. `platform/` has no
+equivalent -- only an ownership contract and this findings list. The proposal,
+not yet done:
+
+> For each Linux function `platform/` provides, ranked by the call counts
+> already in PORTING.md §"Linux API the core actually uses": what Linux
+> guarantees, what we do, and whether the difference is deliberate. That turns a
+> class of bug currently found by profiling into one findable by reading.
+
+Known divergences to seed it with, all from this session:
+
+| function | Linux | us |
+|---|---|---|
+| `sync_inodes_sb` | walks `wb->b_dirty` | walked all of `sb->s_inodes` until finding 16 |
+| `pagecache_sync_sb` (our name) | per-bdi dirty lists | walked the whole registry until finding 15 |
+| write-back ordering | no such rule; left to the filesystem | ours, newest-first within a rank, now explicit via `i_seq` |
+| folio dirty granularity | buffer heads track sub-page dirtiness | whole folio; 4x write amplification at 16 KiB pages |
+| `bd_mapping` | always present on a block device | only `bdev_file.c` created one until finding 14 |
+

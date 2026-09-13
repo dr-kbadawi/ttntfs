@@ -24,6 +24,12 @@ struct Partition: Identifiable, Equatable {
     let content: String                 // partition type: a GPT GUID, or an MBR hint
     let size: UInt64
     let mediaWritable: Bool
+    /// IOKit's registry entry ID for this media, which is new every time the
+    /// device is attached. BSD names are recycled -- unplug a disk and the next
+    /// one plugged in is disk6 again -- so anything remembered about "disk6"
+    /// has to be checked against this or it silently transfers to a different
+    /// piece of hardware.
+    var attachmentID: UInt64 = 0
 
     var mountPoint: String?
     var fsType: String?                 // as the kernel reports it, once mounted
@@ -99,6 +105,8 @@ final class DiskInventory: ObservableObject {
         let bsdName: String
         let text: String
         var kind: NoteKind = .problem
+        /// The attachment this was said about; see Partition.attachmentID.
+        var attachmentID: UInt64 = 0
     }
 
     /// A message about a whole disk rather than one volume, shown with its
@@ -109,6 +117,8 @@ final class DiskInventory: ObservableObject {
         let wholeDisk: String
         let text: String
         var kind: NoteKind = .problem
+        /// The attachment this was said about; see Partition.attachmentID.
+        var attachmentID: UInt64 = 0
     }
     /// An operation is in flight. The UI disables its buttons: pressing Remount
     /// again mid-handover starts a second unmount/mount race against the first,
@@ -137,7 +147,13 @@ final class DiskInventory: ObservableObject {
     }
 
     private func setNote(_ partition: Partition, _ text: String, _ kind: NoteKind = .problem) {
-        note = Note(bsdName: partition.bsdName, text: text, kind: kind)
+        note = Note(bsdName: partition.bsdName, text: text, kind: kind,
+                    attachmentID: partition.attachmentID)
+    }
+
+    /// The attachment identity of a whole disk, taken from any partition on it.
+    private func attachment(ofDisk wholeDisk: String) -> UInt64 {
+        partitions.first { $0.wholeDisk == wholeDisk }?.attachmentID ?? 0
     }
 
     func refresh() {
@@ -193,6 +209,24 @@ final class DiskInventory: ObservableObject {
         }
         if let n = note, let p = found.first(where: { $0.bsdName == n.bsdName }) {
             if (n.kind == .good) != p.isMounted { note = nil }
+        }
+
+        // A result describes one attachment of one disk. Unplugging ends it,
+        // and BSD names are recycled, so the next disk plugged in is disk6 too:
+        // an eject failure shown for the disk that has just been removed
+        // reappeared, unchanged, against the disk that replaced it. Drop a note
+        // as soon as its disk is gone or a different attachment wears its name.
+        if let disk = noteForDisk {
+            let now = found.first { $0.wholeDisk == disk.wholeDisk }
+            if now == nil || (disk.attachmentID != 0 && now!.attachmentID != disk.attachmentID) {
+                noteForDisk = nil
+            }
+        }
+        if let n = note {
+            let now = found.first { $0.bsdName == n.bsdName }
+            if now == nil || (n.attachmentID != 0 && now!.attachmentID != n.attachmentID) {
+                note = nil
+            }
         }
     }
 
@@ -380,16 +414,19 @@ final class DiskInventory: ObservableObject {
             if let problem = await unmountDevice(volume) {
                 noteForDisk = DiskNote(wholeDisk: wholeDisk,
                                        text: "\((volume as NSString).lastPathComponent) could not be ejected: "
-                                           + "\(problem). Something is still using it.")
+                                           + "\(problem). Something is still using it.",
+                                       attachmentID: attachment(ofDisk: wholeDisk))
                 refresh()
                 return
             }
         }
         if let problem = await ejectDevice(wholeDisk) {
             noteForDisk = DiskNote(wholeDisk: wholeDisk,
-                                   text: "Volumes were ejected but the disk could not be detached: \(problem)")
+                                   text: "Volumes were ejected but the disk could not be detached: \(problem)",
+                                   attachmentID: attachment(ofDisk: wholeDisk))
         } else {
-            noteForDisk = DiskNote(wholeDisk: wholeDisk, text: "Safe to unplug.", kind: .good)
+            noteForDisk = DiskNote(wholeDisk: wholeDisk, text: "Safe to unplug.", kind: .good,
+                                   attachmentID: attachment(ofDisk: wholeDisk))
         }
         refresh()
     }
@@ -473,10 +510,13 @@ final class DiskInventory: ObservableObject {
             }
             guard property("Leaf", as: Bool.self) == true,
                   let bsd = property("BSD Name", as: String.self) else { continue }
+            var entryID: UInt64 = 0
+            IORegistryEntryGetRegistryEntryID(service, &entryID)
             out.append(Partition(bsdName: bsd,
                                  content: property("Content", as: String.self) ?? "",
                                  size: property("Size", as: UInt64.self) ?? 0,
-                                 mediaWritable: property("Writable", as: Bool.self) ?? false))
+                                 mediaWritable: property("Writable", as: Bool.self) ?? false,
+                                 attachmentID: entryID))
         }
         return out
     }

@@ -157,3 +157,35 @@ the claim in commits 08c6f10 and b58b5e8 is wrong.
   write path now runs on ordinary disks rather than on fixtures alone.
 - Hand `readdir` want_attr the index entry's sizes/times without an iget (needs a dir.c hook).
 - Compressed-file writes/truncate beyond what upstream supports; encrypted files stay refused.
+
+## Write benchmarks, 2026-09-13
+
+Ours (NTFS) against Apple's exFAT FSKit module, matched 2 GiB images on internal
+NVMe, so neither is device-bound:
+
+| | ours | Apple exFAT | ratio |
+|---|---|---|---|
+| stream 512 MiB | 1782 MB/s | 1551 | **1.15x** |
+| overwrite 256 MiB | 2192 MB/s | 2160 | 1.01x |
+| append 64 KiB x2048 | 1992 MB/s | 1834 | 1.09x |
+| small file + fsync | 575/s | 859 | 0.67x |
+| small file, no fsync | 684/s | 1059 | 0.65x |
+| random 4 KiB write | 3929 IOPS | 9616 | **0.41x** |
+
+Streaming write was 0.41x before the dirty-list sync fix and is now ahead of
+Apple's; it was the largest beneficiary, since a streaming write dirties folios
+constantly and the old sync walked everything on every call.
+
+Everything meets the phase 5 "within 2x of exFAT" bar except random 4 KiB
+writes. Cause measured, not inferred: PAGE_SIZE is 16384 on Apple Silicon and
+the cache dirties whole folios, so a 4 KiB write becomes a ~16 KiB device write.
+The `io window` counters show ~20 KiB per write call and zero reads during that
+phase, so it is write amplification, not read-modify-write from disk. The fix is
+sub-folio dirty tracking, which the port does not have.
+
+Reads on real hardware (Samsung 860 EVO, UAS bridge, read-only because the
+volume is dirty): ours 334 MB/s sequential and 3273 IOPS random 4 KiB, against
+Apple's built-in ntfs at 377 MB/s and 3012 IOPS. Device busy 97% of a sequential
+read, so there is no idle gap for readahead to fill; the ~11% difference and the
+spread across regions both sit inside what the medium itself varies by.
+
