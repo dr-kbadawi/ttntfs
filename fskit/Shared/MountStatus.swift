@@ -55,11 +55,25 @@ struct MountStatus: Codable, Equatable {
 
     private static let lock = NSLock()
 
-    /// Read-modify-write under a process-local lock; the file is small and the
-    /// two processes never write concurrently (only the extension writes).
+    /// Read-modify-write. FSKit runs **one extension process per mounted
+    /// volume** (verified with two NTFS disks: a probe instance plus one per
+    /// volume), so an NSLock alone is not enough — two volumes activating at
+    /// the same moment would each read the file, add their own entry, and the
+    /// second write would drop the first. The NSLock serialises threads inside
+    /// one process; an advisory lock on a sidecar file serialises the
+    /// processes.
     static func update(_ body: (inout [String: MountStatus]) -> Void) {
         lock.lock(); defer { lock.unlock() }
         guard let url = fileURL else { return }
+        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        let fd = open(url.appendingPathExtension("lock").path, O_CREAT | O_RDWR, 0o644)
+        if fd >= 0 {
+            flock(fd, LOCK_EX)
+        }
+        defer {
+            if fd >= 0 { flock(fd, LOCK_UN); close(fd) }
+        }
         var all = readAll()
         body(&all)
         let enc = JSONEncoder()

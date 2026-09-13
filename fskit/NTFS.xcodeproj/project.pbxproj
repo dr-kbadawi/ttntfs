@@ -10,6 +10,7 @@
 		121312321DF34FF9FD4A2614 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
 		3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */; };
 		5B2411379ACF6F4A93963E62 /* LoginItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0B51465CA38950094AABD2 /* LoginItem.swift */; };
+		67A44AFE5BD1D0652DBBF55A /* Uninstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4CCF9F76F32BAC5EB46CBC /* Uninstaller.swift */; };
 		70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D88AB6F444249E71E139018 /* VolumeMonitor.swift */; };
 		747947B10E65D12D8E36C4F3 /* NTFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8A10B01A7F509E33D0A02754 /* NTFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE2682EA100F44295076F7DE /* NTFSExtension.swift */; };
@@ -75,6 +76,7 @@
 		B382EF12119CB428297CCB7B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B389C0EB1D9C689FA426953F /* NTFSVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSVolume.swift; sourceTree = "<group>"; };
 		C0F30CB423189222B7D3898A /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
+		CC4CCF9F76F32BAC5EB46CBC /* Uninstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Uninstaller.swift; sourceTree = "<group>"; };
 		DE2682EA100F44295076F7DE /* NTFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSExtension.swift; sourceTree = "<group>"; };
 		EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSItem.swift; sourceTree = "<group>"; };
 		F0994252735E8DC1C493157B /* NTFS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NTFS.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -109,6 +111,7 @@
 				7D80DAAE4977838464ED6255 /* NTFSApp.swift */,
 				223EFAF44C74CB35E5902EFC /* SettingsView.swift */,
 				C0F30CB423189222B7D3898A /* SharedSettings.swift */,
+				CC4CCF9F76F32BAC5EB46CBC /* Uninstaller.swift */,
 				1D88AB6F444249E71E139018 /* VolumeMonitor.swift */,
 			);
 			path = NTFS;
@@ -259,6 +262,7 @@
 				A03A39F6CA160CE1691A5427 /* NTFSApp.swift in Sources */,
 				F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */,
 				B971CE42F874331618BF0199 /* SharedSettings.swift in Sources */,
+				67A44AFE5BD1D0652DBBF55A /* Uninstaller.swift in Sources */,
 				70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

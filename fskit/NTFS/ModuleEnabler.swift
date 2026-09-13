@@ -103,6 +103,34 @@ final class ModuleEnabler: ObservableObject {
         }
     }
 
+    /// Removes the module from fskit_agent's list and restarts the agent, the
+    /// mirror of `enable()`. Used by the uninstaller; leaving the entry behind
+    /// would keep the module listed in System Settings after the app is gone.
+    func disable() async -> String? {
+        if Self.moduleIsServingAVolume() {
+            return "a volume this driver is serving is still mounted"
+        }
+        do {
+            try Self.removeFromEnabledList()
+        } catch {
+            return "could not update the FSKit module list: \(error.localizedDescription)"
+        }
+        Self.restartAgent()
+        return nil
+    }
+
+    private static func removeFromEnabledList() throws {
+        let url = listURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        var format = PropertyListSerialization.PropertyListFormat.binary
+        let data = try Data(contentsOf: url)
+        let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
+        guard var modules = plist as? [String], modules.contains(moduleID) else { return }
+        modules.removeAll { $0 == moduleID }
+        let out = try PropertyListSerialization.data(fromPropertyList: modules, format: format, options: 0)
+        try out.write(to: url, options: .atomic)
+    }
+
     // MARK: Steps
 
     /// Adds our bundle ID to fskit_agent's enabled list, preserving the file's format.

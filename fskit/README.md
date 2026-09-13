@@ -10,7 +10,8 @@ fskit/
   NTFS.xcodeproj               generated; regenerate with `xcodegen generate`
   Config/Shared.xcconfig       team ID + stub/real core switch
   NTFS/                        host app (SwiftUI, menu bar, Settings, volume list)
-                               ModuleEnabler.swift enables the module; LoginItem.swift starts at login
+                               ModuleEnabler.swift enables/disables the module,
+                               Uninstaller.swift removes it, LoginItem.swift starts at login
   NTFSExtension/               the .appex (Swift entry point, FSUnaryFileSystem, FSVolume)
   Shared/                      MountStatus.swift, compiled into both targets
   Bridge/                      ObjC: struct ntfs_bdev over FSBlockDeviceResource, bridging header
@@ -181,6 +182,19 @@ fixtures` (see tools/README.md).
   launches — and if that is a build directory that later gets deleted, probes
   fail and the disk falls back to Apple's driver. `enable-module.sh` now
   unregisters any copy that is not the installed app.
+- **Dragging the app to the Trash is not a clean uninstall**, which is why
+  Settings has a **Remove** section (`Uninstaller.swift`). It disables the
+  module, removes the login item, unregisters the bundle, deletes the
+  containers and preferences, then moves itself to the Trash. Doing only the
+  drag leaves the module in FSKit's enabled list and the bundle registered, so
+  System Settings keeps listing an extension that no longer exists.
+  `scripts/uninstall.sh` is the same thing for a machine without the app.
+- **One extension process per mounted volume.** Verified with two NTFS volumes
+  at once (a physical disk and an attached image): three processes, a probe
+  instance plus one per volume, both volumes read/write, both listed in
+  `mount-status.json`. That is why `MountStatus.update` takes an advisory lock
+  on a sidecar file as well as an `NSLock` — the processes are separate, so an
+  in-process lock alone would let two volumes activating together lose an entry.
 - A Login Item record can only be removed by the app itself: Background Task
   Management has no per-item command line. `scripts/uninstall.sh` therefore runs
   the app with `--unregister-login-item` before deleting the bundle. Delete the

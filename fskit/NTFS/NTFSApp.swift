@@ -34,6 +34,13 @@ struct NTFSApp: App {
     @StateObject private var status = ExtensionStatus()
     @StateObject private var loginItem = LoginItem.shared
     @StateObject private var enabler = ModuleEnabler()
+    @StateObject private var uninstaller: Uninstaller
+
+    init() {
+        let enabler = ModuleEnabler()
+        _enabler = StateObject(wrappedValue: enabler)
+        _uninstaller = StateObject(wrappedValue: Uninstaller(enabler: enabler))
+    }
 
     var body: some Scene {
         MenuBarExtra("NTFS", systemImage: "externaldrive") {
@@ -47,6 +54,7 @@ struct NTFSApp: App {
         Settings {
             SettingsView()
                 .environmentObject(loginItem)
+                .environmentObject(uninstaller)
         }
     }
 }
