@@ -10,7 +10,7 @@
 # and reads it only at start, so: edit the list, SIGKILL the agent (SIGTERM is
 # ignored, launchctl kickstart is refused), launchd respawns it on demand.
 #
-#   fskit/scripts/enable-module.sh            # enable
+#   fskit/scripts/enable-module.sh            # enable (also prunes stray copies)
 #   fskit/scripts/enable-module.sh --disable  # remove from the list
 #
 # Order matters after a reinstall: copy the app, LAUNCH IT ONCE (LaunchServices
@@ -26,11 +26,45 @@ PLIST="$HOME/Library/Group Containers/group.com.apple.fskit.settings/enabledModu
 MODE=enable
 [ "${1:-}" = "--disable" ] && MODE=disable
 
-if mount | grep -q " ($ID\|ttntfs"; then
-    echo "a ttntfs volume is mounted; unmount it first (restarting fskit_agent would drop it)" >&2
+# Refuse while one of our volumes is mounted: restarting fskit_agent drops it.
+# A mounted ttntfs volume looks like plain "ntfs ... fskit" in `mount`, which is
+# indistinguishable from Apple's own driver on macOS 26, and the module process
+# keeps running indefinitely after an unmount -- so neither is a usable signal.
+# What does track a live volume is the block device: the module holds one open
+# fd on /dev/diskN while serving, and none when idle.
+serving=
+for pid in $(pgrep -f 'Contents/Extensions/NTFSExtension' 2>/dev/null); do
+    if lsof -p "$pid" 2>/dev/null | grep -qE '/dev/r?disk'; then serving=$pid; break; fi
+done
+if [ -n "$serving" ]; then
+    echo "a ttntfs volume is mounted (module pid $serving holds a block device open);" >&2
+    echo "restarting fskit_agent would drop it. Unmount first:" >&2
+    mount | grep -E '\(ntfs[,)]' | sed 's/^/  /' >&2
+    echo "  diskutil unmount /dev/diskNsM" >&2
     exit 1
 fi
 [ -f "$PLIST" ] || { echo "no $PLIST (open System Settings > Login Items & Extensions once)" >&2; exit 1; }
+
+# Prune stray registrations. LaunchServices registers every copy of the bundle it
+# sees, including Xcode's build output, and System Settings then lists the
+# extension twice. Both the enabled list and the pluginkit election name the
+# bundle ID, not a path, so with two copies registered it is undefined which one
+# fskit_agent launches -- and if that is a build directory that later gets
+# deleted, probes fail and the disk falls back to Apple's read-only driver.
+APP=${NTFS_APP:-/Applications/TT NTFS Native.app}
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [ -x "$LSREGISTER" ]; then
+    APP_NAME=$(basename "$APP")
+    "$LSREGISTER" -dump 2>/dev/null \
+        | sed -n "s|^[[:space:]]*path:[[:space:]]*\(/.*/${APP_NAME}\) (0x[0-9a-f]*)\$|\1|p" \
+        | sort -u | while IFS= read -r found; do
+        # /private/tmp and /tmp are the same place; compare canonical paths.
+        [ "$(cd "$found" 2>/dev/null && pwd -P)" = "$(cd "$APP" 2>/dev/null && pwd -P)" ] && continue
+        echo "unregistering stray copy: $found"
+        "$LSREGISTER" -u "$found" >/dev/null 2>&1
+        pluginkit -r "$found/Contents/Extensions/NTFSExtension.appex" >/dev/null 2>&1
+    done
+fi
 
 cp "$PLIST" "$PLIST.bak"
 python3 - "$PLIST" "$ID" "$MODE" <<'PY'

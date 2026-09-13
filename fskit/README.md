@@ -144,7 +144,7 @@ Failures print the step and a `log stream` predicate for the extension's
 subsystem `ch.techtag.ntfs`. Fixtures come from `make -C tools/mkfixtures
 fixtures` (see tools/README.md).
 
-## Known issues (macOS 26.3)
+## Known issues (macOS 26.3 and 26.6.2)
 
 - The System Settings switch for File System Extensions cannot enable a
   third-party module; use `scripts/enable-module.sh`. It will keep showing the
@@ -157,6 +157,13 @@ fixtures` (see tools/README.md).
   with a volume mounted: it stayed mounted and the plugin UUID did not change.
   So the install order matters (copy, launch once, then `enable-module.sh`,
   then mount), but day-to-day launching does not.
+- LaunchServices registers **every** copy of the bundle it sees, Xcode's build
+  output included, and System Settings then lists the extension twice. Both the
+  enabled list and the `pluginkit` election name the bundle ID rather than a
+  path, so with two copies registered it is undefined which one `fskit_agent`
+  launches — and if that is a build directory that later gets deleted, probes
+  fail and the disk falls back to Apple's driver. `enable-module.sh` now
+  unregisters any copy that is not the installed app.
 - The app registers itself as a login item on its first run (`LoginItem.swift`,
   `SMAppService.mainApp`), so the menu bar comes back after a restart; Settings
   has an "Open at login" switch, and switching it off is remembered. macOS shows
