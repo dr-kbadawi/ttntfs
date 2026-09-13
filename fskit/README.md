@@ -181,11 +181,12 @@ fixtures` (see tools/README.md).
   launches — and if that is a build directory that later gets deleted, probes
   fail and the disk falls back to Apple's driver. `enable-module.sh` now
   unregisters any copy that is not the installed app.
-- A Login Item record can only be removed by the app itself. Switch **Open at
-  login** off in the app's Settings *before* deleting the bundle, or the record
-  is orphaned under System Settings → General → Login Items & Extensions →
-  Open at Login and has to be deleted there by hand; Background Task Management
-  has no per-item command line. `scripts/uninstall.sh` says so before it runs.
+- A Login Item record can only be removed by the app itself: Background Task
+  Management has no per-item command line. `scripts/uninstall.sh` therefore runs
+  the app with `--unregister-login-item` before deleting the bundle. Delete the
+  bundle by hand first and the record is orphaned under System Settings →
+  General → Login Items & Extensions → Open at Login, removable only with the
+  "−" button there.
 - The app registers itself as a login item on its first run (`LoginItem.swift`,
   `SMAppService.mainApp`), so the menu bar comes back after a restart; Settings
   has an "Open at login" switch, and switching it off is remembered. macOS shows
@@ -272,6 +273,11 @@ fixtures` (see tools/README.md).
   group container is only accessible when the group ID is authorized by an
   embedded provisioning profile (or the ID is team-prefixed), so the appex and
   the app both need a real profile — a Developer ID one for distribution.
+- **The remount offer must not live in the "disabled" branch of the menu.**
+  Enabling flips the header to "enabled" the instant it succeeds, so anything
+  shown only while disabled is created and discarded in the same moment — the
+  offer existed but was unreachable. It hangs off the enabled state instead and
+  is recomputed whenever the menu opens.
 - **Enabling does nothing to disks that are already mounted.** Disk Arbitration
   only chooses a module when it probes, and it probes on mount, so a volume
   Apple's driver picked up before the module was enabled stays on it — which

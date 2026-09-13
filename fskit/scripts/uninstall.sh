@@ -8,13 +8,12 @@
 # module before the bundle is unregistered, or fskitd keeps a half-dead
 # instance around and the next install inherits the confusion.
 #
-# DO THIS FIRST, while the app still exists: open it, go to Settings and switch
-# OFF "Open at login". That calls SMAppService.unregister(), which is the only
-# supported way to remove the Login Item record -- macOS keeps those in
-# Background Task Management, which has no per-item command line, and only the
-# app itself can unregister. Delete the bundle first and the record is orphaned:
-# it lingers under System Settings > General > Login Items & Extensions >
-# Open at Login until you remove it there by hand with the "-" button.
+# The Login Item record is handled by running the app with
+# --unregister-login-item before the bundle is deleted: macOS keeps those
+# records in Background Task Management, which has no per-item command line,
+# and only the app itself can call SMAppService.unregister(). If the bundle is
+# already gone, the record is orphaned and has to be removed by hand under
+# System Settings > General > Login Items & Extensions > Open at Login.
 set -uo pipefail
 
 APP=${NTFS_APP:-/Applications/TT NTFS Native.app}
@@ -37,12 +36,6 @@ TRACES=(
 )
 
 if [ "${1:-}" != "--yes" ]; then
-    if [ -d "$APP" ]; then
-        echo "Before continuing: open the app, and in Settings switch OFF"
-        echo "\"Open at login\". Nothing here can remove that record once the"
-        echo "bundle is gone -- see the comment at the top of this script."
-        echo
-    fi
     echo "This will remove:"
     for t in "${TRACES[@]}"; do [ -e "$t" ] && echo "  $t"; done
     echo "  the $ID entry in FSKit's enabled-module list"
@@ -77,11 +70,21 @@ PY
 fi
 # (the agent is restarted after deregistration below, so it forgets the module)
 
-# 3. Quit the app before pulling the bundle out from under it.
+# 3. Ask the app to drop its Login Item record. Only it can: Background Task
+#    Management has no per-item command line, and deleting the bundle first
+#    orphans the record in System Settings with nothing able to remove it.
+BIN="$APP/Contents/MacOS/$(basename "$APP" .app)"
+if [ -x "$BIN" ]; then
+    "$BIN" --unregister-login-item >/dev/null 2>&1 &
+    sleep 3
+    echo "asked the app to remove its Login Item"
+fi
+
+# 4. Quit the app before pulling the bundle out from under it.
 pkill -f "$(basename "$APP")/Contents/MacOS" 2>/dev/null && echo "quit the app"
 sleep 1
 
-# 4. Deregister. Do this while the bundle still exists, or the databases keep
+# 5. Deregister. Do this while the bundle still exists, or the databases keep
 #    a record pointing at a path that is gone.
 pluginkit -e ignore -i "$ID" >/dev/null 2>&1
 # Every registered copy, not just the installed one: Xcode registers whatever it
@@ -98,12 +101,12 @@ if [ -x "$LSREGISTER" ]; then
     done
 fi
 
-# 5. Restart the agent so FSKit drops its cached view of the module. Doing this
+# 6. Restart the agent so FSKit drops its cached view of the module. Doing this
 #    only now means it re-reads both the list and the registrations.
 pid=$(pgrep -x fskit_agent || true)
 [ -n "$pid" ] && kill -9 "$pid" && echo "restarted fskit_agent"
 
-# 6. Delete.
+# 7. Delete.
 for t in "${TRACES[@]}"; do
     [ -e "$t" ] || continue
     rm -rf "$t" && echo "removed $t"

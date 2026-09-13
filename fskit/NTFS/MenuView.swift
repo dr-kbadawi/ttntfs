@@ -33,7 +33,7 @@ struct MenuView: View {
             }
             Divider()
             HStack {
-                Button("Settings…") { openSettings() }
+                Button("Settings…") { showSettings() }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }
@@ -42,7 +42,24 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 340)
-        .task { monitor.start(); status.refresh() }
+        .task { monitor.start(); status.refresh(); enabler.refreshRemountable() }
+    }
+
+    /// `openSettings()` alone does nothing useful in a menu-bar-only app: with
+    /// LSUIElement the process is an accessory, so it is never activated and the
+    /// window opens unfocused behind everything, or not visibly at all. Activate
+    /// first, then bring the window forward once SwiftUI has created it.
+    private func showSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        openSettings()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            guard let window = NSApp.windows.first(where: {
+                $0.isVisible && ($0.identifier?.rawValue.contains("Settings") == true
+                                 || $0.styleMask.contains(.titled) && $0.level == .normal)
+            }) else { return }
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
+        }
     }
 
     @ViewBuilder private var header: some View {
@@ -50,7 +67,11 @@ struct MenuView: View {
         case .unknown:
             Label("Checking extension…", systemImage: "hourglass").foregroundStyle(.secondary)
         case .enabled:
-            Label("File system extension enabled", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 6) {
+                Label("File system extension enabled", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                handoverOffer
+            }
         case .disabled, .notInstalled:
             VStack(alignment: .leading, spacing: 6) {
                 Label(status.state == .disabled ? "Extension is disabled" : "Extension not registered",
@@ -71,29 +92,7 @@ struct MenuView: View {
                 Text("Enabling…").font(.caption).foregroundStyle(.secondary)
             }
         case .succeeded:
-            VStack(alignment: .leading, spacing: 6) {
-                if let note = enabler.remountNote {
-                    Text(note).font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                if enabler.remountable.isEmpty {
-                    Text("Enabled. Plug in an NTFS drive.")
-                        .font(.caption).foregroundStyle(.secondary)
-                } else {
-                    // Enabling changes nothing for disks that are already
-                    // mounted: Disk Arbitration only picks a module when it
-                    // probes, and it probes on mount.
-                    Text("\(enabler.remountable.map(\.name).formatted(.list(type: .and))) "
-                         + "\(enabler.remountable.count == 1 ? "is" : "are") still mounted by the system. "
-                         + "Remount to hand over to this driver.")
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Button(enabler.remountable.count == 1 ? "Remount Volume" : "Remount Volumes") {
-                        Task { await enabler.remountAll(); monitor.start() }
-                    }
-                    .controlSize(.small)
-                }
-            }
+            Text("Enabled.").font(.caption).foregroundStyle(.secondary)
         case .blocked(let why), .failed(let why):
             VStack(alignment: .leading, spacing: 6) {
                 Text(why)
@@ -108,6 +107,29 @@ struct MenuView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 enableButtons(title: "Enable Extension")
             }
+        }
+    }
+
+    /// Enabling does nothing to a disk that is already mounted — Disk
+    /// Arbitration only picks a module when it probes, and it probes on mount.
+    /// So this offer has to live outside the enable flow: the header flips to
+    /// "enabled" the moment enabling succeeds, and anything shown only in the
+    /// disabled branch would vanish with it.
+    @ViewBuilder private var handoverOffer: some View {
+        if let note = enabler.remountNote {
+            Text(note).font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        if !enabler.remountable.isEmpty {
+            Text("\(enabler.remountable.map(\.name).formatted(.list(type: .and))) "
+                 + "\(enabler.remountable.count == 1 ? "is" : "are") mounted by the system. "
+                 + "Remount to hand over to this driver.")
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(enabler.remountable.count == 1 ? "Remount Volume" : "Remount Volumes") {
+                Task { await enabler.remountAll(); monitor.start(); status.refresh() }
+            }
+            .controlSize(.small)
         }
     }
 

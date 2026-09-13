@@ -95,7 +95,7 @@ final class ModuleEnabler: ObservableObject {
             outcome = .succeeded
             // Disk Arbitration only chooses a module when it probes, which it
             // does on mount. Anything already mounted stays where it is.
-            remountable = Self.mountedNTFSVolumes()
+            refreshRemountable()
         } else if killed == 0 {
             outcome = .failed("The module list was updated but fskit_agent was not running to restart. Log out and back in, then re-check.")
         } else {
@@ -216,6 +216,14 @@ final class ModuleEnabler: ObservableObject {
 
     // MARK: Remount
 
+    /// NTFS volumes some other driver is serving, so ones we could take over.
+    /// Recomputed whenever the menu opens, not only after enabling: a disk
+    /// plugged in while the module was off stays on Apple's driver until it is
+    /// remounted, and the offer has to survive the header flipping to "enabled".
+    func refreshRemountable() {
+        remountable = Self.mountedNTFSVolumes().filter { !Self.deviceIsServedByModule($0.device) }
+    }
+
     /// Unmount and mount again so Disk Arbitration re-probes and picks our
     /// module. Uses DiskArbitration rather than spawning `diskutil`; the session
     /// is driven by a dispatch queue so this works with or without a run loop.
@@ -230,7 +238,7 @@ final class ModuleEnabler: ObservableObject {
                 moved += 1
             }
         }
-        remountable = Self.mountedNTFSVolumes()
+        refreshRemountable()
         if failures.isEmpty {
             remountNote = moved == 1 ? "Remounted 1 volume." : "Remounted \(moved) volumes."
         } else {

@@ -9,7 +9,20 @@ import AppKit
 /// A MenuBarExtra scene has no launch-time hook of its own, so the one-time
 /// login-item registration hangs off the app delegate.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// Only the app can remove its own Login Item record — Background Task
+    /// Management has no per-item command line — so the uninstaller invokes the
+    /// binary with this flag before deleting the bundle. Without it the record
+    /// is orphaned in System Settings and has to be deleted by hand.
+    static let unregisterFlag = "--unregister-login-item"
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains(Self.unregisterFlag) {
+            Task { @MainActor in
+                LoginItem.shared.setEnabled(false)
+                NSApp.terminate(nil)
+            }
+            return
+        }
         Task { @MainActor in LoginItem.shared.registerOnFirstRun() }
     }
 }
