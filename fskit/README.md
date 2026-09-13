@@ -256,6 +256,12 @@ fixtures` (see tools/README.md).
   means is that every volume is unmounted and flushed. Eject Disk is therefore
   disabled by what is still *mounted* on the device, not by whether the device
   node has gone, or it would invite a second eject that has nothing to do.
+- **Whether a volume is writable is the thing being looked for**, so it is a
+  coloured badge next to the volume — green `read/write`, orange `read-only`,
+  grey `not mounted` — rather than the third item in a grey dot-separated line
+  where it read as more metadata. This driver mounts read-only more often than
+  most, for reasons the user can sometimes act on, so the state has to be
+  legible at a glance.
 - **A result must not outlive what it claims.** "Safe to unplug" stayed on
   screen after a volume was mounted again, when it had stopped being true, and
   it was grey like every other line. Messages now carry a kind — something

@@ -234,7 +234,10 @@ struct PartitionRow: View {
                 .foregroundStyle(iconColour)
             VStack(alignment: .leading, spacing: 2) {
                 Text(partition.displayName).font(.body)
-                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 5) {
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                    accessBadge
+                }
                 if !detail.isEmpty {
                     Text(detail)
                         .font(.caption)
@@ -302,14 +305,30 @@ struct PartitionRow: View {
         return .primary
     }
 
+    /// Device and size only. Whether a volume is writable is the thing a user
+    /// is actually looking for, so it is a badge rather than the third item in
+    /// a grey list where it reads like more metadata.
     private var subtitle: String {
-        var parts = [partition.bsdName, partition.sizeDescription]
-        if partition.isMounted {
-            parts.append(partition.mountedReadOnly ? "read-only" : "read/write")
-        } else {
-            parts.append("not mounted")
-        }
-        return parts.joined(separator: " · ")
+        "\(partition.bsdName) · \(partition.sizeDescription)"
+    }
+
+    private var accessBadge: some View {
+        Text(accessText)
+            .font(.caption2.weight(.semibold))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(accessColour.opacity(0.15), in: Capsule())
+            .foregroundStyle(accessColour)
+    }
+
+    private var accessText: String {
+        guard partition.isMounted else { return "not mounted" }
+        return partition.mountedReadOnly ? "read-only" : "read/write"
+    }
+
+    private var accessColour: Color {
+        guard partition.isMounted else { return .secondary }
+        return partition.mountedReadOnly ? .orange : .green
     }
 
     private var detail: String {
