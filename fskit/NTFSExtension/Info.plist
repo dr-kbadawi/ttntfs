@@ -39,6 +39,18 @@
 		</dict>
 		<key>FSMediaTypes</key>
 		<dict>
+			<key>DE94BBA4-06D1-4D40-A16A-BFD50179D6AC</key>
+			<dict>
+				<key>FSMediaProperties</key>
+				<dict>
+					<key>Content Hint</key>
+					<string>DE94BBA4-06D1-4D40-A16A-BFD50179D6AC</string>
+					<key>Leaf</key>
+					<true/>
+				</dict>
+				<key>FSProbeOrder</key>
+				<integer>2500</integer>
+			</dict>
 			<key>EBD0A0A2-B9E5-4433-87C0-68B6B72699C7</key>
 			<dict>
 				<key>FSMediaProperties</key>

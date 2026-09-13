@@ -10,6 +10,7 @@ fskit/
   NTFS.xcodeproj               generated; regenerate with `xcodegen generate`
   Config/Shared.xcconfig       team ID + stub/real core switch
   NTFS/                        host app (SwiftUI, menu bar, Settings, volume list)
+                               DiskInventory.swift lists every NTFS partition,
                                ModuleEnabler.swift enables/disables the module,
                                Uninstaller.swift removes it, LoginItem.swift starts at login
   NTFSExtension/               the .appex (Swift entry point, FSUnaryFileSystem, FSVolume)
@@ -189,6 +190,21 @@ fixtures` (see tools/README.md).
   drag leaves the module in FSKit's enabled list and the bundle registered, so
   System Settings keeps listing an extension that no longer exists.
   `scripts/uninstall.sh` is the same thing for a machine without the app.
+- **The menu lists every NTFS partition, mounted or not** (`DiskInventory`),
+  with Mount, Eject, and "Use This Driver" for one another driver holds.
+  Partitions come from IOKit (every leaf `IOMedia`), mount state from
+  `getmntinfo`, and ownership from the extension's open block device. Mount
+  state has to be attached *before* filtering: a whole-disk volume — an attached
+  image, or a disk formatted without a partition table — has no partition type
+  at all, and is only identifiable as NTFS from the filesystem the kernel
+  reports once mounted.
+  Which partitions *could* hold NTFS is judged by partition type, since reading
+  a raw device needs root and this app deliberately has none. So the list is of
+  candidates; mounting one is how you find out, and a failure is reported rather
+  than hidden. The extension therefore also claims GPT **Windows Recovery**
+  (`DE94BBA4-…`) at probe order 2500 — those partitions are NTFS, nothing on
+  macOS mounts them today, and without claiming the type Disk Arbitration would
+  never offer them to us, leaving a Mount button that could not work.
 - **One extension process per mounted volume.** Verified with two NTFS volumes
   at once (a physical disk and an attached image): three processes, a probe
   instance plus one per volume, both volumes read/write, both listed in

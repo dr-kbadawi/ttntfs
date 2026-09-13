@@ -6,30 +6,38 @@ struct MenuView: View {
     @EnvironmentObject var monitor: VolumeMonitor
     @EnvironmentObject var status: ExtensionStatus
     @EnvironmentObject var enabler: ModuleEnabler
+    @EnvironmentObject var inventory: DiskInventory
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
             Divider()
-            if monitor.volumes.isEmpty && monitor.staleStatus.isEmpty {
-                Text("No NTFS volumes mounted")
+            // Every NTFS partition, mounted or not, so nothing is hidden: a
+            // partition macOS declined to mount, a recovery partition, or a
+            // volume another driver took are all actionable from here.
+            if inventory.partitions.isEmpty {
+                Text("No NTFS volumes or partitions found")
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
             } else {
-                ForEach(monitor.volumes) { v in
-                    VolumeRow(volume: v) { monitor.unmount(v) }
+                ForEach(inventory.partitions) { partition in
+                    PartitionRow(
+                        partition: partition,
+                        reason: monitor.volumes.first { $0.bsdName == partition.bsdName }?.reason ?? "",
+                        mount: { Task { await inventory.mount(partition); monitor.refresh() } },
+                        eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
+                        handOver: {
+                            Task {
+                                await enabler.remountAll()
+                                inventory.refresh(); monitor.refresh(); status.refresh()
+                            }
+                        })
                 }
-                ForEach(monitor.staleStatus, id: \.bsdName) { s in
-                    HStack(alignment: .top) {
-                        Image(systemName: "externaldrive.badge.questionmark")
-                        VStack(alignment: .leading) {
-                            Text("\(s.label.isEmpty ? "NTFS" : s.label) (\(s.bsdName))").font(.body)
-                            Text(s.readOnly ? s.roReasonText : "Activated by the extension; not listed by the system yet.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                }
+            }
+            if let note = inventory.note {
+                Text(note).font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             HStack {
@@ -42,7 +50,7 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 340)
-        .task { monitor.start(); status.refresh(); enabler.refreshRemountable() }
+        .task { monitor.start(); inventory.start(); status.refresh(); enabler.refreshRemountable() }
     }
 
     /// `openSettings()` alone does nothing useful in a menu-bar-only app: with
@@ -147,27 +155,71 @@ struct MenuView: View {
     }
 }
 
-struct VolumeRow: View {
-    let volume: MountedVolume
-    let unmount: () -> Void
+struct PartitionRow: View {
+    let partition: Partition
+    /// Why it is read-only, from the extension's own status file, when it knows.
+    let reason: String
+    let mount: () -> Void
+    let eject: () -> Void
+    let handOver: () -> Void
 
     var body: some View {
         HStack(alignment: .top) {
-            Image(systemName: volume.readOnly ? "externaldrive.badge.exclamationmark" : "externaldrive.fill")
-                .foregroundStyle(volume.readOnly ? .orange : .primary)
+            Image(systemName: icon)
+                .foregroundStyle(iconColour)
             VStack(alignment: .leading, spacing: 2) {
-                Text(volume.name).font(.body)
-                Text("\(volume.device) · \(volume.readOnly ? "read-only" : "read/write")")
-                    .font(.caption).foregroundStyle(.secondary)
-                if volume.readOnly && !volume.reason.isEmpty {
-                    Text(volume.reason)
+                Text(partition.displayName).font(.body)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                if !detail.isEmpty {
+                    Text(detail)
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(partition.servedByOurDriver ? Color.secondary : Color.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer()
-            Button("Eject") { unmount() }.controlSize(.small)
+            action
         }
+    }
+
+    @ViewBuilder private var action: some View {
+        if !partition.isMounted {
+            Button("Mount", action: mount).controlSize(.small)
+        } else if partition.heldByAnotherDriver {
+            VStack(alignment: .trailing, spacing: 4) {
+                Button("Use This Driver", action: handOver).controlSize(.small)
+                Button("Eject", action: eject).controlSize(.small)
+            }
+        } else {
+            Button("Eject", action: eject).controlSize(.small)
+        }
+    }
+
+    private var icon: String {
+        if !partition.isMounted { return "externaldrive.badge.questionmark" }
+        if partition.heldByAnotherDriver { return "externaldrive.badge.exclamationmark" }
+        return partition.mountedReadOnly ? "externaldrive.badge.exclamationmark" : "externaldrive.fill"
+    }
+
+    private var iconColour: Color {
+        if !partition.isMounted { return .secondary }
+        if partition.heldByAnotherDriver || partition.mountedReadOnly { return .orange }
+        return .primary
+    }
+
+    private var subtitle: String {
+        var parts = [partition.bsdName, partition.sizeDescription]
+        if partition.isMounted {
+            parts.append(partition.mountedReadOnly ? "read-only" : "read/write")
+        } else {
+            parts.append("not mounted")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var detail: String {
+        if !partition.isMounted { return "" }
+        if partition.heldByAnotherDriver { return "Mounted by the system, not by this driver." }
+        return partition.mountedReadOnly ? reason : ""
     }
 }

@@ -298,7 +298,7 @@ final class ModuleEnabler: ObservableObject {
     }
 
     /// Whether one of our extension processes holds this specific device open.
-    private static func deviceIsServedByModule(_ device: String) -> Bool {
+    static func deviceIsServedByModule(_ device: String) -> Bool {
         let name = (device as NSString).lastPathComponent          // diskNsM
         return pids(named: "NTFSExtension").contains { pid in
             openDevicePaths(pid).contains { $0.hasSuffix("/" + name) || $0.hasSuffix("/r" + name) }

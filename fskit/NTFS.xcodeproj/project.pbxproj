@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		121312321DF34FF9FD4A2614 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
+		1D98488B3CCD85AE5E2FE4D0 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
 		3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */; };
 		5B2411379ACF6F4A93963E62 /* LoginItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0B51465CA38950094AABD2 /* LoginItem.swift */; };
 		67A44AFE5BD1D0652DBBF55A /* Uninstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4CCF9F76F32BAC5EB46CBC /* Uninstaller.swift */; };
@@ -73,6 +74,7 @@
 		9B0B51465CA38950094AABD2 /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
 		A3736E04BD94D01BF34B5ADD /* NTFSExtension-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NTFSExtension-Bridging-Header.h"; sourceTree = "<group>"; };
 		A69E766B5F4D89F7E9A6EF54 /* NTFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NTFSExtension.entitlements; sourceTree = "<group>"; };
+		B26FF508F1A90A37416CBD99 /* DiskInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskInventory.swift; sourceTree = "<group>"; };
 		B382EF12119CB428297CCB7B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B389C0EB1D9C689FA426953F /* NTFSVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSVolume.swift; sourceTree = "<group>"; };
 		C0F30CB423189222B7D3898A /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
@@ -102,6 +104,7 @@
 		041363860B3DB1C67B5D663E /* NTFS */ = {
 			isa = PBXGroup;
 			children = (
+				B26FF508F1A90A37416CBD99 /* DiskInventory.swift */,
 				F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */,
 				67642D3967176F0F3848BF48 /* Info.plist */,
 				9B0B51465CA38950094AABD2 /* LoginItem.swift */,
@@ -254,6 +257,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1D98488B3CCD85AE5E2FE4D0 /* DiskInventory.swift in Sources */,
 				ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */,
 				5B2411379ACF6F4A93963E62 /* LoginItem.swift in Sources */,
 				B918A3CCC2D1D2E71DA50A82 /* MenuView.swift in Sources */,

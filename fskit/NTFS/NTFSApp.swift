@@ -35,6 +35,7 @@ struct NTFSApp: App {
     @StateObject private var loginItem = LoginItem.shared
     @StateObject private var enabler = ModuleEnabler()
     @StateObject private var uninstaller: Uninstaller
+    @StateObject private var inventory = DiskInventory()
 
     init() {
         let enabler = ModuleEnabler()
@@ -48,6 +49,7 @@ struct NTFSApp: App {
                 .environmentObject(monitor)
                 .environmentObject(status)
                 .environmentObject(enabler)
+                .environmentObject(inventory)
         }
         .menuBarExtraStyle(.window)
 

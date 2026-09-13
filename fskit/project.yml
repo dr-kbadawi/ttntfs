@@ -127,6 +127,15 @@ targets:
                 "Content Hint": EBD0A0A2-B9E5-4433-87C0-68B6B72699C7
                 Leaf: true
               FSProbeOrder: 1500
+            # GPT Windows Recovery. Also NTFS, and nothing on macOS mounts it
+            # today -- Apple's driver is not offered it either -- so without
+            # this the app could list such a partition but never mount it.
+            # Probed after the data partition: it is the rarer case.
+            DE94BBA4-06D1-4D40-A16A-BFD50179D6AC:
+              FSMediaProperties:
+                "Content Hint": DE94BBA4-06D1-4D40-A16A-BFD50179D6AC
+                Leaf: true
+              FSProbeOrder: 2500
             Partitionless:
               FSMediaProperties:
                 Leaf: true
