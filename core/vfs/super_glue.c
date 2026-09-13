@@ -171,8 +171,19 @@ static int ntfs_glue_apply_options(struct fs_context *fc,
 /* ---- state checks ----------------------------------------------------- */
 
 /*
- * The old ntfs_is_logfile_clean(): the journal is clean when it is empty or
- * when the latest restart area has no client in use and the clean flag set.
+ * The old ntfs_is_logfile_clean(): the journal is clean when it is empty, when
+ * it is closed, or when it is open with RESTART_VOLUME_IS_CLEAN set.
+ *
+ * The two conditions are alternatives, not requirements, and getting that wrong
+ * costs every modern volume its write access. logfile.h says it plainly: XP and
+ * later leave the log *open* even across a clean shutdown, so client_in_use_list
+ * is 0 on a healthy disk; what distinguishes clean from dirty there is the flag,
+ * which XP+ sets at dismount and clears at mount. Requiring both meant a volume
+ * Windows had dismounted cleanly still mounted read-only, while the journal
+ * module (core/logfile, ntfs_logfile_is_clean) read the same restart area and
+ * correctly called it clean -- the app then showed "Journal: clean" next to
+ * "mounted read-only because $LogFile is not clean". Both paths must keep
+ * answering the same question the same way.
  */
 static bool ntfs_glue_logfile_clean(struct ntfs_volume *vol)
 {
@@ -189,7 +200,7 @@ static bool ntfs_glue_logfile_clean(struct ntfs_volume *vol)
 	if (!rp)
 		return NVolLogFileEmpty(vol);
 	ra = (struct restart_area *)((u8 *)rp + le16_to_cpu(rp->restart_area_offset));
-	clean = ra->client_in_use_list == LOGFILE_NO_CLIENT &&
+	clean = ra->client_in_use_list == LOGFILE_NO_CLIENT ||
 		(ra->flags & RESTART_VOLUME_IS_CLEAN);
 	kvfree(rp);
 	return clean;

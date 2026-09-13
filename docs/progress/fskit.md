@@ -69,3 +69,24 @@ Add `NTFS_CORE_MODE=real` for the real core.
   `tools/images/basic-4k.img`, and watch `log stream --predicate 'subsystem == "org.ntfsmac.NTFS"'`.
 - Verify the read-only fallback path with a dirty fixture, and the status file/UI.
 - Consider `FSVolume.AccessCheckOperations` if the kernel's permission checks fight noowners.
+
+## 2026-09-13: read-write mount of a volume with a live journal
+
+Two bugs, found from one contradictory status message ("Journal: clean, version
+1.1" next to "mounted read-only because $LogFile is not clean").
+
+1. `ntfs_glue_logfile_clean()` required the log to be closed **and** carry
+   RESTART_VOLUME_IS_CLEAN. logfile.h says the two are alternatives, and that
+   XP and later always leave the log open, so the rule condemned every modern
+   cleanly-dismounted volume to read-only. `core/logfile` had it right; the two
+   now agree.
+2. Fixing (1) let the mount proceed and it crashed: `ntfs_empty_logfile()` uses
+   `sb->s_bdev->bd_mapping`, which only `bdev_file.c` ever created. The FSKit
+   bdev had NULL. Moved to `platform/src/bdev_mapping.c` and attached from both
+   constructors.
+
+Verified on a 1 TB Windows-formatted USB disk: mounts read-write, status file
+reports readOnly false with no reason, create/rename/delete round trip, no
+crash. Coverage gap that hid both: every image in `tools/images` has an empty
+journal, so `ntfs_empty_logfile()` always returned at its first line.
+

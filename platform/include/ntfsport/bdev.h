@@ -42,9 +42,10 @@ struct ntfs_bdev {
 	bool read_only;
 	char name[64];
 	void *priv;
-	/* Raw-device page cache mapping. Always empty in the port (I/O goes
-	 * straight through the vtable); exists so kernel code that flushes or
-	 * reads ahead on bdev->bd_mapping keeps working. Owned by bdev_file.c. */
+	/* Raw-device page cache mapping, used by kernel code that flushes or
+	 * reads ahead on bdev->bd_mapping (ntfs_empty_logfile does both). Set up
+	 * by ntfs_bdev_attach_mapping(); every bdev implementation must call it,
+	 * because nothing that uses this field checks it for NULL. */
 	struct address_space *bd_mapping;
 };
 
@@ -53,6 +54,11 @@ int ntfs_bdev_read(struct ntfs_bdev *dev, void *buf, u64 offset, size_t count);
 int ntfs_bdev_write(struct ntfs_bdev *dev, const void *buf, u64 offset, size_t count);
 int ntfs_bdev_flush(struct ntfs_bdev *dev);
 int ntfs_bdev_discard(struct ntfs_bdev *dev, u64 offset, u64 length);
+
+/* Give @dev its bd_mapping page cache, or release it. Call attach from every
+ * bdev constructor and detach from its destructor. */
+int ntfs_bdev_attach_mapping(struct ntfs_bdev *dev);
+void ntfs_bdev_detach_mapping(struct ntfs_bdev *dev);
 
 static inline u64 bdev_nr_bytes(const struct ntfs_bdev *dev) { return dev->size_bytes; }
 static inline u32 bdev_logical_block_size(const struct ntfs_bdev *dev) { return dev->logical_block_size; }

@@ -323,6 +323,13 @@ fixtures` (see tools/README.md).
 - Closing a read-only probe handle logs harmless `flush: Input/output error`
   lines; the core should not flush a handle it opened read-only.
 
+- **Every fixture image has an empty `$LogFile`.** That is why a read-write
+  mount of a volume with a non-empty journal crashed in `ntfs_empty_logfile()`
+  and no test caught it: with an empty log the function returns at its first
+  line, so the real emptying path had never run under FSKit. A fixture whose
+  journal is non-empty but clean is the missing coverage; until it exists, the
+  only test of that path is a real Windows-formatted disk.
+
 ## Design notes
 
 - **Lifecycle** (FSVolume.h): `activate` is called *before* `mount`, so the core

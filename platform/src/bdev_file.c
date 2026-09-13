@@ -176,11 +176,7 @@ static void file_close(struct ntfs_bdev *dev)
 {
 	struct bdev_file *f = bf(dev);
 
-	if (dev->bd_mapping) {
-		address_space_destroy(dev->bd_mapping, false);
-		free(dev->bd_mapping);
-		dev->bd_mapping = NULL;
-	}
+	ntfs_bdev_detach_mapping(dev);
 	if (f) {
 		if (f->owns_fd && f->fd >= 0)
 			close(f->fd);
@@ -198,54 +194,6 @@ static const struct ntfs_bdev_ops file_ops = {
 	.close = file_close,
 };
 
-/* ------------------------------------------------------------------ */
-/* bd_mapping: page cache over the raw device                          */
-
-static struct ntfs_bdev *mapping_bdev(struct address_space *m)
-{
-	return (struct ntfs_bdev *)m->private_list.next;	/* see open_common */
-}
-
-static int bdev_read_folio(struct address_space *mapping, struct folio *folio)
-{
-	struct ntfs_bdev *dev = mapping_bdev(mapping);
-	u64 off = folio_pos(folio);
-	size_t len = PAGE_SIZE;
-	int err;
-
-	if (off >= dev->size_bytes) {
-		memset(folio->data, 0, PAGE_SIZE);
-		folio_mark_uptodate(folio);
-		return 0;
-	}
-	if (dev->size_bytes - off < len)
-		len = (size_t)(dev->size_bytes - off);
-	err = ntfs_bdev_read(dev, folio->data, off, len);
-	if (err)
-		return err;
-	if (len < PAGE_SIZE)
-		memset((char *)folio->data + len, 0, PAGE_SIZE - len);
-	folio_mark_uptodate(folio);
-	return 0;
-}
-
-static int bdev_write_folio(struct address_space *mapping, struct folio *folio)
-{
-	struct ntfs_bdev *dev = mapping_bdev(mapping);
-	u64 off = folio_pos(folio);
-	size_t len = PAGE_SIZE;
-
-	if (off >= dev->size_bytes)
-		return 0;
-	if (dev->size_bytes - off < len)
-		len = (size_t)(dev->size_bytes - off);
-	return ntfs_bdev_write(dev, folio->data, off, len);
-}
-
-static const struct address_space_operations bdev_aops = {
-	.read_folio = bdev_read_folio,
-	.write_folio = bdev_write_folio,
-};
 
 /* ------------------------------------------------------------------ */
 /* Open                                                                */
@@ -303,14 +251,7 @@ static struct ntfs_bdev *open_common(int fd, bool owns_fd, bool read_only, const
 		dev->discard_granularity = 4096;
 	}
 
-	dev->bd_mapping = calloc(1, sizeof(*dev->bd_mapping));
-	if (dev->bd_mapping) {
-		address_space_init(dev->bd_mapping, NULL, &bdev_aops);
-		/* The mapping has no host inode; stash the device in the
-		 * (otherwise unused) private_list head. */
-		dev->bd_mapping->private_list.next = (struct list_head *)dev;
-		dev->bd_mapping->private_list.prev = (struct list_head *)dev;
-	}
+	ntfs_bdev_attach_mapping(dev);	/* best effort; see bdev_mapping.c */
 	return dev;
 }
 

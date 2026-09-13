@@ -140,6 +140,7 @@ static int fskit_flush(struct ntfs_bdev *dev)
 
 static void fskit_close(struct ntfs_bdev *dev)
 {
+	ntfs_bdev_detach_mapping(dev);	/* before priv: writeback goes through it */
 	if (dev->priv) {
 		CFRelease(dev->priv);	/* balances CFBridgingRetain in create */
 		dev->priv = NULL;
@@ -175,6 +176,14 @@ struct ntfs_bdev *ntfs_bdev_fskit_create(FSBlockDeviceResource *resource)
 	dev->discard_granularity = 0;
 	dev->read_only = !resource.isWritable;
 	strlcpy(dev->name, resource.BSDName.UTF8String ?: "?", sizeof(dev->name));
+	/* Kernel code reads ahead and writes back through bd_mapping; without one
+	 * ntfs_empty_logfile() dereferences NULL on the first read-write mount of
+	 * a volume whose journal is not empty. */
+	if (ntfs_bdev_attach_mapping(dev) != 0) {
+		os_log_error(bdev_log(), "%{public}s: no device page cache", dev->name);
+		fskit_close(dev);
+		return NULL;
+	}
 	os_log_info(bdev_log(), "open %{public}s: %llu bytes, lbs %u pbs %u%s",
 		    dev->name, dev->size_bytes, dev->logical_block_size,
 		    dev->physical_block_size, dev->read_only ? " (ro)" : "");
