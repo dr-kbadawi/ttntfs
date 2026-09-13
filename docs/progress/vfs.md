@@ -177,11 +177,37 @@ Apple's; it was the largest beneficiary, since a streaming write dirties folios
 constantly and the old sync walked everything on every call.
 
 Everything meets the phase 5 "within 2x of exFAT" bar except random 4 KiB
-writes. Cause measured, not inferred: PAGE_SIZE is 16384 on Apple Silicon and
-the cache dirties whole folios, so a 4 KiB write becomes a ~16 KiB device write.
-The `io window` counters show ~20 KiB per write call and zero reads during that
-phase, so it is write amplification, not read-modify-write from disk. The fix is
-sub-folio dirty tracking, which the port does not have.
+writes.
+
+**The cause is not established. The explanation first written here was wrong**
+and is corrected on 2026-09-14. It claimed "PAGE_SIZE is 16384 on Apple Silicon
+so a 4 KiB write dirties a 16 KiB folio", with "~20 KiB per write call and zero
+reads" as evidence. Both halves are false:
+
+* `NTFS_PAGE_SHIFT` is 12 (`platform/include/ntfsport/config.h`), nothing
+  overrides it, and a program compiled against `platform/include` prints
+  `PAGE_SIZE=4096`. Our folios are 4 KiB. The 16384 came from
+  `os.sysconf('SC_PAGE_SIZE')`, which is the host MMU page and has nothing to do
+  with the folio size.
+* the "~20 KiB, zero reads" figure came from an `io window` line spanning a
+  mixed phase, so it described the sequential setup, not the random writes.
+
+Isolated properly (setup written and settled first, then 3000 random 4 KiB
+writes at 4020 IOPS on a 1 GiB image, cluster 4096):
+
+    read  350 calls  5600 KiB  = 16.0 KiB per call
+    write 674 calls 10784 KiB  = 16.0 KiB per call
+
+So device I/O is 16 KiB-granular in **both** directions -- 4x amplification each
+way, and reads do happen, i.e. there *is* a read-modify-write. That matches an
+observation already in the perf memory note from the very first benchmark round:
+"a 4 KiB random file read pulls 16 KiB from the device".
+
+Where the 16 KiB comes from is unknown. It is not the folio size (4 KiB) and not
+the cluster size (4096 on the test image); `ntfs_write_folio_non_resident()`
+caps a folio write at `PAGE_SIZE`, so something below or beside it is coalescing
+or over-reading. Worth finding: it would explain the read amplification too.
+Do not write another cause here without isolating the phase first.
 
 Reads on real hardware (Samsung 860 EVO, UAS bridge, read-only because the
 volume is dirty): ours 334 MB/s sequential and 3273 IOPS random 4 KiB, against

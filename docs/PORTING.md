@@ -4,10 +4,16 @@ Working title: a free, open-source, kext-less NTFS read/write driver for macOS,
 built by porting the Linux kernel's new `ntfs` driver (ntfsplus) to run as a
 user-space FSKit file system extension.
 
-Status (2026-09-12 22:05): phase 0 done — compat layer, page cache, inode
-table and file bdev built and tested; all 20 Tier 0/1 files compile;
-`$LogFile` module and tooling complete; FSKit project builds (unsigned).
-Phase 1/2 (`core/vfs/`) in progress. See `docs/progress/*.md`.
+Status (2026-09-14): phases 0–3 done. Real NTFS disks mount read/write in
+Finder on macOS 26.3 and 26.6.2 from a notarized, Developer ID-signed DMG that
+enables its own extension. Phase 4 (`$LogFile`) ships analysis always and replay
+only on an explicit per-volume instruction; its apply path has still only run
+against synthetic logs. Phase 5 in progress: metadata and write throughput now
+meet the "within 2× of Apple's exFAT" bar except random 4 KiB writes, and
+`fsck.ntfs` runs on every write test. **The two open gates are both `chkdsk`:**
+the write path has never been checked by Windows, and neither has replay. No
+x86_64 build, no `mkfs`/`fsck` in the app, no Homebrew cask. See
+`docs/progress/*.md` for the detail and the current numbers.
 
 ## 1. Why this source
 
@@ -177,9 +183,13 @@ documentation (Russon & Fledel), and behavior observed from Windows.
 - Entitlement `com.apple.developer.fskit.fsmodule` — a managed capability
   enabled from a paid developer account, not a request-and-wait like kext
   signing.
-- Users enable the module in System Settings → General → Login Items &
-  Extensions → File System Extensions. After that, recognized volumes
-  auto-mount like Apple's own FSKit exFAT.
+- Users were expected to enable the module in System Settings → General →
+  Login Items & Extensions → File System Extensions. **That switch does not work
+  for any third-party FSKit module on macOS 26.3 or 26.6.2**: `fskitd` refuses
+  the enable call from every caller lacking a private Apple entitlement, which
+  `LoginItems.appex` does not hold. The host app therefore enables itself, which
+  is why it ships unsandboxed with Developer ID. Once enabled, recognized volumes
+  do auto-mount like Apple's own FSKit exFAT. See fskit/README.md "Known issues".
 - Measured on this machine (M-series, macOS 26.3): Apple's FSKit exFAT does
   1.0–1.5 GB/s sequential write and 0.8–1.6 GB/s cold read on an internal
   NVMe-backed image — same as in-kernel APFS. Metadata ops cost ~0.3–0.6 ms
@@ -202,4 +212,4 @@ documentation (Russon & Fledel), and behavior observed from Windows.
 | Names | Case-insensitive, case-preserving. |
 | Ownership | `noowners` semantics; existing security descriptors preserved; new files inherit the parent's security ID. No ACL mapping in v1. |
 | macOS xattrs | Stored as alternate data streams. No `._` files. |
-| Dirty volume | Read-only mount with explanation until replay exists. Never silently reset the journal. |
+| Dirty volume | Read-only mount with the reason shown. Since v0.2 the user may instruct a replay per volume, at their own risk, for journal versions 1.0/1.1/2.0; it is never automatic and never a default. A hibernated volume can have its saved session discarded on the same terms. The journal is still never silently reset. |
