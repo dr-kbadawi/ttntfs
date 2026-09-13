@@ -80,6 +80,37 @@ Owner: vfs agent. Paths: `core/vfs/`, `core/include/`.
   so maps a stale second copy of the base record for attribute inodes; api.c uses its own
   variant on the base inode for ADS writes.
 
+## 2026-09-13: directory deletion degrades with directory size
+
+Measured on a 1 GiB NTFS image on internal NVMe, so the medium is not the limit.
+Deleting the **same 1000 files** from a directory that holds 1000 takes 1.61 s
+(622/s); from one that holds 8000 it takes 7.67 s (130/s). Scaling across sizes:
+
+| files in dir | create/s | delete/s | stat/s |
+|---|---|---|---|
+| 500 | 863 | 854 | 193802 |
+| 1000 | 809 | 654 | 206253 |
+| 2000 | 866 | 478 | 209474 |
+| 4000 | 876 | 362 | 205378 |
+| 8000 | 840 | 224 | 193998 |
+
+Create and stat are flat; only delete degrades, roughly as n^0.4. It is not I/O:
+the block layer's own counters (`io window` lines, see fskit/README.md) show the
+device 10-34% busy through the whole phase, with uniform ~1.9 KiB writes at
+0.05 ms each, so 70-90% of the time is our own code. `sample` attributes what
+little it catches to the synchronous write path.
+
+The unlink path is `ntfs_unlink` -> `namei.c` (searches the *inode's* $FILE_NAME
+attributes, which does not depend on directory size) -> `ntfs_index_remove`
+(`core/ntfs/index.c:1930`), which loops lookup + `ntfs_index_rm` retrying on
+-EAGAIN. The growth has to be inside `ntfs_index_rm` or the retry count, not in
+the lookup, which is O(log n). Not yet diagnosed further, and not yet fixed:
+changing B-tree deletion in ported kernel code needs its own test coverage.
+
+This is the concrete form of the phase 5 metadata gap: delete was already the
+one operation outside 2x of Apple's exFAT module (0.30x on 1000 files), and it
+gets worse as directories grow.
+
 ## Next
 - Windows `chkdsk /f` round trip on real media (phase 2 gate needs the PC). More
   urgent since 6835a53: `ntfs_glue_logfile_clean()` had required the journal to
