@@ -29,7 +29,12 @@ DMG="$OUT/$NAME.dmg"
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 
-echo "==> building Release (Developer ID)"
+echo "==> building Release (Developer ID), from scratch"
+# A release artifact is built clean: stale derived data has produced both wrong
+# contents and spurious failures -- Xcode caches the entitlements file's state
+# and then refuses the build claiming it "was modified during the build" when
+# the project has merely been regenerated since.
+rm -rf "$DD"
 xcodebuild -project "$FSKIT/NTFS.xcodeproj" -scheme NTFS -configuration Release \
            -derivedDataPath "$DD" build >/dev/null
 [ -d "$APP" ] || { echo "no app at $APP" >&2; exit 1; }
