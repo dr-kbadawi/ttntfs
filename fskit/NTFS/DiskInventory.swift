@@ -32,6 +32,10 @@ struct Partition: Identifiable, Equatable {
     var mountedReadOnly: Bool = false
     /// Why, when our driver decided it. Empty when read/write.
     var readOnlyReason: String = ""
+    /// Windows has a suspended session saved on this volume (Fast Startup).
+    /// Writing to it would corrupt the filesystem when Windows resumes, so the
+    /// driver refuses until the saved session is discarded.
+    var hibernated: Bool = false
     var servedByOurDriver: Bool = false
 
     var id: String { bsdName }
@@ -108,9 +112,12 @@ final class DiskInventory: ObservableObject {
                 found[index].fsType = m.fsType
                 found[index].mountedReadOnly = m.readOnly
             }
-            if let s = status[found[index].bsdName], s.readOnly {
-                found[index].mountedReadOnly = true
-                found[index].readOnlyReason = s.roReasonText
+            if let s = status[found[index].bsdName] {
+                if s.readOnly {
+                    found[index].mountedReadOnly = true
+                    found[index].readOnlyReason = s.roReasonText
+                }
+                found[index].hibernated = s.hibernated
             }
             found[index].servedByOurDriver = ModuleEnabler.deviceIsServedByModule(found[index].device)
         }
@@ -144,6 +151,25 @@ final class DiskInventory: ObservableObject {
         }
         try? await Task.sleep(for: .milliseconds(600))
         refresh()
+    }
+
+    /// Discard the saved Windows session and hand the volume back read-write.
+    /// The request is left for the extension to consume at mount time — it is
+    /// the only thing holding the volume's write path open — and the volume is
+    /// then remounted so that mount actually happens.
+    func discardHibernation(_ partition: Partition) async {
+        note = nil
+        let store = SharedSettings.store
+        var pending = store.stringArray(forKey: SharedSettings.pendingHibernationDiscard) ?? []
+        if !pending.contains(partition.bsdName) { pending.append(partition.bsdName) }
+        store.set(pending, forKey: SharedSettings.pendingHibernationDiscard)
+
+        await unmount(partition)
+        await mount(partition)
+        refresh()
+        if let now = partitions.first(where: { $0.bsdName == partition.bsdName }), now.mountedReadOnly {
+            note = "\(partition.displayName) is still read-only: \(now.readOnlyReason)"
+        }
     }
 
     func unmount(_ partition: Partition) async {

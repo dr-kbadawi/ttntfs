@@ -190,6 +190,26 @@ fixtures` (see tools/README.md).
   drag leaves the module in FSKit's enabled list and the bundle registered, so
   System Settings keeps listing an extension that no longer exists.
   `scripts/uninstall.sh` is the same thing for a machine without the app.
+- **Discarding a hibernation image is the one read-only case we can fix.**
+  Windows' Fast Startup saves a kernel session into `hiberfil.sys` and resumes
+  from it, including its own cached picture of this filesystem, so writing
+  behind it corrupts the volume. Zeroing that file's header is exactly what
+  Windows does once it consumes the image, and what our detection looks for:
+  Windows boots instead of resuming and the volume is safe to write. No
+  inferred on-disk layout is involved, unlike journal replay, which is why this
+  is done and that is not. It destroys whatever the user had open in Windows,
+  so it needs consent: the app writes a one-shot request
+  (`pendingHibernationDiscard`, a BSD name) into the app group, the extension
+  takes it at mount and the core does the work behind
+  `NTFS_MOUNT_DISCARD_HIBERNATION`, only for a volume that is otherwise clean.
+  Consuming the request at mount means a repeated or failed mount cannot
+  silently discard a session the user agreed to once.
+  The awkward part: `super.c`'s `check_windows_hibernation_status()` sets
+  `NV_Errors` precisely to stop the volume going read-write, and writing the
+  file needs it read-write — so the flag is cleared for the attempt and put back
+  if the discard does not complete. Verified 2026-09-13 on a volume given a real
+  `hibr` header: read-only without consent, read-write with it, header zeroed,
+  and a second mount with a restored header stays read-only.
 - **Read-only is invisible to the kernel.** When the core refuses writes because
   a volume is dirty, hibernated or has an unclean journal, it enforces that per
   operation with EROFS — FSKit cannot flip `MNT_RDONLY` after load — so

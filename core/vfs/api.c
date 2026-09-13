@@ -45,6 +45,9 @@
 #undef ntfs_setattr
 #include "glue.h"
 
+/* Kept in step with super_glue.c's copy: the resumable-image header. */
+#define NTFS_HIBERFIL_HEADER_SIZE 4096
+
 #ifndef ENOATTR
 #define ENOATTR ENODATA
 #endif
@@ -1171,6 +1174,62 @@ done:
 		mark_inode_dirty(vi);
 	}
 	return ret;
+}
+
+/*
+ * ntfs_glue_zero_hiberfil - discard the saved Windows hibernation image
+ *
+ * Windows' Fast Startup does not shut down: it saves the kernel session into
+ * hiberfil.sys and resumes from it next boot, which includes its own cached
+ * picture of this filesystem. Writing to the volume behind that would corrupt
+ * it when Windows resumes, so a hibernated volume mounts read-only.
+ *
+ * Zeroing the header is exactly what Windows itself does once it has consumed
+ * the image, and what super_glue.c's ntfs_glue_hibernated() looks for: the
+ * saved session stops being resumable, Windows boots normally instead, and the
+ * volume is safe to write. The filesystem is not touched -- only the header of
+ * one file -- and unlike replaying a journal there is no inferred on-disk
+ * layout involved. What it destroys is whatever the user had open in Windows.
+ *
+ * The volume must already be read-write; the caller does that, and only for a
+ * volume that is otherwise clean.
+ */
+int ntfs_glue_zero_hiberfil(struct ntfs_volume *vol)
+{
+	struct inode *vi;
+	void *zeros;
+	ssize_t written;
+	int err = 0;
+
+	if (!vol || !vol->root_ino)
+		return -EINVAL;
+	inode_lock_shared(vol->root_ino);
+	vi = ntfs_vfs_lookup(vol->root_ino, "hiberfil.sys", 12);
+	inode_unlock_shared(vol->root_ino);
+	if (IS_ERR(vi))
+		return PTR_ERR(vi) == -ENOENT ? 0 : PTR_ERR(vi);
+	if (IS_RDONLY(vi)) {
+		err = -EROFS;
+		goto out;
+	}
+	/* Only the header identifies a resumable image; leave the rest alone so
+	 * the file keeps its size and Windows reuses it. */
+	zeros = kzalloc(NTFS_HIBERFIL_HEADER_SIZE, GFP_KERNEL);
+	if (!zeros) {
+		err = -ENOMEM;
+		goto out;
+	}
+	inode_lock(vi);
+	written = do_write(vi, zeros, NTFS_HIBERFIL_HEADER_SIZE, 0);
+	inode_unlock(vi);
+	kfree(zeros);
+	if (written < 0)
+		err = (int)written;
+	else if (written != NTFS_HIBERFIL_HEADER_SIZE)
+		err = -EIO;
+out:
+	iput(vi);
+	return err;
 }
 
 ssize_t ntfs_write(ntfs_inode_t *h, const void *buf, size_t count, uint64_t offset)

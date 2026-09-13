@@ -248,11 +248,16 @@ static int ntfs_glue_make_rw(struct ntfs_volume *vol)
 {
 	struct super_block *sb = vol->sb;
 
-	if (NVolErrors(vol))
+	if (NVolErrors(vol)) {
+		platform_log(PLATFORM_LOG_WARN, "ntfs: %s: rw refused: errors flagged", sb->s_id);
 		return -EROFS;
+	}
 	if (vol->vol_flags & (VOLUME_IS_DIRTY | VOLUME_MODIFIED_BY_CHKDSK |
-			      VOLUME_MUST_MOUNT_RO_MASK))
+			      VOLUME_MUST_MOUNT_RO_MASK)) {
+		platform_log(PLATFORM_LOG_WARN, "ntfs: %s: rw refused: vol_flags 0x%x",
+			     sb->s_id, (unsigned)le16_to_cpu(vol->vol_flags));
 		return -EROFS;
+	}
 	if (vol->logfile_ino && !ntfs_empty_logfile(vol->logfile_ino)) {
 		ntfs_error(sb, "Failed to empty journal LogFile.  Staying read-only.");
 		NVolSetErrors(vol);
@@ -362,7 +367,7 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	struct ntfs_volume_handle *h;
 	struct ntfs_volume *vol;
 	struct super_block *sb;
-	bool want_rw;
+	bool want_rw, made_rw = false;
 	int err, hib;
 
 	*vol_out = NULL;
@@ -399,9 +404,59 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	h->dirty = !!(vol->vol_flags & VOLUME_IS_DIRTY);
 	h->logfile_clean = ntfs_glue_logfile_clean(vol);
 	hib = ntfs_glue_hibernated(vol);
+	want_rw = !(opts->flags & NTFS_MOUNT_RDONLY);
+
+	/*
+	 * Discard the saved Windows session, if asked and if that is the only
+	 * thing in the way. It has to happen before the read-only decision
+	 * below, and needs the volume writable -- so the volume is switched
+	 * read-write first, which ntfs_glue_make_rw() refuses for a dirty
+	 * volume, an unclean journal or one with errors. A hibernated volume
+	 * that is otherwise clean is exactly the case this exists for.
+	 */
+	if (hib > 0 && want_rw && !dev->read_only && h->logfile_clean && !h->dirty &&
+	    (opts->flags & NTFS_MOUNT_DISCARD_HIBERNATION)) {
+		/*
+		 * super.c's check_windows_hibernation_status() sets NV_Errors for
+		 * the sole purpose of stopping a hibernated volume going
+		 * read-write, so clearing it is what makes the discard possible.
+		 * Safe only because every other reason to stay read-only has been
+		 * ruled out just above (not dirty, journal clean, device
+		 * writable); it is put back if the discard does not complete.
+		 */
+		bool had_errors = NVolErrors(vol);
+
+		NVolClearErrors(vol);
+		err = ntfs_glue_make_rw(vol);
+		if (err) {
+			if (had_errors)
+				NVolSetErrors(vol);
+			platform_log(PLATFORM_LOG_WARN,
+				     "ntfs: %s: cannot discard the hibernation image; staying read-only (%d)",
+				     sb->s_id, err);
+		} else {
+			made_rw = true;
+			err = ntfs_glue_zero_hiberfil(vol);
+			if (err) {
+				/* Writable now but still hibernated: put the flag
+				 * back and let the decision below keep it
+				 * read-only, so nothing reaches the volume. */
+				if (had_errors)
+					NVolSetErrors(vol);
+				platform_log(PLATFORM_LOG_ERR,
+					     "ntfs: %s: could not discard the hibernation image (%d); staying read-only",
+					     sb->s_id, err);
+			} else {
+				hib = 0;
+				h->fc.sb_flags = sb->s_flags;
+				platform_log(PLATFORM_LOG_WARN,
+					     "ntfs: %s: discarded the saved Windows hibernation image on request; Windows will boot instead of resuming",
+					     sb->s_id);
+			}
+		}
+	}
 	h->hibernated = hib != 0;
 
-	want_rw = !(opts->flags & NTFS_MOUNT_RDONLY);
 	h->ro_reason = NTFS_RO_NONE;
 	if (!want_rw)
 		h->ro_reason = NTFS_RO_REQUESTED;
@@ -418,7 +473,9 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	else if (NVolErrors(vol))
 		h->ro_reason = NTFS_RO_ERRORS;
 
-	if (want_rw && h->ro_reason == NTFS_RO_NONE) {
+	if (want_rw && h->ro_reason == NTFS_RO_NONE && made_rw) {
+		err = 0;                     /* switched above, for the discard */
+	} else if (want_rw && h->ro_reason == NTFS_RO_NONE) {
 		/* Clean: switch read-write. */
 		err = ntfs_glue_make_rw(vol);
 		if (!err) {

@@ -25,4 +25,11 @@ struct ntfs_volume_handle {
 	bool logfile_clean;
 };
 
+/*
+ * Zero hiberfil.sys's header so check_windows_hibernation_status() (and our
+ * ntfs_glue_hibernated()) stop seeing a saved session. Implemented in api.c,
+ * where the write path lives; the volume must already be read-write.
+ */
+int ntfs_glue_zero_hiberfil(struct ntfs_volume *vol);
+
 #endif /* NTFS_GLUE_H */

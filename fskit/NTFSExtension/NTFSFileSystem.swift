@@ -88,6 +88,12 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         let name = NTFSFileSystem.label(from: info)
         var mountOptions = MountOptions.fromDefaults()
         mountOptions.apply(taskOptions: options)
+        // A one-shot request from the app, consumed here so it cannot apply
+        // twice. The core still refuses unless the volume is otherwise clean.
+        if MountOptions.takeHibernationDiscardRequest(for: block.bsdName) {
+            mountOptions.discardHibernation = true
+            log.notice("\(block.bsdName, privacy: .public): discarding the saved Windows hibernation image at the user's request")
+        }
         if mountOptions.kernelReadOnly { _ = ntfs_bdev_fskit_set_read_only(dev, true) }
 
         let volumeID = FSVolume.Identifier(uuid: NTFSFileSystem.uuid(fromSerial: info.serial))

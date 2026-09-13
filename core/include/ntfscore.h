@@ -51,6 +51,13 @@ enum ntfs_mount_flags {
 	NTFS_MOUNT_ALLOW_WINDOWS_ILLEGAL = 1u << 5,
 	/* Issue discards for freed clusters. */
 	NTFS_MOUNT_DISCARD		= 1u << 6,
+	/* Zero the saved Windows hibernation image (hiberfil.sys) so the volume
+	 * can be mounted read-write. Windows will do a full boot instead of
+	 * resuming, losing whatever was open in the suspended session; the
+	 * filesystem itself is untouched. Only honoured when the volume is
+	 * otherwise clean -- a dirty volume or an unclean journal still refuses.
+	 * Destructive to the user's Windows session: ask first. */
+	NTFS_MOUNT_DISCARD_HIBERNATION	= 1u << 7,
 };
 
 enum ntfs_ro_reason {

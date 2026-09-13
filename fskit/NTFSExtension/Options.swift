@@ -18,6 +18,9 @@ enum SharedDefaults {
     static let allowWindowsIllegalNames = "allowWindowsIllegalNames"
     static let discard = "discard"
     static let caseSensitive = "caseSensitive"
+    /// One-shot requests, written by the app: BSD names whose saved Windows
+    /// hibernation image the user has agreed to discard. Consumed at mount.
+    static let pendingHibernationDiscard = "pendingHibernationDiscard"
 }
 
 struct MountOptions {
@@ -29,6 +32,10 @@ struct MountOptions {
     var allowWindowsIllegalNames = false
     var discard = false
     var caseSensitive = false
+    /// Discard the saved Windows session so the volume can mount read-write.
+    /// Never a stored preference: only ever set for one mount, by explicit
+    /// user consent, because it destroys whatever Windows had suspended.
+    var discardHibernation = false
 
     static func fromDefaults() -> MountOptions {
         var o = MountOptions()
@@ -41,6 +48,17 @@ struct MountOptions {
         o.discard = d.bool(forKey: SharedDefaults.discard)
         o.caseSensitive = d.bool(forKey: SharedDefaults.caseSensitive)
         return o
+    }
+
+    /// Takes the one-shot hibernation-discard request for this device, if the
+    /// user made one. Removing it here means a failed or repeated mount cannot
+    /// silently discard a session the user only agreed to once.
+    static func takeHibernationDiscardRequest(for bsdName: String) -> Bool {
+        guard let d = UserDefaults(suiteName: SharedDefaults.suite) else { return false }
+        let pending = d.stringArray(forKey: SharedDefaults.pendingHibernationDiscard) ?? []
+        guard pending.contains(bsdName) else { return false }
+        d.set(pending.filter { $0 != bsdName }, forKey: SharedDefaults.pendingHibernationDiscard)
+        return true
     }
 
     /// Applies FSTaskOptions from loadResource / activate / mount. Idempotent.
@@ -99,6 +117,7 @@ struct MountOptions {
         if allowWindowsIllegalNames { f |= NTFS_MOUNT_ALLOW_WINDOWS_ILLEGAL.rawValue }
         if discard { f |= NTFS_MOUNT_DISCARD.rawValue }
         if caseSensitive { f |= NTFS_MOUNT_CASE_SENSITIVE.rawValue }
+        if discardHibernation { f |= NTFS_MOUNT_DISCARD_HIBERNATION.rawValue }
         return f
     }
 

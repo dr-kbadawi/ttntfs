@@ -7,6 +7,7 @@ struct MenuView: View {
     @EnvironmentObject var status: ExtensionStatus
     @EnvironmentObject var enabler: ModuleEnabler
     @EnvironmentObject var inventory: DiskInventory
+    @State private var discardTarget: Partition?
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -29,6 +30,7 @@ struct MenuView: View {
                             : partition.readOnlyReason,
                         mount: { Task { await inventory.mount(partition); monitor.refresh() } },
                         eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
+                        discardHibernation: { discardTarget = partition },
                         handOver: {
                             Task {
                                 await enabler.remountAll()
@@ -52,6 +54,21 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 340)
+        .confirmationDialog("Discard the saved Windows session on \(discardTarget?.displayName ?? "")?",
+                            isPresented: Binding(get: { discardTarget != nil },
+                                                 set: { if !$0 { discardTarget = nil } })) {
+            Button("Discard and Mount Read/Write", role: .destructive) {
+                if let target = discardTarget {
+                    Task { await inventory.discardHibernation(target); monitor.refresh() }
+                }
+                discardTarget = nil
+            }
+            Button("Cancel", role: .cancel) { discardTarget = nil }
+        } message: {
+            Text("Windows saved a suspended session on this volume with Fast Startup. "
+                 + "Anything left open in Windows will be lost and Windows will start fresh next time. "
+                 + "Your files are not affected.")
+        }
         .task { monitor.start(); inventory.start(); status.refresh(); enabler.refreshRemountable() }
     }
 
@@ -163,6 +180,7 @@ struct PartitionRow: View {
     let reason: String
     let mount: () -> Void
     let eject: () -> Void
+    let discardHibernation: () -> Void
     let handOver: () -> Void
 
     var body: some View {
@@ -190,6 +208,11 @@ struct PartitionRow: View {
         } else if partition.heldByAnotherDriver {
             VStack(alignment: .trailing, spacing: 4) {
                 Button("Use This Driver", action: handOver).controlSize(.small)
+                Button("Eject", action: eject).controlSize(.small)
+            }
+        } else if partition.hibernated && partition.mountedReadOnly {
+            VStack(alignment: .trailing, spacing: 4) {
+                Button("Discard Session…", action: discardHibernation).controlSize(.small)
                 Button("Eject", action: eject).controlSize(.small)
             }
         } else {
