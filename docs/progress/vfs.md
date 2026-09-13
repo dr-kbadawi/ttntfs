@@ -179,35 +179,52 @@ constantly and the old sync walked everything on every call.
 Everything meets the phase 5 "within 2x of exFAT" bar except random 4 KiB
 writes.
 
-**The cause is not established. The explanation first written here was wrong**
-and is corrected on 2026-09-14. It claimed "PAGE_SIZE is 16384 on Apple Silicon
-so a 4 KiB write dirties a 16 KiB folio", with "~20 KiB per write call and zero
-reads" as evidence. Both halves are false:
+**Where the 16 KiB comes from: the macOS kernel's page, not our code.**
+Settled 2026-09-14. (The first explanation written here was wrong and the second
+was undetermined; this one is measured end to end.)
 
-* `NTFS_PAGE_SHIFT` is 12 (`platform/include/ntfsport/config.h`), nothing
-  overrides it, and a program compiled against `platform/include` prints
-  `PAGE_SIZE=4096`. Our folios are 4 KiB. The 16384 came from
-  `os.sysconf('SC_PAGE_SIZE')`, which is the host MMU page and has nothing to do
-  with the folio size.
-* the "~20 KiB, zero reads" figure came from an `io window` line spanning a
-  mixed phase, so it described the sequential setup, not the random writes.
+`tools/harness/iotrace.c` wraps the block device with a counting shim and
+histograms every transfer the core makes, called directly, with no FSKit and no
+kernel in the way:
 
-Isolated properly (setup written and settled first, then 3000 random 4 KiB
-writes at 4020 IOPS on a 1 GiB image, cluster 4096):
+| through the core | device I/O |
+|---|---|
+| 500 random 4 KiB writes | 500 writes of 4 KiB, **zero reads** |
+| 500 random 16 KiB writes | 500 writes of 16 KiB, zero reads |
 
-    read  350 calls  5600 KiB  = 16.0 KiB per call
-    write 674 calls 10784 KiB  = 16.0 KiB per call
+So the core neither amplifies nor splits: it passes the size it is given
+straight through, coalescing contiguous folios into one call. The amplification
+is therefore introduced above it. Through a real mount:
 
-So device I/O is 16 KiB-granular in **both** directions -- 4x amplification each
-way, and reads do happen, i.e. there *is* a read-modify-write. That matches an
-observation already in the perf memory note from the very first benchmark round:
-"a 4 KiB random file read pulls 16 KiB from the device".
+| from userspace | device I/O seen by the bdev |
+|---|---|
+| 3000 random 4 KiB writes | 16.0 KiB per call, reads present |
+| 1500 random 1 KiB writes | 15.8 KiB per call, no reads |
 
-Where the 16 KiB comes from is unknown. It is not the folio size (4 KiB) and not
-the cluster size (4096 on the test image); `ntfs_write_folio_non_resident()`
-caps a folio write at `PAGE_SIZE`, so something below or beside it is coalescing
-or over-reading. Worth finding: it would explain the read amplification too.
-Do not write another cause here without isolating the phase first.
+A 1 KiB write producing a 16 KiB device write is the decisive one. `hw.pagesize`
+on this machine is **16384**: the unified buffer cache works in 16 KiB pages, so
+a sub-page write makes the kernel fetch the whole page from us if it is not
+resident (that is the read-modify-write, and the reads appear exactly when the
+file is big enough for pages to have been evicted) and write the whole page back
+later. Our driver never sees the small write at all.
+
+Consequences:
+
+* **It is not our defect and not ours to fix.** Sub-folio dirty tracking in our
+  page cache would change nothing: our cache is handed 16 KiB and faithfully
+  passes 16 KiB. The earlier note proposing buffer heads was aimed at the wrong
+  layer.
+* **It cannot explain the gap against exFAT.** Apple's module is a FSKit
+  filesystem under the same UBC and receives the same 16 KiB requests. Both pay
+  the same amplification.
+
+So the real question is narrower than it looked: given both drivers receive
+identical 16 KiB requests, why do we do 3929 IOPS against exFAT's 9616? That is
+per-request cost, not amplification, and it is still open. One caveat for
+whoever takes it: the 4 KiB benchmark ran on a 128 MiB file where pages had been
+evicted, so part of what it measured was UBC misses; the 1 KiB run on a 64 MiB
+file had full residency, no reads, and reached 6653 IOPS. Control for residency
+before comparing.
 
 Reads on real hardware (Samsung 860 EVO, UAS bridge, read-only because the
 volume is dirty): ours 334 MB/s sequential and 3273 IOPS random 4 KiB, against
