@@ -5,6 +5,7 @@ import SwiftUI
 struct MenuView: View {
     @EnvironmentObject var monitor: VolumeMonitor
     @EnvironmentObject var status: ExtensionStatus
+    @EnvironmentObject var enabler: ModuleEnabler
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -55,15 +56,51 @@ struct MenuView: View {
                 Label(status.state == .disabled ? "Extension is disabled" : "Extension not registered",
                       systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                Text("Enable it under System Settings → General → Login Items & Extensions → File System Extensions, then plug in an NTFS drive.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button("Open System Settings") { status.openSettings() }
-                    Button("Re-check") { status.refresh() }
-                }
-                .controlSize(.small)
+                enableFooter
             }
         }
+    }
+
+    /// The System Settings switch cannot turn a third-party FSKit module on
+    /// (macOS 26.3 and 26.6.2), so we do it here instead. See ModuleEnabler.
+    @ViewBuilder private var enableFooter: some View {
+        switch enabler.outcome {
+        case .working:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Enabling…").font(.caption).foregroundStyle(.secondary)
+            }
+        case .succeeded:
+            Text("Enabled. Plug in an NTFS drive.")
+                .font(.caption).foregroundStyle(.secondary)
+        case .blocked(let why), .failed(let why):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(why)
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                enableButtons(title: "Try Again")
+            }
+        case .idle:
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Turn it on here — the switch in System Settings cannot enable third-party file system extensions on this version of macOS.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                enableButtons(title: "Enable Extension")
+            }
+        }
+    }
+
+    private func enableButtons(title: String) -> some View {
+        HStack {
+            Button(title) {
+                Task {
+                    await enabler.enable()
+                    status.refresh()
+                }
+            }
+            Button("Re-check") { status.refresh() }
+        }
+        .controlSize(.small)
     }
 }
 

@@ -10,6 +10,7 @@ fskit/
   NTFS.xcodeproj               generated; regenerate with `xcodegen generate`
   Config/Shared.xcconfig       team ID + stub/real core switch
   NTFS/                        host app (SwiftUI, menu bar, Settings, volume list)
+                               ModuleEnabler.swift enables the module; LoginItem.swift starts at login
   NTFSExtension/               the .appex (Swift entry point, FSUnaryFileSystem, FSVolume)
   Shared/                      MountStatus.swift, compiled into both targets
   Bridge/                      ObjC: struct ntfs_bdev over FSBlockDeviceResource, bridging header
@@ -100,7 +101,9 @@ load an extension whose provisioning profile does not carry it.
    every running instance of the extension (unmounting its volumes, seen
    2026-09-13 as `launchd: remove all extension instances: caller = pkd`) and
    `fskit_agent` keeps the old UUID until it is restarted (step 5 does that).
-5. **Enable.** `fskit/scripts/enable-module.sh`. The System Settings switch
+5. **Enable.** Open the app and press **Enable Extension** in the menu-bar
+   panel (`ModuleEnabler.swift`), or run `fskit/scripts/enable-module.sh` for the
+   same thing from a terminal. The System Settings switch
    (General → Login Items & Extensions → File System Extensions ⓘ) does **not**
    work on macOS 26.3: LoginItems.appex calls fskitd as an unentitled
    `FSClient` (it lacks `com.apple.private.LiveFS.connection`, which only the
@@ -232,6 +235,29 @@ fixtures` (see tools/README.md).
   (`group.ch.techtag.ntfs`, keys in `SharedSettings.swift` ↔ `Options.swift`),
   overridable per mount with `-o ro,rw,hidehidden,showsystem,allowillegal,
   discard,casesensitive`; FSKit's `--rdonly` and `-f` are recognised too.
+- **The host app is deliberately not sandboxed.** It enables the module itself,
+  which means writing `enabledModules.plist` in Apple's restricted
+  `group.com.apple.fskit.settings` container and SIGKILLing `fskit_agent` —
+  both impossible under the sandbox, and the System Settings switch that should
+  do it is broken on macOS 26 (see Known issues). The extension stays sandboxed,
+  as FSKit requires. This rules out the Mac App Store, which a module carrying a
+  managed FSKit entitlement cannot use anyway. Everything the app does here is
+  per-user state in the user's own home, so no admin password is involved —
+  which is also why enabling belongs in the app and not in an installer, where a
+  root `postinstall` would write the wrong user's container.
+  The app keeps `com.apple.security.application-groups`: the UserDefaults suite
+  redirect follows that entitlement rather than the sandbox, so settings and
+  `mount-status.json` stay in the same container the extension uses. Verified
+  2026-09-13 after unsandboxing: no `~/Library/Preferences/group.ch.techtag.ntfs.plist`
+  appeared and the container file kept being used. Note that from macOS 15 the
+  group container is only accessible when the group ID is authorized by an
+  embedded provisioning profile (or the ID is team-prefixed), so the appex and
+  the app both need a real profile — a Developer ID one for distribution.
+- **The PlugInKit election is not what enables the module.** `pluginkit -e use`
+  is cosmetic here: with the election set to `ignore`, FSKit still reported the
+  module enabled and Disk Arbitration still mounted with it (verified
+  2026-09-13). Only the `enabledModules.plist` entry plus an `fskit_agent`
+  restart matter, which is why `ModuleEnabler` needs no helper tools.
 - **Probe result is always `.usable`.** Disk Arbitration's FSKit bridge
   (`DASupport.m`, `DAProbeWithFSKit`) treats only `usable` as success;
   `notRecognized` is ENOENT and anything else, `usableButLimited` included, is

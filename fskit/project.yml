@@ -49,11 +49,17 @@ targets:
         LSUIElement: true                    # menu-bar app, no Dock icon
         LSApplicationCategoryType: public.app-category.utilities
         NSHumanReadableCopyright: "GPL-2.0"
+    # Deliberately NOT sandboxed. The app enables the FSKit module itself by
+    # writing fskit_agent's list in the Apple-restricted group container and
+    # restarting the agent; both are out of reach under the sandbox, and the
+    # System Settings switch that would otherwise do it is broken on macOS 26
+    # (see ModuleEnabler.swift). This rules out Mac App Store distribution,
+    # which a module carrying a managed FSKit entitlement cannot use anyway.
+    # The app group is kept so the shared preferences and mount-status.json
+    # stay in the same container the (sandboxed) extension uses.
     entitlements:
       path: NTFS/NTFS.entitlements
       properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.files.user-selected.read-only: true
         com.apple.security.application-groups:
           - group.ch.techtag.ntfs
     settings:

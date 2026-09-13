@@ -20,12 +20,14 @@ struct NTFSApp: App {
     @StateObject private var monitor = VolumeMonitor()
     @StateObject private var status = ExtensionStatus()
     @StateObject private var loginItem = LoginItem.shared
+    @StateObject private var enabler = ModuleEnabler()
 
     var body: some Scene {
         MenuBarExtra("NTFS", systemImage: "externaldrive") {
             MenuView()
                 .environmentObject(monitor)
                 .environmentObject(status)
+                .environmentObject(enabler)
         }
         .menuBarExtraStyle(.window)
 
