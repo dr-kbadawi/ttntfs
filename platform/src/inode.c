@@ -28,6 +28,7 @@
  */
 #include <stdlib.h>
 #include <stdatomic.h>
+#include <linux/blkdev.h>
 #include <string.h>
 #include <pthread.h>
 #include <linux/kernel.h>
@@ -844,8 +845,15 @@ int sync_filesystem(struct super_block *sb)
 		if (e && !err)
 			err = e;
 	}
+	/*
+	 * Linux ends sync_filesystem() with sync_blockdev(), which is page-cache
+	 * writeback, not a device flush. The barrier is the filesystem's job and
+	 * ntfs_sync_fs() issues it via blkdev_issue_flush() just above. This used
+	 * to be a third ntfs_bdev_flush() on top of the two that chain already
+	 * performs; see the note in linux/blkdev.h.
+	 */
 	if (sb->s_bdev) {
-		e = ntfs_bdev_flush(sb->s_bdev);
+		e = sync_blockdev(sb->s_bdev);
 		if (e && !err)
 			err = e;
 	}

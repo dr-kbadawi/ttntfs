@@ -232,3 +232,54 @@ Apple's built-in ntfs at 377 MB/s and 3012 IOPS. Device busy 97% of a sequential
 read, so there is no idle gap for readahead to fill; the ~11% difference and the
 spread across regions both sit inside what the medium itself varies by.
 
+## 2026-09-14: where the exFAT write gap actually is
+
+Following the 16 KiB question. With buffer-cache residency held equal (32 MiB
+file, fully warmed, so neither side is paying page faults), the random 4 KiB
+write benchmark splits cleanly in two:
+
+| | ours | Apple exFAT |
+|---|---|---|
+| the 2000 writes themselves | ~630k IOPS | ~630k IOPS |
+| the `fsync` that follows | **70-75 ms** | **22 ms** |
+
+The writes are equal because neither filesystem is involved: userspace is only
+dirtying UBC pages. **The entire gap is the flush**, and the earlier "0.41x on
+random 4 KiB writes" was really this fsync measured through a benchmark that
+attributed it to the writes.
+
+What the flush costs us, measured:
+
+* 55-71% of fsync wall time is the extension's own CPU (`ps -o time` around the
+  call, three trials).
+* only ~20 ms of a 70-109 ms fsync is spent inside the device write calls
+  (`io window` mean × count), so the device is not the limit.
+* `sample` puts the time in the **write** path, not the sync path:
+  `NTFSVolume.write` → `ntfs_write` → `do_write` → `ntfs_vfs_direct_write` →
+  `walk_runs` → `write_extent` → `submit_bio_wait` → `ntfs_bdev_write` →
+  `fskit_pwrite` → `pwrite` carried 233 samples against 26 for
+  `synchronize` → `ntfs_volume_sync`. The fsync is the kernel handing us the
+  dirty pages as write requests; the sync call itself is cheap.
+
+For scale: 32 MiB of dirty pages written back as ~514 device calls in 70 ms is
+457 MB/s, where exFAT manages 1450 MB/s for the same 32 MiB, and an uncached
+`pwrite` of 32 MiB in 16 KiB chunks on this machine takes 23 ms. exFAT is at
+that ceiling; we are 3x below it.
+
+**Found and fixed on the way, but not the cause.** `linux/blkdev.h` mapped both
+`sync_blockdev()` and `blkdev_issue_flush()` to `ntfs_bdev_flush()`. In Linux
+only the second is a device cache flush; the first is
+`filemap_write_and_wait(bdev->bd_mapping)`. Because the vendored driver calls
+them in sequence -- `ntfs_fsync()` in core/vfs/file.c and `ntfs_sync_fs()` in
+core/ntfs/super.c both do -- every fsync issued two full device flushes, and a
+volume sync three once `sync_filesystem()` added its own. Now one each, matching
+upstream. It made no measurable difference (a flush with nothing left to flush
+is cheap), but it was wrong, and it is another entry for the
+platform-versus-Linux semantics table.
+
+**Still open:** whether the excess per-request cost is in the Swift/FSKit
+boundary or in our C write path. The core alone writes 32 MiB in 6.9 ms through
+a file-backed bdev, but that path has the host page cache under it and is not
+comparable to the resource-backed one. Separating them needs timing inside
+`NTFSVolume.write` against the `ntfs_write` it wraps, which needs an
+instrumented build.
