@@ -67,6 +67,9 @@ struct Partition: Identifiable, Equatable {
         return Self.ntfsPartitionTypes.contains(content.uppercased())
     }
 
+    /// Read-only because the journal is unclean, which replay could clear.
+    var journalBlocked: Bool { !journalSummary.isEmpty && mountedReadOnly && !hibernated }
+
     /// Mounted by something other than us — offer to take it over.
     var heldByAnotherDriver: Bool { isMounted && !servedByOurDriver }
 }
@@ -277,6 +280,35 @@ final class DiskInventory: ObservableObject {
             try? await Task.sleep(for: .milliseconds(250))
         }
         return false
+    }
+
+    /// Replay the journal and remount. This writes to the filesystem using an
+    /// on-disk layout that has never been checked against a journal Windows
+    /// wrote, so it is only ever reached through an explicit confirmation that
+    /// says so. The request is one-shot and consumed by the extension at mount.
+    func replayJournal(_ partition: Partition) async {
+        guard !busy else { return }
+        busy = true
+        note = nil
+        defer { busy = false }
+
+        let store = SharedSettings.store
+        var pending = store.stringArray(forKey: SharedSettings.pendingJournalReplay) ?? []
+        if !pending.contains(partition.bsdName) { pending.append(partition.bsdName) }
+        store.set(pending, forKey: SharedSettings.pendingJournalReplay)
+
+        _ = await unmountQuietly(partition)
+        if let problem = await mountQuietly(partition) {
+            note = "\(partition.displayName) could not be mounted: \(problem)"
+        }
+        refresh()
+        if let now = partitions.first(where: { $0.bsdName == partition.bsdName }) {
+            if now.mountedReadOnly {
+                note = "\(now.displayName) is still read-only. \(now.journalSummary.isEmpty ? now.readOnlyReason : now.journalSummary)"
+            } else {
+                note = "\(now.displayName) is now read/write."
+            }
+        }
     }
 
     func unmount(_ partition: Partition) async {

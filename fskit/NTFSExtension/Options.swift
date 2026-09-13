@@ -21,6 +21,9 @@ enum SharedDefaults {
     /// One-shot requests, written by the app: BSD names whose saved Windows
     /// hibernation image the user has agreed to discard. Consumed at mount.
     static let pendingHibernationDiscard = "pendingHibernationDiscard"
+    /// One-shot requests: BSD names whose journal the user has agreed to have
+    /// replayed, knowing the layout is unverified. Consumed at mount.
+    static let pendingJournalReplay = "pendingJournalReplay"
 }
 
 struct MountOptions {
@@ -36,6 +39,10 @@ struct MountOptions {
     /// Never a stored preference: only ever set for one mount, by explicit
     /// user consent, because it destroys whatever Windows had suspended.
     var discardHibernation = false
+    /// Replay the journal before mounting. Never a stored preference: one
+    /// mount, one explicit instruction, because it writes to the filesystem
+    /// using a layout that has not been checked against Windows.
+    var replayJournal = false
 
     static func fromDefaults() -> MountOptions {
         var o = MountOptions()
@@ -54,10 +61,20 @@ struct MountOptions {
     /// user made one. Removing it here means a failed or repeated mount cannot
     /// silently discard a session the user only agreed to once.
     static func takeHibernationDiscardRequest(for bsdName: String) -> Bool {
+        takeOneShotRequest(SharedDefaults.pendingHibernationDiscard, for: bsdName)
+    }
+
+    static func takeJournalReplayRequest(for bsdName: String) -> Bool {
+        takeOneShotRequest(SharedDefaults.pendingJournalReplay, for: bsdName)
+    }
+
+    /// Takes a one-shot request, removing it. Removing it here means a failed
+    /// or repeated mount cannot act on consent the user gave once.
+    private static func takeOneShotRequest(_ key: String, for bsdName: String) -> Bool {
         guard let d = UserDefaults(suiteName: SharedDefaults.suite) else { return false }
-        let pending = d.stringArray(forKey: SharedDefaults.pendingHibernationDiscard) ?? []
+        let pending = d.stringArray(forKey: key) ?? []
         guard pending.contains(bsdName) else { return false }
-        d.set(pending.filter { $0 != bsdName }, forKey: SharedDefaults.pendingHibernationDiscard)
+        d.set(pending.filter { $0 != bsdName }, forKey: key)
         return true
     }
 
@@ -118,6 +135,7 @@ struct MountOptions {
         if discard { f |= NTFS_MOUNT_DISCARD.rawValue }
         if caseSensitive { f |= NTFS_MOUNT_CASE_SENSITIVE.rawValue }
         if discardHibernation { f |= NTFS_MOUNT_DISCARD_HIBERNATION.rawValue }
+        if replayJournal { f |= NTFS_MOUNT_REPLAY_JOURNAL.rawValue }
         return f
     }
 

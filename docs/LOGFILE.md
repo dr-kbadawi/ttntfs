@@ -348,6 +348,34 @@ the restart pages are unusable, so there is nothing to replay and nothing to
 learn from it. The same code reports `empty (never written)` on the clean
 fixtures, matching `ntfslog`, so the bridge itself is sound.
 
+## 6.2 Replay on the user's instruction
+
+`ntfs_logfile_replay_device()` (core/logfile/logfile_repair.c) replays the
+journal onto the volume and marks it clean, so a volume Windows left dirty can
+then mount read-write. It is reached only through `NTFS_MOUNT_REPLAY_JOURNAL`,
+which the extension sets only from a one-shot, per-device request the user made
+in the app behind a confirmation that says what is being risked.
+
+It runs on the raw device **before** the volume is mounted. Replaying under a
+live mount would write MFT records and clusters behind this driver's own
+caches, which is a second and entirely avoidable way to corrupt a filesystem.
+
+Refusals, each leaving the volume byte-for-byte unchanged (verified 2026-09-13
+against fixtures): a read-only device (`-EROFS`); a journal already clean (no
+work); a version other than 1.0, 1.1 or 2.0 (`-ENOTSUP`); a dry run that errors
+or reports `needs_chkdsk` (`-EINVAL`) — the engine must account for every record
+before it may write one.
+
+**What is still unverified is the thing that matters.** The apply path is
+exercised only by the synthetic logs in `tests/`; no journal Windows wrote has
+ever been through it, and section 5 shows how much of the record-level layout is
+inferred for v1.1 as well as v2.0 — including whether the coherence checks
+H1–H4 would wrongly refuse a sound Windows log, or stay quiet on a bad one. A
+wrong layout does not fail cleanly here: it restructures metadata, and the
+damage may surface much later. Section 7's captures are what would change that.
+The feature exists because the user asked for it knowingly; the dry run in
+section 6.1 remains the answer for anyone who has not.
+
 ## 7. Capture list for the Windows PC
 
 Goal: real dirty logs (1.1 and 2.0), plus Windows' own replay result as ground

@@ -8,6 +8,7 @@ struct MenuView: View {
     @EnvironmentObject var enabler: ModuleEnabler
     @EnvironmentObject var inventory: DiskInventory
     @State private var discardTarget: Partition?
+    @State private var replayTarget: Partition?
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
@@ -31,6 +32,7 @@ struct MenuView: View {
                         mount: { Task { await inventory.mount(partition); monitor.refresh() } },
                         eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
                         discardHibernation: { discardTarget = partition },
+                        replayJournal: { replayTarget = partition },
                         busy: inventory.busy,
                         handOver: {
                             Task { await inventory.handOver(partition); monitor.refresh() }
@@ -52,6 +54,23 @@ struct MenuView: View {
         }
         .padding(12)
         .frame(width: 340)
+        .confirmationDialog("Replay the journal on \(replayTarget?.displayName ?? "")?",
+                            isPresented: Binding(get: { replayTarget != nil },
+                                                 set: { if !$0 { replayTarget = nil } })) {
+            Button("Replay and Mount Read/Write", role: .destructive) {
+                if let target = replayTarget {
+                    Task { await inventory.replayJournal(target); monitor.refresh() }
+                }
+                replayTarget = nil
+            }
+            Button("Cancel", role: .cancel) { replayTarget = nil }
+        } message: {
+            Text("This finishes the writes Windows left unfinished, using a journal format "
+                 + "this driver has worked out rather than one it has verified against Windows. "
+                 + "If that reading is wrong it can damage the file system, and the damage may "
+                 + "not be obvious straight away. Back up anything you cannot lose first. "
+                 + "The safe alternative is to plug the disk into Windows and eject it properly.")
+        }
         .confirmationDialog("Discard the saved Windows session on \(discardTarget?.displayName ?? "")?",
                             isPresented: Binding(get: { discardTarget != nil },
                                                  set: { if !$0 { discardTarget = nil } })) {
@@ -176,6 +195,7 @@ struct PartitionRow: View {
     let mount: () -> Void
     let eject: () -> Void
     let discardHibernation: () -> Void
+    let replayJournal: () -> Void
     let busy: Bool
     let handOver: () -> Void
 
@@ -217,6 +237,12 @@ struct PartitionRow: View {
         } else if partition.heldByAnotherDriver {
             VStack(alignment: .trailing, spacing: 4) {
                 Button("Use This Driver", action: handOver).controlSize(.small)
+                Button("Eject", action: eject).controlSize(.small)
+            }
+        } else if partition.mountedReadOnly && partition.servedByOurDriver
+                    && partition.journalBlocked {
+            VStack(alignment: .trailing, spacing: 4) {
+                Button("Replay Journal…", action: replayJournal).controlSize(.small)
                 Button("Eject", action: eject).controlSize(.small)
             }
         } else if partition.hibernated && partition.mountedReadOnly {

@@ -51,6 +51,11 @@ enum ntfs_mount_flags {
 	NTFS_MOUNT_ALLOW_WINDOWS_ILLEGAL = 1u << 5,
 	/* Issue discards for freed clusters. */
 	NTFS_MOUNT_DISCARD		= 1u << 6,
+	/* Replay the journal before mounting, so a volume Windows left dirty can
+	 * be mounted read-write. Writes to the filesystem using an unverified
+	 * on-disk layout: only ever set from an explicit user instruction. See
+	 * ntfs_logfile_replay_device(). */
+	NTFS_MOUNT_REPLAY_JOURNAL	= 1u << 8,
 	/* Zero the saved Windows hibernation image (hiberfil.sys) so the volume
 	 * can be mounted read-write. Windows will do a full boot instead of
 	 * resuming, losing whatever was open in the suspended session; the
@@ -264,6 +269,25 @@ struct ntfs_logfile_analysis {
 	char message[256];		/* one sentence for the user */
 };
 int ntfs_logfile_analyse(struct ntfs_bdev *dev, struct ntfs_logfile_analysis *out);
+
+/*
+ * Replay the journal onto @dev. WRITES TO THE FILESYSTEM.
+ *
+ * Only for journal versions 1.0, 1.1 and 2.0, only when a dry run accounts for
+ * every record, and never on a read-only device. Marks the journal clean
+ * afterwards so neither this driver nor Windows replays it twice.
+ *
+ * The on-disk layout this depends on has not been verified against a journal
+ * Windows wrote (docs/LOGFILE.md section 5), so a wrong guess does not fail
+ * cleanly: it restructures metadata. Call this only on an explicit per-volume
+ * instruction from the user, and only before the volume is mounted -- replaying
+ * under a live mount writes behind the core's caches.
+ *
+ * Returns 0 when the journal was replayed and marked clean, or a negative errno
+ * with @out->message explaining what was refused and whether anything was
+ * written.
+ */
+int ntfs_logfile_replay_device(struct ntfs_bdev *dev, struct ntfs_logfile_analysis *out);
 
 /* Diagnostics */
 typedef void (*ntfs_log_fn)(int level, const char *msg, void *ctx);

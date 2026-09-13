@@ -90,6 +90,10 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         mountOptions.apply(taskOptions: options)
         // A one-shot request from the app, consumed here so it cannot apply
         // twice. The core still refuses unless the volume is otherwise clean.
+        if MountOptions.takeJournalReplayRequest(for: block.bsdName) {
+            mountOptions.replayJournal = true
+            log.notice("\(block.bsdName, privacy: .public): replaying the journal at the user's request")
+        }
         if MountOptions.takeHibernationDiscardRequest(for: block.bsdName) {
             mountOptions.discardHibernation = true
             log.notice("\(block.bsdName, privacy: .public): discarding the saved Windows hibernation image at the user's request")

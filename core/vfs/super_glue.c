@@ -392,6 +392,22 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	if (err)
 		goto err_fc;
 
+	/*
+	 * Replay the journal before anything mounts, if the user asked. On the
+	 * raw device deliberately: replaying under a live mount would write MFT
+	 * records and clusters behind this driver's own caches. The result is
+	 * only logged -- a refusal leaves the volume exactly as it was, and the
+	 * read-only decision below then explains why it is still read-only.
+	 */
+	if (opts->flags & NTFS_MOUNT_REPLAY_JOURNAL) {
+		struct ntfs_logfile_analysis rep;
+		int rerr = ntfs_logfile_replay_device(dev, &rep);
+
+		platform_log(rerr ? PLATFORM_LOG_ERR : PLATFORM_LOG_WARN,
+			     "ntfs: journal replay requested by the user: %s", rep.message);
+		(void)rerr;
+	}
+
 	err = h->fc.ops->get_tree(&h->fc);
 	if (err)
 		goto err_fc;
@@ -399,6 +415,7 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	vol = NTFS_SB(sb);
 	h->sb = sb;
 	h->vol = vol;
+
 
 	/* Inspect the volume as found on disk. */
 	h->dirty = !!(vol->vol_flags & VOLUME_IS_DIRTY);

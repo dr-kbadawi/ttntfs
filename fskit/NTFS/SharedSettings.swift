@@ -17,4 +17,6 @@ enum SharedSettings {
     /// One-shot requests consumed by the extension at mount: BSD names whose
     /// saved Windows hibernation image the user agreed to discard.
     static let pendingHibernationDiscard = "pendingHibernationDiscard"
+    /// One-shot: BSD names whose journal the user agreed to have replayed.
+    static let pendingJournalReplay = "pendingJournalReplay"
 }
