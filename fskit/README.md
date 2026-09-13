@@ -121,7 +121,7 @@ load an extension whose provisioning profile does not carry it.
    panel (`ModuleEnabler.swift`), or run `fskit/scripts/enable-module.sh` for the
    same thing from a terminal. The System Settings switch
    (General → Login Items & Extensions → File System Extensions ⓘ) does **not**
-   work on macOS 26.3: LoginItems.appex calls fskitd as an unentitled
+   work on macOS 26.3 or 26.6.2: LoginItems.appex calls fskitd as an unentitled
    `FSClient` (it lacks `com.apple.private.LiveFS.connection`, which only the
    never-consulted FSKitModuleManagement.appex holds) and fskitd answers
    EPERM — `log show` shows `Failed to enabled FSExtension:
@@ -166,16 +166,18 @@ fixtures` (see tools/README.md).
 ## Known issues (macOS 26.3 and 26.6.2)
 
 - The System Settings switch for File System Extensions cannot enable a
-  third-party module; use `scripts/enable-module.sh`. It will keep showing the
-  module as off even while it is enabled and mounting — `FSClient` and the
-  menu-bar app report the true state.
+  third-party module. Users press **Enable Extension** in the app, which does
+  the same work in-process (`ModuleEnabler.swift`); `scripts/enable-module.sh`
+  is the development equivalent. Settings will keep showing the module as off
+  even while it is enabled and mounting — `FSClient` and the menu-bar app
+  report the true state.
 - The **first** launch of a freshly installed app bundle re-registers the
   extension, which kills the running module and unmounts its volumes
   (`launchd: remove all extension instances: caller = pkd`). Later launches of
   an already-registered bundle are harmless — verified 2026-09-13 on 26.6.2
   with a volume mounted: it stayed mounted and the plugin UUID did not change.
-  So the install order matters (copy, launch once, then `enable-module.sh`,
-  then mount), but day-to-day launching does not.
+  So the install order matters (copy, launch once, then enable, then mount),
+  but day-to-day launching does not.
 - LaunchServices registers **every** copy of the bundle it sees, Xcode's build
   output included, and System Settings then lists the extension twice. Both the
   enabled list and the `pluginkit` election name the bundle ID rather than a
