@@ -23,7 +23,19 @@ struct MenuView: View {
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
             } else {
-                ForEach(inventory.partitions) { partition in
+                // Grouped by physical disk, because that is the unit you
+                // unplug: each group carries the eject that makes the whole
+                // device safe to remove, rather than one partition of it.
+                ForEach(diskGroups, id: \.disk) { group in
+                    if diskGroups.count > 1 || group.partitions.count > 1 {
+                        DiskHeader(wholeDisk: group.disk,
+                                   volumeCount: group.partitions.count,
+                                   note: inventory.noteForDisk?.wholeDisk == group.disk
+                                       ? inventory.noteForDisk?.text : nil,
+                                   busy: inventory.busy,
+                                   eject: { Task { await inventory.ejectDisk(group.disk); monitor.refresh() } })
+                    }
+                    ForEach(group.partitions) { partition in
                     PartitionRow(
                         partition: partition,
                         reason: partition.readOnlyReason.isEmpty
@@ -39,6 +51,7 @@ struct MenuView: View {
                         handOver: {
                             Task { await inventory.handOver(partition); monitor.refresh() }
                         })
+                    }
                 }
             }
             Divider()
@@ -104,6 +117,17 @@ struct MenuView: View {
         }
     }
 
+    /// Partitions grouped by the physical disk they live on, in a stable order.
+    private var diskGroups: [(disk: String, partitions: [Partition])] {
+        var order: [String] = []
+        var byDisk: [String: [Partition]] = [:]
+        for partition in inventory.partitions {
+            if byDisk[partition.wholeDisk] == nil { order.append(partition.wholeDisk) }
+            byDisk[partition.wholeDisk, default: []].append(partition)
+        }
+        return order.map { ($0, byDisk[$0] ?? []) }
+    }
+
     @ViewBuilder private var header: some View {
         switch status.state {
         case .unknown:
@@ -162,6 +186,33 @@ struct MenuView: View {
             Button("Re-check") { status.refresh() }
         }
         .controlSize(.small)
+    }
+}
+
+/// One physical disk: the unit that gets unplugged, and the only level at which
+/// "safe to remove" means anything.
+struct DiskHeader: View {
+    let wholeDisk: String
+    let volumeCount: Int
+    let note: String?
+    let busy: Bool
+    let eject: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Image(systemName: "externaldrive.connected.to.line.below")
+                    .foregroundStyle(.secondary)
+                Text(wholeDisk).font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Eject Disk", action: eject).controlSize(.small).disabled(busy)
+            }
+            if let note {
+                Text(note).font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
     }
 }
 

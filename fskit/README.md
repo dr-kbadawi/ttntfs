@@ -232,6 +232,16 @@ fixtures` (see tools/README.md).
   A `busy` flag disables the buttons while this runs: pressing again mid-flight
   starts a second unmount/mount race against the first, which is how a volume
   ended up unmounted with an error on screen.
+- **Safe removal is a whole-disk operation.** Ejecting one volume leaves the
+  other partitions mounted and the device powered, so pulling the cable then
+  risks whatever was still live -- the per-volume Eject was never safe removal.
+  The menu groups volumes under their physical disk (`disk6s3` -> `disk6`) and
+  that group carries **Eject Disk**, which unmounts every mounted volume on the
+  device, *including ones that are not NTFS and so are not otherwise listed*,
+  then detaches the device with `DADiskEject`. It stops and names the volume if
+  one refuses to unmount, rather than detaching a device with live volumes on
+  it. The group header is hidden when there is one disk with one volume, where
+  the two operations mean the same thing.
 - **Every action sits in the row of the volume it affects.** There is no
   generic panel: Mount, Eject, Use This Driver, Discard Session and Replay
   Journal appear on the volume they act on, and the result of an action is

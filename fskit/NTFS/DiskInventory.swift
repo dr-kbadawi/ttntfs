@@ -42,6 +42,15 @@ struct Partition: Identifiable, Equatable {
 
     var id: String { bsdName }
     var device: String { "/dev/" + bsdName }
+
+    /// The physical disk this partition lives on: disk6s3 -> disk6. Ejecting
+    /// safely means detaching that, not just unmounting one partition of it.
+    var wholeDisk: String {
+        if let r = bsdName.range(of: "^disk[0-9]+", options: .regularExpression) {
+            return String(bsdName[r])
+        }
+        return bsdName
+    }
     var isMounted: Bool { mountPoint != nil }
 
     /// Display name: the volume name when mounted, otherwise the device.
@@ -83,6 +92,15 @@ final class DiskInventory: ObservableObject {
 
     struct Note: Equatable {
         let bsdName: String
+        let text: String
+    }
+
+    /// A message about a whole disk rather than one volume, shown with its
+    /// eject control.
+    @Published private(set) var noteForDisk: DiskNote?
+
+    struct DiskNote: Equatable {
+        let wholeDisk: String
         let text: String
     }
     /// An operation is in flight. The UI disables its buttons: pressing Remount
@@ -318,6 +336,72 @@ final class DiskInventory: ObservableObject {
             } else {
                 setNote(partition, "Now read/write.")
             }
+        }
+    }
+
+    /// Unmount every volume on a physical disk and detach it, which is what
+    /// "safe to remove" means: ejecting one partition leaves the others mounted
+    /// and the device still powered, and pulling the cable then risks the
+    /// volumes that were still live. Includes volumes that are not NTFS and so
+    /// are not otherwise listed here -- they are still on the same cable.
+    func ejectDisk(_ wholeDisk: String) async {
+        guard !busy else { return }
+        busy = true
+        noteForDisk = nil
+        defer { busy = false }
+
+        for volume in Self.mountedVolumes(onDisk: wholeDisk) {
+            if let problem = await unmountDevice(volume) {
+                noteForDisk = DiskNote(wholeDisk: wholeDisk,
+                                       text: "\((volume as NSString).lastPathComponent) could not be ejected: "
+                                           + "\(problem). Something is still using it.")
+                refresh()
+                return
+            }
+        }
+        if let problem = await ejectDevice(wholeDisk) {
+            noteForDisk = DiskNote(wholeDisk: wholeDisk,
+                                   text: "Volumes were ejected but the disk could not be detached: \(problem)")
+        } else {
+            noteForDisk = DiskNote(wholeDisk: wholeDisk, text: "Safe to unplug.")
+        }
+        refresh()
+    }
+
+    /// Mounted volumes on this physical disk, whatever their filesystem.
+    private static func mountedVolumes(onDisk wholeDisk: String) -> [String] {
+        mountTable().keys
+            .filter { $0 == wholeDisk || $0.hasPrefix(wholeDisk + "s") }
+            .map { "/dev/" + $0 }
+            .sorted()
+    }
+
+    private func unmountDevice(_ device: String) async -> String? {
+        guard let session,
+              let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, device) else {
+            return "no such device"
+        }
+        let problem = await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+            DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionDefault), { _, dissenter, ctx in
+                let box = Unmanaged<Continuation>.fromOpaque(ctx!).takeRetainedValue()
+                box.resume(DiskInventory.describe(dissenter))
+            }, Unmanaged.passRetained(Continuation(c)).toOpaque())
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        return problem
+    }
+
+    /// Detach the device itself, so the enclosure can be unplugged.
+    private func ejectDevice(_ wholeDisk: String) async -> String? {
+        guard let session,
+              let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, "/dev/" + wholeDisk) else {
+            return "no such device"
+        }
+        return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+            DADiskEject(disk, DADiskEjectOptions(kDADiskEjectOptionDefault), { _, dissenter, ctx in
+                let box = Unmanaged<Continuation>.fromOpaque(ctx!).takeRetainedValue()
+                box.resume(DiskInventory.describe(dissenter))
+            }, Unmanaged.passRetained(Continuation(c)).toOpaque())
         }
     }
 
