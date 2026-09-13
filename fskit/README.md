@@ -163,6 +163,29 @@ Failures print the step and a `log stream` predicate for the extension's
 subsystem `ch.techtag.ntfs`. Fixtures come from `make -C tools/mkfixtures
 fixtures` (see tools/README.md).
 
+## Reading: where the time goes
+
+`ntfs_bdev_fskit.m` counts time spent inside `readInto:` against wall clock and
+logs a line per 192 MiB (`read window ...`). It exists to answer one question
+before anyone optimises: are we waiting on the device, or is the device waiting
+on us? Measured 2026-09-13 on a Samsung 860 EVO behind a UAS bridge:
+
+| phase | calls | per call | device busy | throughput |
+|---|---|---|---|---|
+| mount + metadata | 3984 / 192 MiB (~48 KiB each) | 0.25 ms | **16%** | 31 MB/s overall |
+| sequential read | 192 / 192 MiB (1 MiB each) | 2.85 ms | **97%** | ~345 MB/s |
+
+So a sequential read leaves the device idle about 3% of the time. **Readahead
+and pipelining cannot help it**: one request is in flight at a time, but the
+device is busy for essentially all of it, and larger blocks do not help either
+(64 KiB to 4 MiB all land in the 280-330 MB/s band). The ~11% gap to Apple's
+built-in driver (377 MB/s on the same three files) and the spread across regions
+(233-351 MB/s on the same file) both sit inside what the medium itself varies by.
+
+The metadata phase is the opposite and is where idle time actually exists: 16%
+busy across thousands of small reads. That, not sequential throughput, is the
+place to look for the delete and mount costs.
+
 ## Known issues (macOS 26.3 and 26.6.2)
 
 - The System Settings switch for File System Extensions cannot enable a

@@ -21,6 +21,8 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdatomic.h>
+#include <time.h>
 
 static os_log_t bdev_log(void)
 {
@@ -59,6 +61,20 @@ static int check_range(struct ntfs_bdev *dev, u64 offset, size_t count, const ch
 	return 0;
 }
 
+/*
+ * Diagnostic counters for the read path. Question they answer: is the device
+ * busy for the whole of a sequential read, or are there gaps between our
+ * requests? If the time inside readInto: accounts for nearly all the wall clock,
+ * we are bandwidth-bound and readahead buys nothing; if it does not, we are
+ * waiting between requests and pipelining would pay. Logged on close.
+ */
+static _Atomic uint64_t ra_calls, ra_bytes, ra_ns, ra_first_ns, ra_last_ns;
+
+static uint64_t now_ns(void)
+{
+	return clock_gettime_nsec_np(CLOCK_MONOTONIC);
+}
+
 static ssize_t fskit_pread(struct ntfs_bdev *dev, void *buf, size_t count, u64 offset)
 {
 	FSBlockDeviceResource *res = (__bridge FSBlockDeviceResource *)dev->priv;
@@ -69,10 +85,40 @@ static ssize_t fskit_pread(struct ntfs_bdev *dev, void *buf, size_t count, u64 o
 		return rc;
 	while (done < count) {
 		NSError *err = nil;
+		uint64_t t0 = now_ns();
 		size_t n = [res readInto:(char *)buf + done
 			      startingAt:(off_t)(offset + done)
 				  length:count - done
 				   error:&err];
+		uint64_t t1 = now_ns();
+		{
+			uint64_t zero = 0, calls, bytes, busy, span;
+
+			atomic_compare_exchange_strong(&ra_first_ns, &zero, t0);
+			atomic_store(&ra_last_ns, t1);
+			atomic_fetch_add(&ra_ns, t1 - t0);
+			atomic_fetch_add(&ra_bytes, n);
+			calls = atomic_fetch_add(&ra_calls, 1) + 1;
+			bytes = atomic_load(&ra_bytes);
+			/* Report per window rather than at close: the module process
+			 * outlives the unmount, so a close-time report never arrives
+			 * while anyone is watching. */
+			if (bytes >= (192ULL << 20)) {
+				busy = atomic_load(&ra_ns);
+				span = atomic_load(&ra_last_ns) - atomic_load(&ra_first_ns);
+				if (span)
+					os_log_info(bdev_log(),
+						    "read window %{public}s: %llu calls, %llu MiB, mean %.2f ms/call, "
+						    "device busy %.1f%% of the span, %.0f MB/s while busy, %.0f MB/s overall",
+						    dev->name, calls, bytes >> 20,
+						    (double)busy / calls / 1e6,
+						    100.0 * (double)busy / (double)span,
+						    (double)bytes / 1048576.0 / ((double)busy / 1e9),
+						    (double)bytes / 1048576.0 / ((double)span / 1e9));
+				atomic_store(&ra_calls, 0); atomic_store(&ra_bytes, 0);
+				atomic_store(&ra_ns, 0); atomic_store(&ra_first_ns, 0);
+			}
+		}
 		if (err) {
 			os_log_error(bdev_log(), "read @%llu len %zu: %{public}@", offset + done, count - done, err);
 			return -errno_from_nserror(err, EIO);
