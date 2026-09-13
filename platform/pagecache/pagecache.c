@@ -1098,20 +1098,34 @@ static int for_each_mapping(struct super_block *sb, bool reverse,
 	return err;
 }
 
+/*
+ * The periodic writer has two jobs with very different reach: write back folios
+ * that have been dirty longer than the interval, which concerns only dirty
+ * mappings, and reclaim clean folios when the cache is over its cap, which has
+ * to look at every mapping. Doing both in one walk of the registry made the
+ * writer O(everything cached) on every tick -- with a directory of 12000 files
+ * open that is a full walk several times a second, and it holds registry_lock
+ * once per mapping, which is the same lock a task dirtying its first folio
+ * needs. Split, so the common tick only costs the dirty ones.
+ */
 static int writer_pass_fn(struct address_space *m, void *arg)
 {
 	u64 cutoff = *(u64 *)arg;
-	int err = write_range(m, 0, (pgoff_t)-1, cutoff, NULL);
-	long over;
 
-	/* Global reclaim when over the cap. */
-	over = folios_over_cap();
+	return write_range(m, 0, (pgoff_t)-1, cutoff, NULL);
+}
+
+static int reclaim_pass_fn(struct address_space *m, void *arg)
+{
+	long over = folios_over_cap();
+
+	(void)arg;
 	if (over > 0) {
 		spin_lock(&m->tree_lock);
 		__reclaim_from(m, over);
 		spin_unlock(&m->tree_lock);
 	}
-	return err;
+	return 0;
 }
 
 /*
@@ -1159,7 +1173,11 @@ static void *writer_main(void *arg)
 			break;
 		pthread_mutex_unlock(&writer_lock);
 		cutoff = now_ns() - (u64)NTFS_WRITEBACK_INTERVAL_MS * NSEC_PER_MSEC;
-		for_each_mapping(NULL, false, writer_pass_fn, &cutoff);
+		/* No pruning here: write_range() starts writeback but does not
+		 * wait for it, so "clean" would not yet mean "nothing in flight". */
+		for_each_dirty_mapping(NULL, false, false, writer_pass_fn, &cutoff);
+		if (folios_over_cap() > 0)
+			for_each_mapping(NULL, false, reclaim_pass_fn, NULL);
 		pthread_mutex_lock(&writer_lock);
 	}
 	writer_state = 0;
