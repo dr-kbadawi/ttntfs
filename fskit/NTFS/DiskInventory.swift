@@ -73,6 +73,10 @@ struct Partition: Identifiable, Equatable {
 final class DiskInventory: ObservableObject {
     @Published private(set) var partitions: [Partition] = []
     @Published private(set) var note: String?
+    /// An operation is in flight. The UI disables its buttons: pressing Remount
+    /// again mid-handover starts a second unmount/mount race against the first,
+    /// which is how a volume ends up unmounted with an error on screen.
+    @Published private(set) var busy = false
 
     private var session: DASession?
     private var timer: Timer?
@@ -134,10 +138,23 @@ final class DiskInventory: ObservableObject {
     // MARK: Actions
 
     func mount(_ partition: Partition) async {
+        guard !busy else { return }
+        busy = true
         note = nil
-        guard let session, let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, partition.device) else {
-            note = "\(partition.displayName): no such device."
-            return
+        defer { busy = false }
+        if let problem = await mountQuietly(partition) {
+            note = "\(partition.displayName) could not be mounted: \(problem). "
+                 + "It may not contain NTFS, or may need repair in Windows."
+        }
+        refresh()
+    }
+
+    /// Mount, reporting the reason rather than narrating it. Used by the
+    /// hand-over, which decides for itself what is worth telling the user.
+    private func mountQuietly(_ partition: Partition) async -> String? {
+        guard let session,
+              let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, partition.device) else {
+            return "no such device"
         }
         let problem = await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
             DADiskMount(disk, nil, DADiskMountOptions(kDADiskMountOptionDefault), { _, dissenter, ctx in
@@ -145,12 +162,23 @@ final class DiskInventory: ObservableObject {
                 box.resume(DiskInventory.describe(dissenter))
             }, Unmanaged.passRetained(Continuation(c)).toOpaque())
         }
-        if let problem {
-            note = "\(partition.displayName) could not be mounted: \(problem). "
-                 + "It may not contain NTFS, or may need repair in Windows."
+        try? await Task.sleep(for: .milliseconds(400))
+        return problem
+    }
+
+    private func unmountQuietly(_ partition: Partition) async -> String? {
+        guard let session,
+              let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, partition.device) else {
+            return "no such device"
         }
-        try? await Task.sleep(for: .milliseconds(600))
-        refresh()
+        let problem = await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
+            DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionDefault), { _, dissenter, ctx in
+                let box = Unmanaged<Continuation>.fromOpaque(ctx!).takeRetainedValue()
+                box.resume(DiskInventory.describe(dissenter))
+            }, Unmanaged.passRetained(Continuation(c)).toOpaque())
+        }
+        try? await Task.sleep(for: .milliseconds(300))
+        return problem
     }
 
     /// Discard the saved Windows session and hand the volume back read-write.
@@ -164,28 +192,99 @@ final class DiskInventory: ObservableObject {
         if !pending.contains(partition.bsdName) { pending.append(partition.bsdName) }
         store.set(pending, forKey: SharedSettings.pendingHibernationDiscard)
 
-        await unmount(partition)
-        await mount(partition)
+        busy = true
+        _ = await unmountQuietly(partition)
+        if let problem = await mountQuietly(partition) {
+            note = "\(partition.displayName) could not be mounted: \(problem)"
+        }
+        busy = false
         refresh()
         if let now = partitions.first(where: { $0.bsdName == partition.bsdName }), now.mountedReadOnly {
             note = "\(partition.displayName) is still read-only: \(now.readOnlyReason)"
         }
     }
 
-    func unmount(_ partition: Partition) async {
+    /// Hand a volume held by another driver over to ours.
+    ///
+    /// Disk Arbitration only chooses a module when it probes, and it probes on
+    /// mount, so the only way to take a volume over is to unmount and mount it
+    /// again. That is not reliable first time: fskitd caches a module instance,
+    /// and when that process is gone it fails the probe outright ("invalid
+    /// destination port", status 0x1003) instead of relaunching, so Apple's
+    /// driver wins the round. The next attempt succeeds because the failure
+    /// itself makes fskitd start a fresh instance.
+    ///
+    /// So this retries, and above all never leaves the volume unmounted: a
+    /// failed hand-over must end with the disk back in Finder, even if another
+    /// driver is serving it.
+    func handOver(_ partition: Partition) async {
+        guard !busy else { return }
+        busy = true
         note = nil
-        guard let session, let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, partition.device) else { return }
-        let problem = await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
-            DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionDefault), { _, dissenter, ctx in
-                let box = Unmanaged<Continuation>.fromOpaque(ctx!).takeRetainedValue()
-                box.resume(DiskInventory.describe(dissenter))
-            }, Unmanaged.passRetained(Continuation(c)).toOpaque())
+        defer { busy = false }
+
+        for attempt in 1...3 {
+            if let problem = await unmountQuietly(partition) {
+                note = "\(partition.displayName) could not be ejected: \(problem). "
+                     + "Close anything using it and try again."
+                await ensureMounted(partition)
+                return
+            }
+            if let problem = await mountQuietly(partition) {
+                note = "\(partition.displayName) could not be mounted: \(problem)"
+                await ensureMounted(partition)
+                return
+            }
+            // The mount call has already returned, so Disk Arbitration has
+            // finished probing and the winner is decided; this only waits for
+            // the module to open the device, which is immediate.
+            if await waitUntilOurs(partition, timeout: .milliseconds(1500)) {
+                refresh()
+                return                                    // ours now; nothing to say
+            }
+            if attempt == 3 {
+                note = "\(partition.displayName) is still being served by the system. "
+                     + "It is mounted and usable read-only; unplug and reconnect it to try again."
+            }
         }
-        if let problem {
+        await ensureMounted(partition)
+        refresh()
+    }
+
+    /// Every volume another driver holds, handed over one at a time.
+    func handOverAll() async {
+        for partition in partitions where partition.heldByAnotherDriver {
+            await handOver(partition)
+        }
+    }
+
+    /// Leave the disk mounted whoever ends up serving it. A hand-over that
+    /// fails must not cost the user access to their files.
+    private func ensureMounted(_ partition: Partition) async {
+        refresh()
+        guard let now = partitions.first(where: { $0.bsdName == partition.bsdName }), !now.isMounted else { return }
+        _ = await mountQuietly(partition)
+        refresh()
+    }
+
+    private func waitUntilOurs(_ partition: Partition, timeout: Duration) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: timeout)
+        while ContinuousClock.now < deadline {
+            if ModuleEnabler.deviceIsServedByModule(partition.device) { return true }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return false
+    }
+
+    func unmount(_ partition: Partition) async {
+        guard !busy else { return }
+        busy = true
+        note = nil
+        defer { busy = false }
+        if let problem = await unmountQuietly(partition) {
             note = "\(partition.displayName) could not be ejected: \(problem). "
                  + "Something may still be using it."
         }
-        try? await Task.sleep(for: .milliseconds(400))
         refresh()
     }
 

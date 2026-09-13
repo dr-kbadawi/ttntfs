@@ -218,6 +218,20 @@ fixtures` (see tools/README.md).
   kernel alone made the app advertise a volume as writable when every write
   would fail. Seen on a Windows recovery partition, which mounts read-only
   because its `$LogFile` is unclean.
+- **Handing a volume over is unreliable first time, and must never lose it.**
+  Disk Arbitration only chooses a module when it probes, and it probes on mount,
+  so taking a volume from another driver means unmounting and mounting it again.
+  That fails roughly every other time: fskitd caches a module instance and, when
+  that process is gone, fails the probe outright (`invalid destination port`,
+  status `0x1003`) instead of relaunching, so Apple's driver wins the round; the
+  failure itself makes fskitd start a fresh instance, which is why the next
+  attempt works. `DiskInventory.handOver` therefore retries three times,
+  confirms after each attempt that our module actually holds the device, and —
+  above all — guarantees the volume ends up mounted even when the hand-over
+  fails, because a failed attempt must not cost the user access to their files.
+  A `busy` flag disables the buttons while this runs: pressing again mid-flight
+  starts a second unmount/mount race against the first, which is how a volume
+  ended up unmounted with an error on screen.
 - **The menu lists every NTFS partition, mounted or not** (`DiskInventory`),
   with Mount, Eject, and "Use This Driver" for one another driver holds.
   Partitions come from IOKit (every leaf `IOMedia`), mount state from

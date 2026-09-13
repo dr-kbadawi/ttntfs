@@ -31,7 +31,6 @@
 import Foundation
 import FSKit
 import Darwin
-import DiskArbitration
 
 @MainActor
 final class ModuleEnabler: ObservableObject {
@@ -45,19 +44,6 @@ final class ModuleEnabler: ObservableObject {
     }
 
     @Published private(set) var outcome: Outcome = .idle
-    /// NTFS volumes another driver is serving, which can be handed to ours by
-    /// remounting. Populated after a successful enable: turning the module on
-    /// does nothing to disks that are already mounted, which looks like nothing
-    /// happened at all.
-    @Published private(set) var remountable: [Volume] = []
-    @Published private(set) var remountNote: String?
-
-    struct Volume: Equatable, Identifiable {
-        let device: String        // /dev/diskNsM
-        let mountPoint: String
-        var id: String { device }
-        var name: String { (mountPoint as NSString).lastPathComponent }
-    }
 
     static let moduleID = "ch.techtag.ntfs.extension"
 
@@ -92,10 +78,10 @@ final class ModuleEnabler: ObservableObject {
 
         // Read the result back rather than trusting the write.
         if await Self.waitUntilEnabled(timeout: .seconds(15)) {
+            // Enabling changes nothing for disks that are already mounted:
+            // Disk Arbitration only picks a module when it probes, and it
+            // probes on mount. DiskInventory shows what can be handed over.
             outcome = .succeeded
-            // Disk Arbitration only chooses a module when it probes, which it
-            // does on mount. Anything already mounted stays where it is.
-            refreshRemountable()
         } else if killed == 0 {
             outcome = .failed("The module list was updated but fskit_agent was not running to restart. Log out and back in, then re-check.")
         } else {
@@ -196,6 +182,15 @@ final class ModuleEnabler: ObservableObject {
         pids(named: "NTFSExtension").contains(where: holdsBlockDevice)
     }
 
+    /// Whether one of our extension processes holds this specific device open,
+    /// i.e. whether this volume is served by us rather than another driver.
+    static func deviceIsServedByModule(_ device: String) -> Bool {
+        let name = (device as NSString).lastPathComponent          // diskNsM
+        return pids(named: "NTFSExtension").contains { pid in
+            openDevicePaths(pid).contains { $0.hasSuffix("/" + name) || $0.hasSuffix("/r" + name) }
+        }
+    }
+
     private static func holdsBlockDevice(_ pid: pid_t) -> Bool {
         !openDevicePaths(pid).isEmpty
     }
@@ -223,125 +218,6 @@ final class ModuleEnabler: ObservableObject {
         return paths
     }
 
-    /// Every mounted NTFS volume, whoever mounted it. Used for reporting and for
-    /// the remount offer, never to decide whether enabling is safe.
-    static func mountedNTFSVolumes() -> [Volume] {
-        var buffer: UnsafeMutablePointer<statfs>?
-        let count = getmntinfo(&buffer, MNT_NOWAIT)
-        guard count > 0, let buffer else { return [] }
-        return (0..<Int(count)).compactMap { i in
-            var entry = buffer[i]
-            func string(_ field: inout some Any) -> String {
-                withUnsafeBytes(of: &field) { raw in
-                    String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
-                }
-            }
-            guard string(&entry.f_fstypename) == "ntfs" else { return nil }
-            return Volume(device: string(&entry.f_mntfromname),
-                          mountPoint: string(&entry.f_mntonname))
-        }
-    }
-
-    // MARK: Remount
-
-    /// NTFS volumes some other driver is serving, so ones we could take over.
-    /// Recomputed whenever the menu opens, not only after enabling: a disk
-    /// plugged in while the module was off stays on Apple's driver until it is
-    /// remounted, and the offer has to survive the header flipping to "enabled".
-    func refreshRemountable() {
-        remountable = Self.mountedNTFSVolumes().filter { !Self.deviceIsServedByModule($0.device) }
-    }
-
-    /// Unmount and mount again so Disk Arbitration re-probes and picks our
-    /// module. Uses DiskArbitration rather than spawning `diskutil`; the session
-    /// is driven by a dispatch queue so this works with or without a run loop.
-    func remountAll() async {
-        remountNote = nil
-        var failures: [String] = []
-        var moved = 0
-        for volume in remountable {
-            if let problem = await Self.remount(volume) {
-                failures.append("\(volume.name): \(problem)")
-            } else {
-                moved += 1
-            }
-        }
-        refreshRemountable()
-        if failures.isEmpty {
-            remountNote = moved == 1 ? "Remounted 1 volume." : "Remounted \(moved) volumes."
-        } else {
-            remountNote = failures.joined(separator: "; ")
-                + ". Close anything using the disk, or eject and reconnect it."
-        }
-    }
-
-    /// Remounting once is not enough. Enabling restarts fskit_agent, and the
-    /// first probe after that restart fails -- the agent still holds the
-    /// extension's previous identity, so fskitd cannot check the module in
-    /// ("invalid destination port", probe status 0x1003) and Disk Arbitration
-    /// falls through to Apple's ntfs driver. The second attempt succeeds. So:
-    /// remount, confirm our module actually took the device, and retry if not.
-    private static func remount(_ volume: Volume, attempts: Int = 3) async -> String? {
-        var lastProblem: String?
-        for attempt in 1...attempts {
-            if let problem = await remountOnce(volume) {
-                lastProblem = problem
-                if attempt == attempts { return problem }
-                continue
-            }
-            // Give the module a moment to open the device before judging.
-            try? await Task.sleep(for: .milliseconds(900))
-            if deviceIsServedByModule(volume.device) { return nil }
-            lastProblem = "another driver claimed it"
-        }
-        return lastProblem
-    }
-
-    /// Whether one of our extension processes holds this specific device open.
-    static func deviceIsServedByModule(_ device: String) -> Bool {
-        let name = (device as NSString).lastPathComponent          // diskNsM
-        return pids(named: "NTFSExtension").contains { pid in
-            openDevicePaths(pid).contains { $0.hasSuffix("/" + name) || $0.hasSuffix("/r" + name) }
-        }
-    }
-
-    private static func remountOnce(_ volume: Volume) async -> String? {
-        let bsd = (volume.device as NSString).lastPathComponent
-        guard let session = DASessionCreate(kCFAllocatorDefault) else { return "no DiskArbitration session" }
-        let queue = DispatchQueue(label: "ch.techtag.ntfs.da")
-        DASessionSetDispatchQueue(session, queue)
-        defer { DASessionSetDispatchQueue(session, nil) }
-        guard let disk = DADiskCreateFromBSDName(kCFAllocatorDefault, session, bsd) else {
-            return "no such device"
-        }
-        if let problem = await withCheckedContinuation({ (c: CheckedContinuation<String?, Never>) in
-            DADiskUnmount(disk, DADiskUnmountOptions(kDADiskUnmountOptionDefault), { _, dissenter, ctx in
-                let cont = Unmanaged<ModuleEnabler.Box>.fromOpaque(ctx!).takeRetainedValue()
-                cont.resume(ModuleEnabler.describe(dissenter))
-            }, Unmanaged.passRetained(Box(c)).toOpaque())
-        }) { return problem }
-
-        return await withCheckedContinuation { (c: CheckedContinuation<String?, Never>) in
-            DADiskMount(disk, nil, DADiskMountOptions(kDADiskMountOptionDefault), { _, dissenter, ctx in
-                let cont = Unmanaged<ModuleEnabler.Box>.fromOpaque(ctx!).takeRetainedValue()
-                cont.resume(ModuleEnabler.describe(dissenter))
-            }, Unmanaged.passRetained(Box(c)).toOpaque())
-        }
-    }
-
-    /// Boxes a continuation so it can travel through a C callback's context pointer.
-    fileprivate final class Box {
-        private let continuation: CheckedContinuation<String?, Never>
-        init(_ continuation: CheckedContinuation<String?, Never>) { self.continuation = continuation }
-        func resume(_ value: String?) { continuation.resume(returning: value) }
-    }
-
-    fileprivate static func describe(_ dissenter: DADissenter?) -> String? {
-        guard let dissenter else { return nil }
-        let status = DADissenterGetStatus(dissenter)
-        if let reason = DADissenterGetStatusString(dissenter) as String? { return reason }
-        return "error \(String(format: "0x%08X", status))"
-    }
 
     /// PIDs of the current user's processes with this executable name.
     private static func pids(named name: String) -> [pid_t] {

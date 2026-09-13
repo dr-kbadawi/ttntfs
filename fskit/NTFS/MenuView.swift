@@ -31,11 +31,9 @@ struct MenuView: View {
                         mount: { Task { await inventory.mount(partition); monitor.refresh() } },
                         eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
                         discardHibernation: { discardTarget = partition },
+                        busy: inventory.busy,
                         handOver: {
-                            Task {
-                                await enabler.remountAll()
-                                inventory.refresh(); monitor.refresh(); status.refresh()
-                            }
+                            Task { await inventory.handOver(partition); monitor.refresh() }
                         })
                 }
             }
@@ -69,7 +67,7 @@ struct MenuView: View {
                  + "Anything left open in Windows will be lost and Windows will start fresh next time. "
                  + "Your files are not affected.")
         }
-        .task { monitor.start(); inventory.start(); status.refresh(); enabler.refreshRemountable() }
+        .task { monitor.start(); inventory.start(); status.refresh() }
     }
 
     /// `openSettings()` alone does nothing useful in a menu-bar-only app: with
@@ -139,24 +137,21 @@ struct MenuView: View {
 
     /// Enabling does nothing to a disk that is already mounted — Disk
     /// Arbitration only picks a module when it probes, and it probes on mount.
-    /// So this offer has to live outside the enable flow: the header flips to
-    /// "enabled" the moment enabling succeeds, and anything shown only in the
-    /// disabled branch would vanish with it.
+    /// The offer therefore lives outside the enable flow, and comes from the
+    /// inventory rather than a separate list that could disagree with it.
     @ViewBuilder private var handoverOffer: some View {
-        if let note = enabler.remountNote {
-            Text(note).font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        if !enabler.remountable.isEmpty {
-            Text("\(enabler.remountable.map(\.name).formatted(.list(type: .and))) "
-                 + "\(enabler.remountable.count == 1 ? "is" : "are") mounted by the system. "
-                 + "Remount to hand over to this driver.")
+        let waiting = inventory.partitions.filter(\.heldByAnotherDriver)
+        if !waiting.isEmpty {
+            Text("\(waiting.map(\.displayName).formatted(.list(type: .and))) "
+                 + "\(waiting.count == 1 ? "is" : "are") mounted by the system. "
+                 + "Hand over to use this driver.")
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(enabler.remountable.count == 1 ? "Remount Volume" : "Remount Volumes") {
-                Task { await enabler.remountAll(); monitor.start(); status.refresh() }
+            Button(waiting.count == 1 ? "Use This Driver" : "Use This Driver for All") {
+                Task { await inventory.handOverAll(); monitor.refresh(); status.refresh() }
             }
             .controlSize(.small)
+            .disabled(inventory.busy)
         }
     }
 
@@ -181,6 +176,7 @@ struct PartitionRow: View {
     let mount: () -> Void
     let eject: () -> Void
     let discardHibernation: () -> Void
+    let busy: Bool
     let handOver: () -> Void
 
     var body: some View {
@@ -203,6 +199,10 @@ struct PartitionRow: View {
     }
 
     @ViewBuilder private var action: some View {
+        actionButtons.disabled(busy)
+    }
+
+    @ViewBuilder private var actionButtons: some View {
         if !partition.isMounted {
             Button("Mount", action: mount).controlSize(.small)
         } else if partition.heldByAnotherDriver {
