@@ -29,7 +29,7 @@ struct MenuView: View {
                         DiskHeader(wholeDisk: group.disk,
                                    volumeCount: group.partitions.count,
                                    note: inventory.noteForDisk?.wholeDisk == group.disk
-                                       ? inventory.noteForDisk?.text : nil,
+                                       ? inventory.noteForDisk : nil,
                                    busy: inventory.busy,
                                    hasMountedVolumes: inventory.disksWithMountedVolumes.contains(group.disk),
                                    eject: { Task { await inventory.ejectDisk(group.disk); monitor.refresh() } })
@@ -45,7 +45,7 @@ struct MenuView: View {
                         discardHibernation: { confirmDiscard(partition) },
                         replayJournal: { confirmReplay(partition) },
                         note: inventory.note?.bsdName == partition.bsdName
-                            ? inventory.note?.text : nil,
+                            ? inventory.note : nil,
                         busy: inventory.busy,
                         handOver: {
                             Task { await inventory.handOver(partition); monitor.refresh() }
@@ -184,7 +184,7 @@ struct MenuView: View {
 struct DiskHeader: View {
     let wholeDisk: String
     let volumeCount: Int
-    let note: String?
+    let note: DiskInventory.DiskNote?
     let busy: Bool
     /// Nothing is mounted on this disk, so there is nothing left to eject. The
     /// device usually stays enumerated after an eject -- that is the enclosure,
@@ -204,7 +204,10 @@ struct DiskHeader: View {
                     .disabled(busy || !hasMountedVolumes)
             }
             if let note {
-                Text(note).font(.caption).foregroundStyle(.secondary)
+                Label(note.text, systemImage: note.kind == .good
+                        ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(note.kind == .good ? Color.green : Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -221,7 +224,7 @@ struct PartitionRow: View {
     let discardHibernation: () -> Void
     let replayJournal: () -> Void
     /// The result of the last action on *this* volume, shown in its own row.
-    let note: String?
+    let note: DiskInventory.Note?
     let busy: Bool
     let handOver: () -> Void
 
@@ -248,7 +251,9 @@ struct PartitionRow: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let note {
-                    Text(note).font(.caption).foregroundStyle(.orange)
+                    Text(note.text)
+                        .font(.caption)
+                        .foregroundStyle(note.kind == .good ? Color.green : Color.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

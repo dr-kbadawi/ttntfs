@@ -90,9 +90,15 @@ final class DiskInventory: ObservableObject {
     /// shown generically: an action taken on a disk reports next to that disk.
     @Published private(set) var note: Note?
 
+    /// Whether a message reports something achieved or something wrong. The
+    /// menu colours them differently: a result the user acted for should be
+    /// visible, not another line of grey text.
+    enum NoteKind: Equatable { case good, problem }
+
     struct Note: Equatable {
         let bsdName: String
         let text: String
+        var kind: NoteKind = .problem
     }
 
     /// A message about a whole disk rather than one volume, shown with its
@@ -102,6 +108,7 @@ final class DiskInventory: ObservableObject {
     struct DiskNote: Equatable {
         let wholeDisk: String
         let text: String
+        var kind: NoteKind = .problem
     }
     /// An operation is in flight. The UI disables its buttons: pressing Remount
     /// again mid-handover starts a second unmount/mount race against the first,
@@ -129,8 +136,8 @@ final class DiskInventory: ObservableObject {
         if let session { DASessionSetDispatchQueue(session, .main) }
     }
 
-    private func setNote(_ partition: Partition, _ text: String) {
-        note = Note(bsdName: partition.bsdName, text: text)
+    private func setNote(_ partition: Partition, _ text: String, _ kind: NoteKind = .problem) {
+        note = Note(bsdName: partition.bsdName, text: text, kind: kind)
     }
 
     func refresh() {
@@ -177,6 +184,16 @@ final class DiskInventory: ObservableObject {
             return String(bsd[r])
         })
         if mountedDisks != disksWithMountedVolumes { disksWithMountedVolumes = mountedDisks }
+
+        // "Safe to unplug" stops being true the moment something is mounted
+        // again, and a per-volume result stops applying once that volume's
+        // mount state changes. Drop them rather than leave a stale claim.
+        if let disk = noteForDisk, disk.kind == .good, mountedDisks.contains(disk.wholeDisk) {
+            noteForDisk = nil
+        }
+        if let n = note, let p = found.first(where: { $0.bsdName == n.bsdName }) {
+            if (n.kind == .good) != p.isMounted { note = nil }
+        }
     }
 
     // MARK: Actions
@@ -343,7 +360,7 @@ final class DiskInventory: ObservableObject {
             if now.mountedReadOnly {
                 setNote(partition, "Still read-only. \(now.journalSummary.isEmpty ? now.readOnlyReason : now.journalSummary)")
             } else {
-                setNote(partition, "Now read/write.")
+                setNote(partition, "Now read/write.", .good)
             }
         }
     }
@@ -372,7 +389,7 @@ final class DiskInventory: ObservableObject {
             noteForDisk = DiskNote(wholeDisk: wholeDisk,
                                    text: "Volumes were ejected but the disk could not be detached: \(problem)")
         } else {
-            noteForDisk = DiskNote(wholeDisk: wholeDisk, text: "Safe to unplug.")
+            noteForDisk = DiskNote(wholeDisk: wholeDisk, text: "Safe to unplug.", kind: .good)
         }
         refresh()
     }

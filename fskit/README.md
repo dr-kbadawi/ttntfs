@@ -256,6 +256,12 @@ fixtures` (see tools/README.md).
   means is that every volume is unmounted and flushed. Eject Disk is therefore
   disabled by what is still *mounted* on the device, not by whether the device
   node has gone, or it would invite a second eject that has nothing to do.
+- **A result must not outlive what it claims.** "Safe to unplug" stayed on
+  screen after a volume was mounted again, when it had stopped being true, and
+  it was grey like every other line. Messages now carry a kind — something
+  achieved, or something wrong — are shown green with a tick or orange with a
+  warning so an outcome the user asked for is visible, and are dropped by
+  `refresh()` as soon as the state they describe changes.
 - **Every action sits in the row of the volume it affects.** There is no
   generic panel: Mount, Eject, Use This Driver, Discard Session and Replay
   Journal appear on the volume they act on, and the result of an action is
