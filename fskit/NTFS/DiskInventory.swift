@@ -77,7 +77,14 @@ struct Partition: Identifiable, Equatable {
 @MainActor
 final class DiskInventory: ObservableObject {
     @Published private(set) var partitions: [Partition] = []
-    @Published private(set) var note: String?
+    /// A message about one volume, shown in that volume's row. Nothing here is
+    /// shown generically: an action taken on a disk reports next to that disk.
+    @Published private(set) var note: Note?
+
+    struct Note: Equatable {
+        let bsdName: String
+        let text: String
+    }
     /// An operation is in flight. The UI disables its buttons: pressing Remount
     /// again mid-handover starts a second unmount/mount race against the first,
     /// which is how a volume ends up unmounted with an error on screen.
@@ -99,6 +106,10 @@ final class DiskInventory: ObservableObject {
     init() {
         session = DASessionCreate(kCFAllocatorDefault)
         if let session { DASessionSetDispatchQueue(session, .main) }
+    }
+
+    private func setNote(_ partition: Partition, _ text: String) {
+        note = Note(bsdName: partition.bsdName, text: text)
     }
 
     func refresh() {
@@ -149,8 +160,7 @@ final class DiskInventory: ObservableObject {
         note = nil
         defer { busy = false }
         if let problem = await mountQuietly(partition) {
-            note = "\(partition.displayName) could not be mounted: \(problem). "
-                 + "It may not contain NTFS, or may need repair in Windows."
+            setNote(partition, "Could not be mounted: \(problem). It may not contain NTFS, or may need repair in Windows.")
         }
         refresh()
     }
@@ -201,12 +211,12 @@ final class DiskInventory: ObservableObject {
         busy = true
         _ = await unmountQuietly(partition)
         if let problem = await mountQuietly(partition) {
-            note = "\(partition.displayName) could not be mounted: \(problem)"
+            setNote(partition, "Could not be mounted: \(problem)")
         }
         busy = false
         refresh()
         if let now = partitions.first(where: { $0.bsdName == partition.bsdName }), now.mountedReadOnly {
-            note = "\(partition.displayName) is still read-only: \(now.readOnlyReason)"
+            setNote(partition, "Still read-only: \(now.readOnlyReason)")
         }
     }
 
@@ -231,13 +241,12 @@ final class DiskInventory: ObservableObject {
 
         for attempt in 1...3 {
             if let problem = await unmountQuietly(partition) {
-                note = "\(partition.displayName) could not be ejected: \(problem). "
-                     + "Close anything using it and try again."
+                setNote(partition, "Could not be ejected: \(problem). Something may still be using it.")
                 await ensureMounted(partition)
                 return
             }
             if let problem = await mountQuietly(partition) {
-                note = "\(partition.displayName) could not be mounted: \(problem)"
+                setNote(partition, "Could not be mounted: \(problem)")
                 await ensureMounted(partition)
                 return
             }
@@ -249,15 +258,16 @@ final class DiskInventory: ObservableObject {
                 return                                    // ours now; nothing to say
             }
             if attempt == 3 {
-                note = "\(partition.displayName) is still being served by the system. "
-                     + "It is mounted and usable read-only; unplug and reconnect it to try again."
+                setNote(partition, "Still served by the system. It is mounted and usable read-only; unplug and reconnect it to try again.")
             }
         }
         await ensureMounted(partition)
         refresh()
     }
 
-    /// Every volume another driver holds, handed over one at a time.
+    /// Every volume another driver holds, handed over one at a time. Not used
+    /// by the menu -- each row offers its own hand-over, so an action always
+    /// sits next to the volume it affects -- but kept for scripted use.
     func handOverAll() async {
         for partition in partitions where partition.heldByAnotherDriver {
             await handOver(partition)
@@ -299,14 +309,14 @@ final class DiskInventory: ObservableObject {
 
         _ = await unmountQuietly(partition)
         if let problem = await mountQuietly(partition) {
-            note = "\(partition.displayName) could not be mounted: \(problem)"
+            setNote(partition, "Could not be mounted: \(problem)")
         }
         refresh()
         if let now = partitions.first(where: { $0.bsdName == partition.bsdName }) {
             if now.mountedReadOnly {
-                note = "\(now.displayName) is still read-only. \(now.journalSummary.isEmpty ? now.readOnlyReason : now.journalSummary)"
+                setNote(partition, "Still read-only. \(now.journalSummary.isEmpty ? now.readOnlyReason : now.journalSummary)")
             } else {
-                note = "\(now.displayName) is now read/write."
+                setNote(partition, "Now read/write.")
             }
         }
     }
@@ -317,8 +327,7 @@ final class DiskInventory: ObservableObject {
         note = nil
         defer { busy = false }
         if let problem = await unmountQuietly(partition) {
-            note = "\(partition.displayName) could not be ejected: \(problem). "
-                 + "Something may still be using it."
+            setNote(partition, "Could not be ejected: \(problem). Something may still be using it.")
         }
         refresh()
     }

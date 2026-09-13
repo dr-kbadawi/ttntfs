@@ -33,15 +33,13 @@ struct MenuView: View {
                         eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
                         discardHibernation: { discardTarget = partition },
                         replayJournal: { replayTarget = partition },
+                        note: inventory.note?.bsdName == partition.bsdName
+                            ? inventory.note?.text : nil,
                         busy: inventory.busy,
                         handOver: {
                             Task { await inventory.handOver(partition); monitor.refresh() }
                         })
                 }
-            }
-            if let note = inventory.note {
-                Text(note).font(.caption).foregroundStyle(.orange)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             HStack {
@@ -114,7 +112,6 @@ struct MenuView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label("File system extension enabled", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
-                handoverOffer
             }
         case .disabled, .notInstalled:
             VStack(alignment: .leading, spacing: 6) {
@@ -154,26 +151,6 @@ struct MenuView: View {
         }
     }
 
-    /// Enabling does nothing to a disk that is already mounted — Disk
-    /// Arbitration only picks a module when it probes, and it probes on mount.
-    /// The offer therefore lives outside the enable flow, and comes from the
-    /// inventory rather than a separate list that could disagree with it.
-    @ViewBuilder private var handoverOffer: some View {
-        let waiting = inventory.partitions.filter(\.heldByAnotherDriver)
-        if !waiting.isEmpty {
-            Text("\(waiting.map(\.displayName).formatted(.list(type: .and))) "
-                 + "\(waiting.count == 1 ? "is" : "are") mounted by the system. "
-                 + "Hand over to use this driver.")
-                .font(.caption).foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button(waiting.count == 1 ? "Use This Driver" : "Use This Driver for All") {
-                Task { await inventory.handOverAll(); monitor.refresh(); status.refresh() }
-            }
-            .controlSize(.small)
-            .disabled(inventory.busy)
-        }
-    }
-
     private func enableButtons(title: String) -> some View {
         HStack {
             Button(title) {
@@ -196,6 +173,8 @@ struct PartitionRow: View {
     let eject: () -> Void
     let discardHibernation: () -> Void
     let replayJournal: () -> Void
+    /// The result of the last action on *this* volume, shown in its own row.
+    let note: String?
     let busy: Bool
     let handOver: () -> Void
 
@@ -219,6 +198,10 @@ struct PartitionRow: View {
                 if !partition.journalSummary.isEmpty {
                     Text(partition.journalSummary)
                         .font(.caption2).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let note {
+                    Text(note).font(.caption).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

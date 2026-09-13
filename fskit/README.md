@@ -232,6 +232,13 @@ fixtures` (see tools/README.md).
   A `busy` flag disables the buttons while this runs: pressing again mid-flight
   starts a second unmount/mount race against the first, which is how a volume
   ended up unmounted with an error on screen.
+- **Every action sits in the row of the volume it affects.** There is no
+  generic panel: Mount, Eject, Use This Driver, Discard Session and Replay
+  Journal appear on the volume they act on, and the result of an action is
+  reported in that same row rather than at the bottom of the menu. With more
+  than one NTFS volume attached — which is the normal case for a partitioned
+  Windows disk — a shared button and a shared status line are ambiguous about
+  which disk they mean.
 - **The menu lists every NTFS partition, mounted or not** (`DiskInventory`),
   with Mount, Eject, and "Use This Driver" for one another driver holds.
   Partitions come from IOKit (every leaf `IOMedia`), mount state from
