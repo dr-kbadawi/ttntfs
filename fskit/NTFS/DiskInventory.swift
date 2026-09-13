@@ -107,6 +107,9 @@ final class DiskInventory: ObservableObject {
     /// again mid-handover starts a second unmount/mount race against the first,
     /// which is how a volume ends up unmounted with an error on screen.
     @Published private(set) var busy = false
+    /// Physical disks with at least one volume still mounted, counting volumes
+    /// that are not NTFS. Nothing to eject when a disk is not in here.
+    @Published private(set) var disksWithMountedVolumes: Set<String> = []
 
     private var session: DASession?
     private var timer: Timer?
@@ -168,6 +171,12 @@ final class DiskInventory: ObservableObject {
         }
         found.sort { $0.bsdName.localizedStandardCompare($1.bsdName) == .orderedAscending }
         if found != partitions { partitions = found }
+
+        let mountedDisks = Set(mounts.keys.compactMap { bsd -> String? in
+            guard let r = bsd.range(of: "^disk[0-9]+", options: .regularExpression) else { return nil }
+            return String(bsd[r])
+        })
+        if mountedDisks != disksWithMountedVolumes { disksWithMountedVolumes = mountedDisks }
     }
 
     // MARK: Actions

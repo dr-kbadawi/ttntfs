@@ -31,6 +31,7 @@ struct MenuView: View {
                                    note: inventory.noteForDisk?.wholeDisk == group.disk
                                        ? inventory.noteForDisk?.text : nil,
                                    busy: inventory.busy,
+                                   hasMountedVolumes: inventory.disksWithMountedVolumes.contains(group.disk),
                                    eject: { Task { await inventory.ejectDisk(group.disk); monitor.refresh() } })
                     }
                     ForEach(group.partitions) { partition in
@@ -185,6 +186,10 @@ struct DiskHeader: View {
     let volumeCount: Int
     let note: String?
     let busy: Bool
+    /// Nothing is mounted on this disk, so there is nothing left to eject. The
+    /// device usually stays enumerated after an eject -- that is the enclosure,
+    /// not an unfinished job -- so the button has to go by what is mounted.
+    let hasMountedVolumes: Bool
     let eject: () -> Void
 
     var body: some View {
@@ -194,7 +199,9 @@ struct DiskHeader: View {
                     .foregroundStyle(.secondary)
                 Text(wholeDisk).font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Eject Disk", action: eject).controlSize(.small).disabled(busy)
+                Button("Eject Disk", action: eject)
+                    .controlSize(.small)
+                    .disabled(busy || !hasMountedVolumes)
             }
             if let note {
                 Text(note).font(.caption).foregroundStyle(.secondary)

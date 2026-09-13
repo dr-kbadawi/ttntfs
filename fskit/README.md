@@ -250,6 +250,12 @@ fixtures` (see tools/README.md).
   one refuses to unmount, rather than detaching a device with live volumes on
   it. The group header is hidden when there is one disk with one volume, where
   the two operations mean the same thing.
+  **The device usually stays enumerated after an eject.** `diskutil eject` on the
+  same USB enclosure leaves `/dev/disk6` and its partition nodes in place too, so
+  this is the bridge's behaviour and not an unfinished job: what "safe to unplug"
+  means is that every volume is unmounted and flushed. Eject Disk is therefore
+  disabled by what is still *mounted* on the device, not by whether the device
+  node has gone, or it would invite a second eject that has nothing to do.
 - **Every action sits in the row of the volume it affects.** There is no
   generic panel: Mount, Eject, Use This Driver, Discard Session and Replay
   Journal appear on the volume they act on, and the result of an action is
