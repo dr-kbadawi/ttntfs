@@ -280,6 +280,19 @@ page-spanning record) was **ruled out**. Windows simply writes records whose
 redo payload starts at or past the length it declared, and reads that payload
 from the page buffer without bounding it by the declared length.
 
+**The first attempt at this fix was wrong, and the way it was caught is worth
+keeping.** It extended the buffer and *read* the extra bytes from the page. The
+record at `0x204c8d` is 88 bytes -- 48 of header plus the 40 it declares -- and
+the next record begins at lsn `0x204c98`, exactly 88 bytes later, so those extra
+bytes are the next record's header. Replay duly wrote `0x00204c98`, that
+record's own LSN, into the user's file `d/i.txt`, where Windows had written four
+zero bytes. Every summary check passed: the directory appeared, the MFT records
+matched Windows on every field, `ntfsck` called the volume clean. Only reading
+the file's contents showed it.
+
+The payload is not there to be read. **The extension is zero-filled**, which
+reproduces Windows byte for byte and never touches a neighbouring record.
+
 The fix reads as far as the record actually reaches instead of as far as it says
 it is: `struct lfs_record` gains `data_avail`, the read path sizes the buffer to
 `max(client_data_length, redo_off + redo_len, undo_off + undo_len)` under the
@@ -301,10 +314,10 @@ clean.
 | record 43 | seq 1, links 1, in-use **dir**, 432 bytes used | identical |
 | record 44 | seq 1, links 1, in-use **file**, 296 bytes used | identical |
 
-Record 44 is the decisive one: its `$LogFile` LSN stamp is **0x204c8d in both**,
-so we wrote the same content from the same record. The only differences are the
-two update-sequence fixup slots, which are per-write by definition, and one
-USN-ish field. Record 43 differs more because Windows mounted the volume after
+Record 44 is the decisive one: **only 2 bytes differ, at +0x1fe and +0x3fe**,
+which are the two update-sequence fixup slots and differ on every write by
+definition. Everything else is byte-identical, including the `$LogFile` LSN
+stamp of `0x204c8d`. `d/i.txt` reads back `00 00 00 00` on both. Record 43 differs more because Windows mounted the volume after
 replaying and wrote the directory again -- its LSN advanced to 0x20508b and its
 USN bumped from 2 to 3, which is ordinary mount activity rather than a
 disagreement about the journal.

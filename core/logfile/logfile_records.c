@@ -128,17 +128,23 @@ int lfs_read_record(ntfs_logfile_t *log, uint64_t lsn, struct lfs_record *rec)
 		return 0;
 	}
 	/*
-	 * Read as far as the record actually reaches, not as far as it says it
-	 * is. A client record's redo or undo payload can start at or beyond the
-	 * client_data_length in its header -- see struct lfs_record. Sizing the
-	 * buffer to the declared length made those payloads a read past our own
-	 * allocation, which lfs_check_client_rec() correctly refused, which
-	 * aborted the whole replay on journals Windows itself replays.
+	 * A client record can declare a redo or undo payload that begins at or
+	 * past its own client_data_length: a real Windows 10 journal carries
+	 * client_data_length 40 with 4 bytes of redo at offset 40, and Windows
+	 * replays it without complaint. Refusing those records aborts the whole
+	 * replay (finding 18).
 	 *
-	 * Only the client record's own framing is trusted here, and only after
-	 * the same total_avail bound the declared length already had, so a
-	 * corrupt record cannot make this allocate anything the log could not
-	 * hold. Everything beyond that is validated by lfs_check_client_rec().
+	 * The bytes are NOT there to be read. The record at lsn 0x204c8d is 88
+	 * bytes -- 48 of header plus the 40 it declares -- and the next record
+	 * begins at lsn 0x204c98, exactly 88 bytes later. Reading past the
+	 * declared length therefore picks up the *next record's header*. An
+	 * earlier version of this code did precisely that and wrote 0x00204c98,
+	 * the next record's LSN, into a user's file, where Windows had written
+	 * four zero bytes.
+	 *
+	 * So the buffer is extended to cover what the record references and the
+	 * extension is ZERO-FILLED. That reproduces Windows byte for byte, keeps
+	 * lfs_check_client_rec()'s bound honest, and never reads a neighbour.
 	 */
 	avail = len;
 	if (len >= NR_HEADER_SIZE &&
@@ -161,13 +167,15 @@ int lfs_read_record(ntfs_logfile_t *log, uint64_t lsn, struct lfs_record *rec)
 		free(page);
 		return -ENOMEM;
 	}
+	if (avail > len)
+		memset(rec->data + len, 0, avail - len);
 	if (lf_get16(rec->hdr + LR_FLAGS) & LFS_RECORD_MULTI_PAGE) {
-		err = read_record_data(log, lsn, avail, rec->data);
+		err = read_record_data(log, lsn, len, rec->data);
 	} else {
-		if (poff + log->record_header_len + avail > log->page_size) {
+		if (poff + log->record_header_len + len > log->page_size) {
 			err = -EINVAL;
 		} else {
-			memcpy(rec->data, page + poff + log->record_header_len, avail);
+			memcpy(rec->data, page + poff + log->record_header_len, len);
 			err = 0;
 		}
 	}
