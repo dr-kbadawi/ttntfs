@@ -125,6 +125,22 @@ if(NTFS_BUILD_TESTS)
   set_tests_properties(mount PROPERTIES
     ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images")
 
+  # Large directories: the index B-tree. Nothing exercised a directory past a
+  # handful of entries, so ntfs_ib_split(), ntfs_ir_reparent(),
+  # ntfs_index_rm_node/_rm_leaf() and ntfs_ih_takeout() had never run under a
+  # test. Builds its own images with mkntfs and checks each phase with
+  # `ntfsck -n`, because a mis-split index loses names, not files, and a
+  # read-back comparison agrees with the driver's own broken tree.
+  add_executable(test_bigdir core/tests/test_bigdir.c)
+  target_link_libraries(test_bigdir ntfscore ntfsplatform)
+  target_include_directories(test_bigdir PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/logfile
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME bigdir COMMAND test_bigdir)
+  set_tests_properties(bigdir PROPERTIES
+    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+
   # Compressed writes and sparse files. core/ntfs/compress.c's write half had
   # never been executed by anything, and the compressed-sparse fixture was only
   # ever read. Several assertions here pin BUGS rather than correct behaviour;

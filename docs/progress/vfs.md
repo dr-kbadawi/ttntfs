@@ -283,3 +283,42 @@ a file-backed bdev, but that path has the host page cache under it and is not
 comparable to the resource-backed one. Separating them needs timing inside
 `NTFSVolume.write` against the `ntfs_write` it wraps, which needs an
 instrumented build.
+
+## Directories leave `$INDEX_ROOT` at the fourth entry (2026-09-14)
+
+Measured by `core/tests/test_bigdir.c` on directories this driver creates:
+11-character names, 4 KiB index blocks, 1 KiB MFT records, 4 KiB clusters.
+
+| entries | tree |
+|---|---|
+| 4 | index moves out of `$INDEX_ROOT` into `$INDEX_ALLOCATION` |
+| 79 | second level (root -> node -> leaf) |
+| 1459 | third level |
+| 3000 | 4 levels, 159 index blocks |
+| 20000 | 5 levels, 1059 index blocks |
+
+Four, not the few dozen a Windows-created directory manages. Name length barely
+moves it: 4-character names also give 4, 40-character names give 3.
+
+The cause is what else is in the MFT record. A directory we create carries
+`$STANDARD_INFORMATION`, `$FILE_NAME`, a **resident** `$SECURITY_DESCRIPTOR`,
+`$INDEX_ROOT`, `$INDEX_ALLOCATION`, `$BITMAP`, and an `$EA_INFORMATION`/`$EA`
+pair -- the WSL metadata EA from `ntfs_ea_set_wsl_inode()`
+(`core/vfs/namei.c`), which costs 120 bytes. That leaves roughly 360 bytes free
+in a 1024-byte record, so `ntfs_ir_make_space()` hits `-ENOSPC` and reparents on
+the third or fourth entry.
+
+Not a correctness bug: every shape passes `ntfsck -n`. But every non-trivial
+directory this driver creates is immediately a B-tree with an index allocation,
+an index bitmap and extra clusters, where Windows would have stayed resident.
+If that is not wanted, larger MFT records or a non-resident security descriptor
+or EA would buy the resident case back. The test asserts a range rather than
+`== 4` and prints the measured value on every run.
+
+Second observation from the same work: emptying a directory collapses the tree
+back into the resident root (`ntfs_ir_leafify` clears `LARGE_INDEX`) but leaves
+the `$INDEX_ALLOCATION` attribute and its clusters allocated, so a directory
+that briefly held 800 files keeps 34 index blocks forever. `ntfsck` calls that
+clean and ntfs-3g does the same, so it is pinned as current behaviour rather
+than asserted to be the only correct one.
+
