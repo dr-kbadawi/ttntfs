@@ -4,6 +4,10 @@ What is checked, what is not, and why. A filesystem driver that is wrong loses
 data silently, so the question this document tries to answer is not "do the
 tests pass" but "what would still get through".
 
+Every suite here was written on 2026-09-14 against code that had shipped
+without it, and between them they found sixteen defects, four of which lose data
+silently. That is the argument for the rest of this document.
+
 Run everything that does not need hardware or a signing certificate:
 
 ```
@@ -16,7 +20,7 @@ tools/ci.sh --list       # what it will run
 
 | suite | what it covers | run by |
 |---|---|---|
-| `ctest` (8 targets) | the platform layer, mount-time decisions, `$LogFile`, the enable script | `ctest --test-dir build` |
+| `ctest` (15 targets, ~2,400 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the enable script | `ctest --test-dir build` |
 | `tools/run-tests.sh` (265 checks) | read and write against 7 NTFS fixtures, compared with ntfsprogs as ground truth, then structurally checked | `tools/run-tests.sh all` |
 | `NTFSTests` (51 tests) | the app's Swift logic: option parsing, status decoding, note expiry | `xcodebuild test -scheme NTFSTests` |
 | `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end, then `fsck` on the result | by hand |
@@ -31,9 +35,25 @@ tools/ci.sh --list       # what it will run
   contract that every bdev must satisfy.
 * **`pagecache`, `pagecache_stress`** — folio lifecycle, writeback visibility,
   the lookup-versus-invalidate race, reclaim under a cap.
-* **`mount`** — the mount-time decisions: the `$LogFile` clean rule, the
-  read-only reason, a read-write mount with a non-empty journal, the fast probe
-  against the full one, and the device-flush count.
+* **`mount`** (111) — the `$LogFile` clean rule, the read-only reason, a
+  read-write mount with a non-empty journal, the fast probe against the full
+  one, and the device-flush count.
+* **`links`** (279) — hard links, symlinks through reparse points, the 100 ns
+  timestamp conversion, and permissions from the mount masks.
+* **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
+  Windows-illegal names refused, case-insensitive and case-preserving lookup
+  through a real `$UpCase` table, and xattrs as alternate data streams.
+* **`compress`** (327) — compressed writes, including appending across
+  compression-block boundaries, and the sparse read, seek and `fallocate` paths.
+* **`bigdir`** (480) — the index B-tree: growth to four levels, deletion in
+  creation, reverse and shuffled order, and six collation shapes.
+* **`crash`** (217) — the write ordering, asserted by mapping a sync's device
+  writes back to `$MFT`/`$Bitmap`, then 55 interrupted operations checked with
+  `ntfsck`.
+* **`faults`** (141) — injected read, write and flush failures at fourteen
+  points, plus a volume filled to `ENOSPC`.
+* **`geometry`** (337) — 4Kn sectors, cluster sizes either side of the sector
+  size, and a 16 TiB sparse volume.
 * **`logfile_unit`** (243 checks) — the replay engine against synthetic logs.
 * **`logfile_images`** — `ntfslog` over every fixture.
 * **`enable_module_script`** — the enable script's two silent-failure modes.

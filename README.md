@@ -9,26 +9,29 @@ No kernel extension. No Reduced Security. No reboot. GPL-2.0.
 
 Phases 0 to 3 are done. Real NTFS disks mount read/write in Finder on macOS 26.3
 and 26.6.2, from a notarized Developer ID DMG whose app enables its own
-extension. Create, read, rename and delete are verified on two
-Windows-formatted USB disks, with the volumes remounting clean afterwards.
+extension.
 
 **Treat writes as unproven for data you cannot replace.** `chkdsk` has never
 inspected anything this driver wrote. That is the one gate that matters and it
-needs a Windows PC; see `docs/TESTING.md` §2.
+needs a Windows PC; see `docs/TESTING.md`.
+
+**Known limitation:** a volume whose logical sector size is not 512 bytes mounts
+read-only. Writing to one corrupts it, so the driver refuses; reading is safe
+and stays available. This affects true 4Kn disks. Most external SSDs are 512e,
+which NTFS records as 512 and which is unaffected. See `docs/UPSTREAM-BUGS.md`
+finding 15.
 
 Journal replay is off unless you ask for it per volume, at your own risk: the
-v2.0 record layout is inferred rather than verified. A volume whose journal is
-genuinely dirty, or that Windows left hibernated by Fast Startup, mounts
-read-only with the reason shown in the menu bar, and the app offers to fix
-either one with the cost spelled out.
+v2.0 record layout is inferred rather than verified. A volume Windows left dirty
+or hibernated mounts read-only with the reason shown, and the app offers to fix
+either with the cost spelled out.
 
-Performance, measured against Apple's own FSKit exFAT module on matched images:
-ahead on streaming writes (1.15x), level on overwrite and append, and within the
-"2x of exFAT" bar on every metadata operation. Sequential reads on a USB SSD are
-within about 11% of Apple's built-in `ntfs` driver, which is close to the
-enclosure's ceiling. Numbers and method are in `docs/progress/vfs.md`.
+Performance, against Apple's own FSKit exFAT module on matched images: ahead on
+streaming writes, level on overwrite and append, within the "2x of exFAT" bar on
+every metadata operation. Sequential reads on a USB SSD are within about 11% of
+Apple's built-in driver, close to the enclosure's ceiling.
 
-Not yet: x86_64 (arm64 only), format, repair, and a Homebrew cask.
+Not yet: x86_64 (arm64 only), format, repair, a Homebrew cask.
 
 ## Using it
 
@@ -56,10 +59,11 @@ tools/ci.sh --quick      # skip the slow fixture suite
 tools/install-hooks.sh   # run --quick before every push
 ```
 
-Four suites: 8 `ctest` targets, 265 fixture checks against ntfsprogs as ground
-truth plus a real structural `fsck`, 51 Swift unit tests, and a manual
-end-to-end mount test. **`docs/TESTING.md` says what each covers and, more
-usefully, what is still not covered.**
+Four suites: **15 `ctest` targets (~2,400 checks)**, 265 fixture checks against
+ntfsprogs as ground truth plus a real structural `fsck`, 51 Swift unit tests,
+and a manual end-to-end mount test. Everything runs twice, instrumented with
+UBSan and not. **`docs/TESTING.md` says what each covers and, more usefully,
+what is still not covered.**
 
 ## Layout
 

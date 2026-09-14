@@ -9,8 +9,9 @@ Finder on macOS 26.3 and 26.6.2 from a notarized, Developer ID-signed DMG that
 enables its own extension. Phase 4 (`$LogFile`) ships analysis always and replay
 only on an explicit per-volume instruction; its apply path has still only run
 against synthetic logs. Phase 5 in progress: metadata and write throughput now
-meet the "within 2× of Apple's exFAT" bar except random 4 KiB writes, and
-`fsck.ntfs` runs on every write test. **The two open gates are both `chkdsk`:**
+meet the "within 2× of Apple's exFAT" bar except random 4 KiB writes, which is
+the macOS buffer cache rather than this driver. `fsck.ntfs` runs on every write
+test, and `tools/ci.sh` runs every suite that needs no hardware. **The two open gates are both `chkdsk`:**
 the write path has never been checked by Windows, and neither has replay. No
 x86_64 build, no `mkfs`/`fsck` in the app, no Homebrew cask. See
 `docs/progress/*.md` for the detail and the current numbers.
