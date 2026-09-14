@@ -61,15 +61,15 @@ Owner: vfs agent. Paths: `core/vfs/`, `core/include/`.
 - `platform/include/asm/byteorder.h`: `le16_to_cpup()` & co take typed pointers; compress.c
   (LZNT1 tokens) calls them on odd addresses, UBSan `-fsanitize=alignment` reports it
   (harmless on arm64). Taking `const void *` would silence it.
-- `tools/run-tests.sh` write mode, check "ntfsls after mv": the expected string omits the
-  `/rt-write/` directory line that `grep "^$d/"` (and the earlier "ntfsls sees $d" check)
-  includes, so it fails on a correct volume. Everything else in write mode passes.
-- `platform/tests/test_inode` fails in my tree (`t_evict_inode` i_count/evicts) since the
-  integrator's uncommitted pagecache.c rewrite appeared; it passed 4/4 before that.
+Both resolved. The `ntfsls after mv` expectation was fixed in 98ed05d, and
+`platform_inode` passes -- it was failing against an uncommitted pagecache
+rewrite that has long since landed. `tools/run-tests.sh all` is 265/0 and
+`ctest` is 15/15.
 
 ## Known problems / open questions
-- Writes to compressed files go through `ntfs_compress_write` (upstream); truncate of compressed/
-  encrypted files is refused (upstream limitation). Encrypted data is refused (EOPNOTSUPP).
+- Compressed files: writing works, including appending, since three upstream
+  data-loss bugs were fixed on 2026-09-14 (U5-U7 in UPSTREAM-BUGS.md). Changing
+  the size of one is still refused, as is everything about encrypted files.
 - No `->release()`: pre-allocation is disabled instead of trimmed on close.
 - Windows symlinks (IO_REPARSE_TAG_SYMLINK) are readable through `ntfs_readlink` (print name);
   created symlinks are WSL-style (upstream behaviour).
@@ -156,7 +156,15 @@ the claim in commits 08c6f10 and b58b5e8 is wrong.
   at read-only. With the rule corrected to match `logfile.h`, the unvalidated
   write path now runs on ordinary disks rather than on fixtures alone.
 - Hand `readdir` want_attr the index entry's sizes/times without an iget (needs a dir.c hook).
-- Compressed-file writes/truncate beyond what upstream supports; encrypted files stay refused.
+- Compressed files: writing now works, including appending (three upstream
+  data-loss bugs fixed 2026-09-14, U5-U7 in UPSTREAM-BUGS.md, covered by
+  `test_compress`). Still refused: changing the size of a compressed file
+  (`-EOPNOTSUPP`), creating one (`ntfs_create` never sets the flag, so a
+  compressed file can only be inherited from a volume Windows wrote), and
+  everything about encrypted files.
+- **Finding 15**, the one to fix next in this area: any logical sector size but
+  512 corrupts the volume on the first metadata write. Currently mitigated by
+  refusing a read-write mount, which costs true 4Kn disks their write access.
 
 ## Write benchmarks, 2026-09-13
 

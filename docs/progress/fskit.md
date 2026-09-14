@@ -69,10 +69,20 @@ Add `NTFS_CORE_MODE=real` for the real core.
   order 500 is unverified (no signing).
 
 ## Next
-- Sign, install, run `fskit/scripts/mount-test.sh` (read-only first, then `--rw`) against
-  `tools/images/basic-4k.img`, and watch `log stream --predicate 'subsystem == "org.ntfsmac.NTFS"'`.
-- Verify the read-only fallback path with a dirty fixture, and the status file/UI.
-- Consider `FSVolume.AccessCheckOperations` if the kernel's permission checks fight noowners.
+- `FSVolume.AccessCheckOperations`, if the kernel's permission checks ever fight
+  `noowners`. Not needed so far.
+- The Feedback report to Apple: the System Settings toggle that cannot enable a
+  third-party module, and the 5 s gap between probe and mount.
+
+Done since this list was written: signing, installing and `mount-test.sh` both
+ways (it now asserts an 8 MiB checksum round trip, 64 scattered sub-page writes,
+xattrs through the kernel, a 300-entry directory, and `ntfsck` on the image
+afterwards); the read-only fallback against dirty and hibernated volumes, with
+the reason surfaced in the menu bar; and 51 Swift unit tests.
+
+Note the log predicate in the old text named `org.ntfsmac.NTFS`. The subsystem
+is `ch.techtag.ntfs`:
+`log stream --predicate 'subsystem == "ch.techtag.ntfs"'`.
 
 ## 2026-09-13: read-write mount of a volume with a live journal
 

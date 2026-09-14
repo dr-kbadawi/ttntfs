@@ -14,4 +14,7 @@ Owner: compat agent (integrator verified 2026-09-12 21:30). Paths: `platform/inc
 - `core/ntfs` builds with `-Wsign-compare`/`-Wpointer-sign`/`-Waddress-of-packed-member` warnings inherited from kernel code; consider silencing those three for `core/ntfs` only.
 
 ## Next
-- Fix inode LRU accounting; then the vfs stream can start (`core/vfs/`, implementing `core/include/ntfscore.h`).
+Nothing outstanding for this stream. The LRU accounting was fixed in 81dda8f and
+the vfs stream it was blocking landed in fdbbb1c; the layer is now covered by
+`platform_inode`, `platform_bdev`, `pagecache` and `pagecache_stress`, and its
+divergences from Linux are tabulated in `platform-review.md`.

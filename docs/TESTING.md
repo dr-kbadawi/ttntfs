@@ -5,7 +5,7 @@ data silently, so the question this document tries to answer is not "do the
 tests pass" but "what would still get through".
 
 Every suite here was written on 2026-09-14 against code that had shipped
-without it, and between them they found sixteen defects, four of which lose data
+without it, and between them they found twelve defects, four of which lose data
 silently. That is the argument for the rest of this document.
 
 Run everything that does not need hardware or a signing certificate:

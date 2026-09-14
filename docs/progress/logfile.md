@@ -36,9 +36,13 @@ Owner: logfile agent. Paths: `core/logfile/`, `docs/LOGFILE.md`.
 ## Next
 - Validate on captures from the Windows PC (see `docs/LOGFILE.md` §7): run `ntfslog` on each,
   compare our replay against the image Windows produced after its own replay, `chkdsk /f` on
-  our result. Only then enable replay by default in the mount path.
-- Wire `ntfs_logfile_*` into `core/vfs/` mount (integrator): open → is_clean → dry run →
-  apply → mark_clean; on any refusal mount read-only with the message.
+  our result. Only then consider enabling replay by default in the mount path.
+  **This is the remaining phase 4 gate** and it needs hardware nobody here has.
+
+Done since this list was written: the mount path integration (2524eb3 for the
+analysis, aa0c94f for replay on explicit instruction), and the suite now runs
+under `ctest` as `logfile_unit` and `logfile_images` -- which it did not for a
+day, because it lived in its own CMake project and ASan hung it before `main`.
 
 ## Known problems / open questions
 - No real dirty `$LogFile` (1.1 or 2.0) has been seen by this code. Everything about 2.0 and

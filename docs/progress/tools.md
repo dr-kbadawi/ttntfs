@@ -41,10 +41,13 @@ Updated: 2026-09-12 (milestone b: runner, README; stream complete pending a link
   first real run is `tools/run-tests.sh all`.
 
 ## Next
-- When the vfs stream lands: run `all`, triage mismatches, then add the
-  kernel-mount ingestion (`find ... sha256sum` listing) as a fourth mode.
-- Consider adding the runner to `ctest` from the top level (`add_subdirectory(
-  tools/ntfscli)` already links the `ntfscore` target directly).
+- The kernel-mount ingestion (`find ... sha256sum` against a Linux 7.1 mount) as
+  a fourth mode, which would give a second independent oracle. Not started.
+
+Done since this list was written: `all` passes 265 checks with every write
+structurally checked by ntfsprogs-plus, and `tools/ci.sh` runs this runner
+alongside `ctest`, the Swift tests and the app build, so the top-level wiring
+this list asked for exists at the CI level rather than inside `ctest`.
 
 ## Known problems / notes
 - **`build/libntfscore.a` and `build/libntfsplatform.a` are x86_64** (the
