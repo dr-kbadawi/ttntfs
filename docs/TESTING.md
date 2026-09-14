@@ -19,7 +19,7 @@ tools/ci.sh --list       # what it will run
 | `ctest` (8 targets) | the platform layer, mount-time decisions, `$LogFile`, the enable script | `ctest --test-dir build` |
 | `tools/run-tests.sh` (265 checks) | read and write against 7 NTFS fixtures, compared with ntfsprogs as ground truth, then structurally checked | `tools/run-tests.sh all` |
 | `NTFSTests` (51 tests) | the app's Swift logic: option parsing, status decoding, note expiry | `xcodebuild test -scheme NTFSTests` |
-| `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end | by hand |
+| `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end, then `fsck` on the result | by hand |
 
 ### ctest, in detail
 
@@ -71,8 +71,16 @@ Being explicit about this is the point of the document.
   case-preserving, and xattrs map to alternate data streams.
 * **Large directories**, so the index B-tree split and node-removal paths are
   untested. That is where a deletion slowdown was first (wrongly) suspected.
-* **The FSKit request path.** Not reachable from `ctest`; `mount-test.sh` is the
-  only thing that exercises it, and it needs an enabled module and a real mount.
+* **The FSKit request path** is only reachable from `mount-test.sh`, which needs
+  an enabled module and a real mount, so CI cannot run it. What it does cover,
+  as of 2026-09-14: an 8 MiB write and read back compared by sha256; 64
+  scattered 4 KiB writes, which is where the 16 KiB UBC page turns every
+  sub-page write into a read-modify-write; xattrs through the kernel including
+  the assertion that no `._` file appears; a 300-entry directory listed through
+  the kernel's readdir without duplicates; and **`ntfsck` on the image
+  afterwards**, which until then nothing did -- the test verified that reads
+  came back correct and stopped there, and a read-back cannot see a corrupt
+  index, a wrong link count or a leaked cluster.
 * **Everything in the app that touches the system**: IOKit and Disk Arbitration
   enumeration, `SMAppService`, the uninstaller, the packager, and the SwiftUI
   views. `fskit/NTFSTests` covers the logic that could be separated from them.
