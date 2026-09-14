@@ -186,6 +186,26 @@ int ntfs_mkdir(ntfs_inode_t *dir, const char *name, uint32_t mode,
 int ntfs_symlink(ntfs_inode_t *dir, const char *name, const char *target,
 		 ntfs_inode_t **out);
 int ntfs_readlink(ntfs_inode_t *ni, char *buf, size_t bufsize, size_t *len_out);
+
+/*
+ * Maximum number of names one file may have, the original included.
+ *
+ * Not an on-disk limit: link_count in the MFT record is a __le16 and the
+ * FILE_NAME attributes spill into extents through $ATTRIBUTE_LIST, so the
+ * structure allows 65535. This is Windows' limit. Microsoft documents it on
+ * CreateHardLinkW as "the maximum number of hard links that can be created
+ * with this function is 1023 per file", i.e. 1023 on top of the name the file
+ * was created with, so 1024 names in total; past it Windows fails with
+ * ERROR_TOO_MANY_LINKS. We enforce it because a volume this driver writes has
+ * to stay usable on Windows, which is the whole point of the driver.
+ *
+ * Upstream Linux fs/ntfs enforces nothing here. fs/ntfs3 caps at 4000 (raised
+ * from 1024 only to pass xfstests generic/041), and ntfs-3g has no cap at all;
+ * both can therefore build volumes Windows cannot extend.
+ */
+#define NTFS_LINK_MAX 1024
+
+/* Returns -EMLINK if @ni already has NTFS_LINK_MAX names. */
 int ntfs_link(ntfs_inode_t *ni, ntfs_inode_t *dir, const char *name);
 int ntfs_unlink(ntfs_inode_t *dir, const char *name);
 int ntfs_rmdir(ntfs_inode_t *dir, const char *name);
@@ -215,7 +235,16 @@ int ntfs_readdir(ntfs_inode_t *dir, uint64_t *cookie, bool want_attr,
 
 /* Read/write the unnamed data stream. Return bytes transferred (short at
  * EOF for reads) or negative errno. Large, aligned I/O goes straight
- * from the run list to the device (docs/PORTING.md §3 rule 3). */
+ * from the run list to the device (docs/PORTING.md §3 rule 3).
+ *
+ * Directories give -EISDIR and symlinks -EINVAL. A symlink keeps its target
+ * in the reparse point, not in $DATA, and ntfs_getattr() reports the target
+ * length as the size, so the $DATA stream behind a symlink is not addressable
+ * through this ABI: writing it would leave the size the caller sees
+ * disagreeing with the bytes the stream holds. POSIX has no write-to-a-symlink
+ * operation either -- a write goes to the target, and the layer above resolves
+ * it. The same refusal applies to ntfs_truncate(), ntfs_fallocate() and
+ * NTFS_SETATTR_SIZE; mode and timestamps on a symlink are still settable. */
 ssize_t ntfs_read(ntfs_inode_t *ni, void *buf, size_t count, uint64_t offset);
 ssize_t ntfs_write(ntfs_inode_t *ni, const void *buf, size_t count, uint64_t offset);
 int ntfs_truncate(ntfs_inode_t *ni, uint64_t size);

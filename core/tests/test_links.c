@@ -354,21 +354,27 @@ out:
 	printf("test_hard_link_refusals\n");
 }
 
-/* ---- 3. many links, and the absence of a 1023 cap ------------------- */
+/* ---- 3. many links, up to the cap ----------------------------------- */
 
-#define MANY_LINKS 1030
+/* Extra names the cap allows on top of the one the file was created with. */
+#define MANY_LINKS (NTFS_LINK_MAX - 1)
 
 /*
- * The brief expected a 1023-link cap in this driver. There is none: nothing in
- * core/vfs or core/ntfs compares a link count against a limit, __ntfs_link
- * increments a __le16 link_count, and links past 1023 are created without
- * complaint (verified: 1100 succeeded). This pins that, so that if a cap is
- * ever added it is added deliberately and this test is the place it is
- * recorded, rather than turning up as an -EMLINK nobody expected.
+ * NTFS_LINK_MAX is Windows' limit, not an on-disk one: link_count is a __le16
+ * and the FILE_NAME attributes spill into extents, so the structure holds
+ * 65535, and upstream Linux fs/ntfs enforces nothing at all. Microsoft
+ * documents 1023 links creatable with CreateHardLink on top of the name the
+ * file was created with, so 1024 names in total, and Windows fails past it. A
+ * volume this driver writes has to stay usable on Windows, so the port
+ * enforces the same number and returns -EMLINK.
  *
- * It is also the only case that forces the FILE_NAME attributes out of the base
- * MFT record and into extents via $ATTRIBUTE_LIST, which is exactly where a
- * link count and the real number of names drift apart. Hence the fsck.
+ * (The project previously carried a bare "1023" in the FSKit pathconf block
+ * and nothing enforced it anywhere. 1023 is what Microsoft says can be
+ * *added*; the count a file carries, and what pathconf reports, is 1024.)
+ *
+ * This is also the only case that forces the FILE_NAME attributes out of the
+ * base MFT record and into extents via $ATTRIBUTE_LIST, which is exactly where
+ * a link count and the real number of names drift apart. Hence the fsck.
  */
 static void test_many_links(void)
 {
@@ -403,16 +409,45 @@ static void test_many_links(void)
 		made++;
 	}
 	CHECK_MSG(made == MANY_LINKS,
-		  "only %d of %d extra links were created; the driver has a cap after all",
+		  "only %d of %d extra links were created; the cap bites early",
 		  made, MANY_LINKS);
 	CHECK(ntfs_getattr(f, &at) == 0);
 	CHECK_MSG(at.nlink == (uint32_t)made + 1,
 		  "nlink is %u after %d extra links, expected %d",
 		  at.nlink, made, made + 1);
+	CHECK_MSG(at.nlink == NTFS_LINK_MAX,
+		  "the file should now be sitting exactly on the cap: nlink %u, cap %d",
+		  at.nlink, NTFS_LINK_MAX);
+
+	/*
+	 * The name after the cap is refused, and refused without a trace: the
+	 * count must not move and the name must not appear in the directory.
+	 * A half-done link here is the leak this whole group exists to catch.
+	 */
+	CHECK_MSG(ntfs_link(f, v.root, "one-too-many") == -EMLINK,
+		  "the %dth name was not refused with -EMLINK", NTFS_LINK_MAX + 1);
+	CHECK(ntfs_getattr(f, &at) == 0);
+	CHECK_MSG(at.nlink == NTFS_LINK_MAX,
+		  "the refused link still moved nlink to %u", at.nlink);
+	CHECK(ntfs_lookup(v.root, "one-too-many", &l) == -ENOENT);
+
+	/*
+	 * A file sitting on the cap must still be renameable. rename() adds the
+	 * new name before dropping the old one, so a cap checked inside
+	 * __ntfs_link() would refuse this even though the number of names does
+	 * not change. Rename one of the links and put it back.
+	 */
+	CHECK_MSG(ntfs_rename(v.root, "ln0000", v.root, "renamed") == 0,
+		  "renaming a name of a file at the cap was refused");
+	CHECK(ntfs_getattr(f, &at) == 0);
+	CHECK_MSG(at.nlink == NTFS_LINK_MAX,
+		  "rename at the cap changed nlink to %u", at.nlink);
+	CHECK(ntfs_rename(v.root, "renamed", v.root, "ln0000") == 0);
+
 	ntfs_inode_put(f);
 	f = NULL;
 	vol_down(&v);
-	fsck_clean("1030 hard links");
+	fsck_clean("hard links up to the cap");
 
 	/* The count must be right off disk too. */
 	if (vol_up(&v, 022, 022, 501, 20)) {
@@ -449,9 +484,9 @@ static void test_many_links(void)
 out:
 	if (f) ntfs_inode_put(f);
 	vol_down(&v);
-	fsck_clean("1030 links removed again");
+	fsck_clean("every extra link removed again");
 	unlink(scratch);
-	printf("test_many_links (%d extra links)\n", made);
+	printf("test_many_links (%d extra links, cap %d)\n", made, NTFS_LINK_MAX);
 }
 
 /* ---- 4. symlinks ---------------------------------------------------- */
@@ -593,6 +628,47 @@ static void test_symlinks(void)
 	CHECK(ntfs_lookup(v.root, "toolong.lnk", &l) == -ENOENT);
 	CHECK(ntfs_symlink(v.root, "abs.lnk", "/x", &l) == -EEXIST);
 
+	/*
+	 * A symlink has no addressable data stream. The target lives in the
+	 * reparse point and getattr reports the target length as the size, so a
+	 * write to $DATA used to succeed and leave the two disagreeing: 14 bytes
+	 * in the stream, size still 10, and the bytes survived a remount and
+	 * ntfsck without anything ever reading them again. POSIX has no
+	 * write-to-a-symlink operation -- the layer above resolves the link and
+	 * writes the target -- so every door to that stream is refused here.
+	 * Not EISDIR and not EPERM: EINVAL, which is what Linux gives for an
+	 * operation the file type does not have.
+	 */
+	CHECK(ntfs_lookup(v.root, "abs.lnk", &l) == 0);
+	if (l) {
+		uint64_t was;
+
+		CHECK(ntfs_getattr(l, &at) == 0);
+		was = at.size;
+		CHECK_MSG(ntfs_write(l, "CLOBBER", 7, 0) == -EINVAL,
+			  "writing a symlink's $DATA was not refused");
+		CHECK_MSG(ntfs_read(l, buf, sizeof(buf), 0) == -EINVAL,
+			  "reading a symlink's $DATA was not refused");
+		CHECK_MSG(ntfs_truncate(l, 3) == -EINVAL,
+			  "truncating a symlink was not refused");
+		CHECK_MSG(ntfs_fallocate(l, 0, 4096, false) == -EINVAL,
+			  "fallocate on a symlink was not refused");
+		/* Refused means nothing moved: the size the caller sees and the
+		 * target itself are both still what they were. */
+		CHECK(ntfs_getattr(l, &at) == 0);
+		CHECK_MSG(at.size == was, "a refused write still changed size to %llu",
+			  (unsigned long long)at.size);
+		check_target(l, "/etc/hosts", "abs.lnk after refused writes");
+		/* Mode and times stay settable: only the size is refused. */
+		at.mode = 0100600;
+		CHECK_MSG(ntfs_setattr(l, &at, NTFS_SETATTR_MODE) == 0,
+			  "setting the mode of a symlink was refused too");
+		CHECK_MSG(ntfs_setattr(l, &at, NTFS_SETATTR_SIZE) == -EINVAL,
+			  "NTFS_SETATTR_SIZE on a symlink was not refused");
+		ntfs_inode_put(l);
+		l = NULL;
+	}
+
 	vol_down(&v);
 	fsck_clean("symlink creation");
 
@@ -710,29 +786,51 @@ static void test_time_conversion(void)
 			  "utc2ntfs(%s) = %llu, expected %llu", known[i].what,
 			  (unsigned long long)got, (unsigned long long)known[i].ntfs);
 		/*
-		 * PINNED BUG, not an endorsement: ntfs2utc() divides with
-		 * truncation toward zero, so for any instant before 1970 that is
-		 * not on a whole second it returns a DENORMALISED timespec --
-		 * tv_nsec comes back negative. The instant is still right, and
-		 * feeding it back through utc2ntfs() gives the original tick
-		 * count, which is why nothing on the volume is damaged. But
-		 * struct ntfs_timespec is handed to callers that will assume
-		 * 0 <= nsec < 10^9. Reported, not fixed here. The second line
-		 * below is what the code does today; when it is fixed, expect
-		 * tv_sec == known[i].sec and tv_nsec == known[i].nsec instead.
+		 * ntfs2utc() must return a NORMALISED timespec at every value,
+		 * including before 1970. div_s64_rem() truncates toward zero, so
+		 * unfixed it hands back a negative tv_nsec for any pre-1970
+		 * instant off a whole second (tick 1 gave tv_sec = -11644473599,
+		 * tv_nsec = -999999900). The instant was arithmetically right
+		 * either way, which is why nothing on disk was ever damaged, but
+		 * these fields are copied into struct ntfs_timespec and handed
+		 * over the public ABI, and POSIX requires 0 <= nsec < 10^9.
+		 * core/ntfs/time.h borrows a second; see the PORT: comment there.
 		 */
-		if (known[i].sec < 0 && known[i].nsec != 0) {
-			CHECK_MSG(back.tv_nsec < 0,
-				  "ntfs2utc(%s) no longer denormalises; fix this test "
-				  "(and the bug note) to expect %lld.%09d",
-				  known[i].what, (long long)known[i].sec, known[i].nsec);
-			CHECK(back.tv_sec * 1000000000LL + back.tv_nsec ==
-			      known[i].sec * 1000000000LL + known[i].nsec);
-		} else {
-			CHECK_MSG(back.tv_sec == known[i].sec && back.tv_nsec == known[i].nsec,
-				  "ntfs2utc(%s) = %lld.%09ld, expected %lld.%09d",
-				  known[i].what, (long long)back.tv_sec, (long)back.tv_nsec,
-				  (long long)known[i].sec, known[i].nsec);
+		CHECK_MSG(back.tv_nsec >= 0 && back.tv_nsec < 1000000000L,
+			  "ntfs2utc(%s) is denormalised: tv_nsec = %ld, must be in [0, 10^9)",
+			  known[i].what, (long)back.tv_nsec);
+		CHECK_MSG(back.tv_sec == known[i].sec && back.tv_nsec == known[i].nsec,
+			  "ntfs2utc(%s) = %lld.%09ld, expected %lld.%09d",
+			  known[i].what, (long long)back.tv_sec, (long)back.tv_nsec,
+			  (long long)known[i].sec, known[i].nsec);
+	}
+
+	/*
+	 * Normalising must not cost the round trip: borrowing a second moves a
+	 * whole second from tv_sec into tv_nsec, so utc2ntfs() has to give the
+	 * original tick count back. Walk the ticks either side of both epochs,
+	 * which is where the sign of the remainder changes.
+	 */
+	{
+		static const uint64_t edges[] = {
+			0, 1, 2, 9999999, 10000000, 10000001, 12345,
+			116444735999999999ULL, 116444736000000000ULL,
+			116444736000000001ULL,
+		};
+		size_t j;
+
+		for (j = 0; j < sizeof(edges) / sizeof(edges[0]); j++) {
+			struct timespec64 ts = ntfs2utc(cpu_to_le64(edges[j]));
+			u64 back = le64_to_cpu(utc2ntfs(ts));
+
+			CHECK_MSG(ts.tv_nsec >= 0 && ts.tv_nsec < 1000000000L,
+				  "ntfs2utc(tick %llu) denormalised: %lld.%09ld",
+				  (unsigned long long)edges[j],
+				  (long long)ts.tv_sec, (long)ts.tv_nsec);
+			CHECK_MSG(back == edges[j],
+				  "tick %llu round-tripped to %llu",
+				  (unsigned long long)edges[j],
+				  (unsigned long long)back);
 		}
 	}
 

@@ -255,6 +255,10 @@ int ntfs_setattr(ntfs_inode_t *h, const struct ntfs_attr *attr, uint32_t valid)
 		return -EROFS;
 	if ((valid & NTFS_SETATTR_SIZE) && S_ISDIR(vi->i_mode))
 		return -EISDIR;
+	/* A symlink has no addressable data stream; see ntfs_write(). Only the
+	 * size is refused -- mode and the timestamps are set on symlinks. */
+	if ((valid & NTFS_SETATTR_SIZE) && S_ISLNK(vi->i_mode))
+		return -EINVAL;
 
 	inode_lock(vi);
 	if (valid & NTFS_SETATTR_SIZE) {
@@ -525,6 +529,16 @@ int ntfs_link(ntfs_inode_t *h, ntfs_inode_t *dh, const char *name)
 		return -EPERM;
 	if (IS_RDONLY(dir))
 		return -EROFS;
+	/*
+	 * Windows' cap (NTFS_LINK_MAX). Enforced here, at the one entry point
+	 * that really adds a name, and not down in __ntfs_link(): rename() runs
+	 * through __ntfs_link() as well, adding the new name before dropping
+	 * the old one, and a file sitting at the cap must still be renameable
+	 * because the net number of names does not change. i_nlink is loaded
+	 * from the MFT record's link_count, so it is the count on disk.
+	 */
+	if (vi->i_nlink >= NTFS_LINK_MAX)
+		return -EMLINK;
 	inode_lock(dir);
 	old = ntfs_vfs_lookup(dir, name, (int)len);
 	if (!IS_ERR(old)) {
@@ -945,6 +959,8 @@ ssize_t ntfs_read(ntfs_inode_t *h, void *buf, size_t count, uint64_t offset)
 		return -EINVAL;
 	if (S_ISDIR(vi->i_mode))
 		return -EISDIR;
+	if (S_ISLNK(vi->i_mode))
+		return -EINVAL;
 	if (NVolShutdown(NTFS_I(vi)->vol))
 		return -EIO;
 	if (!count)
@@ -1243,6 +1259,8 @@ ssize_t ntfs_write(ntfs_inode_t *h, const void *buf, size_t count, uint64_t offs
 		return -EINVAL;
 	if (S_ISDIR(vi->i_mode))
 		return -EISDIR;
+	if (S_ISLNK(vi->i_mode))
+		return -EINVAL;
 	if (NVolShutdown(vol))
 		return -EIO;
 	if (IS_RDONLY(vi))
@@ -1276,6 +1294,8 @@ int ntfs_fallocate(ntfs_inode_t *h, uint64_t offset, uint64_t len, bool keep_siz
 
 	if (!h)
 		return -EINVAL;
+	/* No symlink guard here: ntfs_vfs_fallocate() already refuses anything
+	 * that is not S_ISREG with -EINVAL, which covers it. */
 	if (!len)
 		return 0;
 	if (offset + len > (u64)vi->i_sb->s_maxbytes)

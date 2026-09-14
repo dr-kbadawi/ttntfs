@@ -82,6 +82,30 @@ static inline struct timespec64 ntfs2utc(const __le64 time)
 	 */
 	ts.tv_sec = div_s64_rem(t, 10000000, &t32);
 	ts.tv_nsec = t32 * 100;
+	/*
+	 * PORT: normalise tv_nsec into [0, 10^9).
+	 *
+	 * div_s64_rem() truncates toward zero, so the remainder carries the
+	 * sign of the dividend: for any instant before 1970 that is not on a
+	 * whole second, tv_nsec comes back negative. NTFS tick 1 gives
+	 * tv_sec = -11644473599, tv_nsec = -999999900.
+	 *
+	 * Upstream leaves it that way and is not wrong to: in the kernel the
+	 * value only ever goes back through utc2ntfs(), which adds tv_sec and
+	 * tv_nsec/100 and so is exact for either representation. Here the same
+	 * struct is copied field for field into struct ntfs_timespec and handed
+	 * over the public ABI to FSKit, and POSIX requires 0 <= tv_nsec < 10^9;
+	 * a negative nsec there reads as a timestamp a second in the future.
+	 * Files Windows stamped before 1970 (restored archives, deliberately
+	 * backdated files) are what reach this.
+	 *
+	 * Borrowing a second leaves the instant unchanged, so the round trip
+	 * through utc2ntfs() still returns the original tick count.
+	 */
+	if (ts.tv_nsec < 0) {
+		ts.tv_nsec += 1000000000L;
+		ts.tv_sec--;
+	}
 	return ts;
 }
 #endif /* _LINUX_NTFS_TIME_H */

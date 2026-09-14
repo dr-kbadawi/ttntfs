@@ -139,7 +139,9 @@ final class NTFSVolume: FSVolume {
 // MARK: - FSVolume.PathConfOperations
 
 extension NTFSVolume: FSVolume.PathConfOperations {
-    var maximumLinkCount: Int { 1023 }                 // NTFS hard-link limit per file
+    // Names per file, the original included. The core enforces the same
+    // constant and returns EMLINK past it; do not keep a second copy here.
+    var maximumLinkCount: Int { Int(NTFS_LINK_MAX) }
     var maximumNameLength: Int { 255 }                 // UTF-16 units; the core enforces
     var restrictsOwnershipChanges: Bool { true }       // noowners
     var truncatesLongNames: Bool { false }
