@@ -25,6 +25,8 @@ fixing one means updating the test that documents it.
 | U5 | `ntfs_compress_write` (`compress.c`) | Expands the attribute on `pos + count > allocated_size`, never on `> data_size`, so a write into the 64 KiB allocation rounding past EOF writes the block to disk and leaves `i_size` unchanged. The data is unreachable. | Condition changed to `data_size`, under `mrec_lock` as the uncompressed path does. `PORT:` comment at the divergence. |
 | U6 | same | `initialized_size` is never advanced on the compressed path, so everything past the old EOF reads back as zeroes though the data is correct on disk. | Advanced to the end of what was written, once the loop completes, so a failure still leaves a size to roll back to. |
 | U7 | `ntfs_write_cb` (`compress.c`) | The `allzeroes` shortcut returns before the punch-hole call, so writing zeroes over a block that holds data leaves the old contents. | `cb_is_allocated()` walks the run list: hole-blocks keep the fast path, allocated blocks punch. An unmappable run list counts as allocated, because a needless punch wastes a write while a skipped one loses data. |
+| U8 | `NTFS_B_TO_SECTOR()` and `ntfs_bytes_to_sector()` (`ntfs.h`) | Shift by `sb->s_blocksize_bits`. Both results only ever reach `bio->bi_iter.bi_sector`, which the block layer defines in **512-byte units** whatever the device's logical block size is. `parse_ntfs_boot_sector()` raises `s_blocksize` to `vol->sector_size`, so on a volume whose sector size is not 512 the writer shifts by more than the reader and every metadata bio lands at `offset / (s_blocksize / 512)` -- one eighth of its intended place on 4Kn, straight over `$MFT` records 0-5. Upstream contradicts itself two functions later: `ntfs_write_mft_block()` compares `bio_end_sector(bio) >> (cluster_size_bits - 9)` against an LCN, which is only right in 512-byte units. | Both shift by `SECTOR_SHIFT`. `PORT:` comments. |
+| U9 | `ntfs_sync_mft_mirror()` (`mft.c`) | Builds the mirror offset from the record's offset *inside its folio* and drops `folio->index` entirely. Invisible while several records share a page, which is every volume with 1024-byte MFT records; on 4Kn, `mkntfs` makes 4096-byte records, one per page, so the in-folio offset is 0 for all of them and every mirror copy is written onto slot 0. | Offset includes `(u64)folio->index << PAGE_SHIFT`. `PORT:` comment. |
 
 U5-U7 were confirmed present verbatim in `upstream/linux-v7.1/fs/ntfs/compress.c`: the only differences between it and `core/ntfs/compress.c` are folio and bio accessors. They are Linux bugs, not porting bugs.
 
@@ -91,12 +93,11 @@ does report `-EIO`. **No injected fault left a volume `ntfsck` called dirty**,
 and no failed mount wrote a single byte, checked with a fingerprint of the whole
 image before and after.
 
-## Finding 15: any sector size but 512 destroys the volume on the first write
+## Finding 15 **FIXED**: any sector size but 512 destroyed the volume on the first write
 
 The most serious defect found on 2026-09-14, by `core/tests/test_geometry.c`.
-**Mitigated, not fixed.**
 
-A volume whose logical sector size is 1024, 2048 or 4096 bytes mounts, reads
+A volume whose logical sector size is 1024, 2048 or 4096 bytes mounted, read
 correctly, and is then destroyed by the first metadata write. One `mkdir` is
 enough: MFT records 0 to 5 come back freshly formatted -- record 0 with
 `link_count` 0 and `bytes_in_use` 0x50, record 5 all zeroes -- and `ntfsck`
@@ -115,26 +116,35 @@ Isolated carefully:
 * the one variable is `vol->sector_size`, which mount hands to
   `sb_set_blocksize()` (`core/ntfs/super.c`)
 
-**Mitigation, 2026-09-14:** `super_glue.c` now refuses a read-write mount of any
-volume whose sector size is not 512, reporting `NTFS_RO_UNSUPPORTED`. Reading
-stays available, which is the point of the read-only fallback. The volume is
-left untouched, verified by `ntfsck` after a refused mount. Removing the guard
-makes `test_geometry` fail in 4 places, so it is load-bearing rather than
-decorative.
+**FIXED 2026-09-14** (commit 2f7adcc). It was **two** unit errors, both
+upstream's, now U8 and U9 in the table above: bio sector numbers divided by the
+filesystem block size instead of 512, and the MFT mirror offset dropping the
+page index. A single `mkdir` produced 38 device writes stepping by 512 instead
+of 4096, straight across `$MFT` records 0-5 -- which is why forcing
+`logical_block_size` to 512 changed nothing (mount puts it back) and why the
+record size alone looked innocent.
 
-That is a safety net over a write path that is still wrong. Fixing it properly
-means finding why a non-512 `sector_size` corrupts the MFT during allocation;
-when that is done, drop the guard and flip `write_clean` in `test_geometry.c`,
-which fails until both are done.
+The read-only guard in `super_glue.c` is gone and `write_clean` is true for
+every geometry in `test_geometry.c`, so the suite tests the real thing rather
+than the protection: 337 checks became 672, including byte-level assertions on
+`$MFT` records 0-5 and on `$MFTMirr` against `$MFT`.
 
-**Who this affects.** Not as many disks as it first appears. NTFS records only
-the logical sector size, so a 512e disk -- physically 4 KiB, logically 512, which
-is most external SSDs -- is byte-identical to a 512n one and is unaffected. The
-exposure is true 4Kn disks, and volumes deliberately formatted with a larger
-sector size. `test_geometry.c` pins a 512-sector volume on a 4 KiB-block device
+Verified three ways, because removing that guard exposes real hardware. At
+512/512, 1024/1024, 2048/2048, 4096/4096 and 4096/64K: payload written through
+the driver, unmounted, **remounted**, read back byte-for-byte identical, with
+`ntfsck -n` clean each time. Then read again with ntfsprogs' own `ntfsls` and
+`ntfscat`, a different implementation, which extracted the same bytes -- so this
+is not our reader agreeing with our writer. Reverting both helpers to upstream's
+shift produces 35 failures including the byte-level MFT assertions.
+
+**Who this affected.** Fewer disks than it appears. NTFS records only the
+logical sector size, so a 512e disk -- physically 4 KiB, logically 512, which is
+most external SSDs -- is byte-identical to a 512n one and was never at risk. The
+exposure was true 4Kn disks and volumes deliberately formatted with a larger
+sector. `test_geometry.c` also pins a 512-sector volume on a 4 KiB-block device
 as refused at mount with `-EINVAL`, which is the other half of that story.
 
-## Finding 16: an unaligned load in the LZ77 encoder
+## Finding 16 **FIXED**: an unaligned load in the LZ77 encoder
 
 `ntfs_hash()` in `core/ntfs/compress.c` read `*(const u32 *)p` from an unaligned
 pointer, with an upstream comment saying unaligned access is allowed. It is

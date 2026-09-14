@@ -20,7 +20,7 @@ tools/ci.sh --list       # what it will run
 
 | suite | what it covers | run by |
 |---|---|---|
-| `ctest` (15 targets, ~2,400 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the enable script | `ctest --test-dir build` |
+| `ctest` (15 targets, ~2,700 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the enable script | `ctest --test-dir build` |
 | `tools/run-tests.sh` (265 checks) | read and write against 7 NTFS fixtures, compared with ntfsprogs as ground truth, then structurally checked | `tools/run-tests.sh all` |
 | `NTFSTests` (51 tests) | the app's Swift logic: option parsing, status decoding, note expiry | `xcodebuild test -scheme NTFSTests` |
 | `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end, then `fsck` on the result | by hand |
@@ -50,7 +50,7 @@ tools/ci.sh --list       # what it will run
 * **`crash`** (217) — the write ordering, asserted by mapping a sync's device
   writes back to `$MFT`/`$Bitmap`, then 55 interrupted operations checked with
   `ntfsck`.
-* **`faults`** (141) — injected read, write and flush failures at fourteen
+* **`faults`** (148) — injected read, write and flush failures at fourteen
   points, plus a volume filled to `ENOSPC`.
 * **`geometry`** (672) — 4Kn sectors, cluster sizes either side of the sector
   size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry

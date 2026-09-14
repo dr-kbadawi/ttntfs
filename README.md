@@ -53,7 +53,7 @@ tools/ci.sh --quick      # skip the slow fixture suite
 tools/install-hooks.sh   # run --quick before every push
 ```
 
-Four suites: **15 `ctest` targets (~2,400 checks)**, 265 fixture checks against
+Four suites: **15 `ctest` targets (~2,700 checks)**, 265 fixture checks against
 ntfsprogs as ground truth plus a real structural `fsck`, 51 Swift unit tests,
 and a manual end-to-end mount test. Everything runs twice, instrumented with
 UBSan and not. **`docs/TESTING.md` says what each covers and, more usefully,
