@@ -42,7 +42,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/xattr.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -54,12 +53,14 @@
 #ifndef NTFSCLI_CORE
 #define NTFSCLI_CORE "unknown"
 #endif
-#ifndef XATTR_CREATE
-#define XATTR_CREATE 2
-#endif
-#ifndef XATTR_REPLACE
-#define XATTR_REPLACE 4
-#endif
+/*
+ * No XATTR_CREATE / XATTR_REPLACE here, and <sys/xattr.h> is deliberately not
+ * included. This file used to define them to Darwin's 2 and 4, which are the
+ * wrong numbers for ntfs_setxattr(): the core reads 2 as REPLACE and 4 as no
+ * flags at all. Nothing used them, so nothing broke, but the next person to add
+ * a flag to `xattr set` would have reached for the name that was already here.
+ * The flags to pass are NTFS_XATTR_CREATE / NTFS_XATTR_REPLACE from ntfscore.h.
+ */
 
 #define CHUNK (1u << 20)
 

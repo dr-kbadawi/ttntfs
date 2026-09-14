@@ -55,13 +55,17 @@ final class MountStatusTests: XCTestCase {
         }
     }
 
-    /// deviceReadOnly is currently unused: no caller passes it and it changes
-    /// nothing. Pinned so that a future caller does not quietly assume the
-    /// wording already accounts for a write-protected device.
-    func testDeviceReadOnlyDoesNotChangeTheWording() {
-        for reason in 0...8 {
-            XCTAssertEqual(MountStatus.reasonText(reason, deviceReadOnly: true),
-                           MountStatus.reasonText(reason))
+    /// NTFS_RO_DEVICE has its own message, so a write-protected device is
+    /// already covered by its own reason code rather than by qualifying another
+    /// one. reasonText() used to take a deviceReadOnly flag that no caller
+    /// passed and that changed nothing; it was removed on 2026-09-14 rather
+    /// than left for someone to assume it worked.
+    func testTheDeviceReasonHasItsOwnMessage() {
+        let device = MountStatus.reasonText(2)          // NTFS_RO_DEVICE
+        XCTAssertFalse(device.isEmpty)
+        for reason in [1, 3, 4, 5, 6, 7] {
+            XCTAssertNotEqual(MountStatus.reasonText(reason), device,
+                              "reason \(reason) reuses the write-protected-device wording")
         }
     }
 
@@ -178,7 +182,18 @@ final class MountStatusTests: XCTestCase {
     /// The real readAll() reads the app-group container path, which these tests
     /// deliberately do not touch. All it is asked to prove is that it answers
     /// without throwing whatever is (or is not) on this machine.
-    func testReadAllOnTheRealPathDoesNotCrash() {
+    ///
+    /// Skipped when there is no container. `fileURL` calls
+    /// `containerURL(forSecurityApplicationGroupIdentifier:)`, which needs the
+    /// App Group entitlement the test bundle does not carry; on a machine where
+    /// the container has never been created -- a fresh CI runner -- that call
+    /// goes to containermanagerd and was reported hanging there on 2026-09-14
+    /// under CODE_SIGNING_ALLOWED=NO. It did not reproduce afterwards, so this
+    /// is a guard rather than a fix: the value of the assertion is not worth a
+    /// suite that can hang.
+    func testReadAllOnTheRealPathDoesNotCrash() throws {
+        try XCTSkipIf(MountStatus.fileURL == nil,
+                      "no app-group container for this bundle; nothing to read")
         _ = MountStatus.readAll()
     }
 

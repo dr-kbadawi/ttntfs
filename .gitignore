@@ -9,3 +9,9 @@ xcuserdata/
 tools/images/
 build-logfile/
 build-ubsan/
+
+# iCloud conflict copies. This repository lives under ~/Documents, which is
+# synced, and a generated file edited on two machines comes back as "X 2.ext".
+# They are junk over generated output; delete them when they appear.
+* [0-9].xcodeproj/
+* [0-9].xcworkspace/

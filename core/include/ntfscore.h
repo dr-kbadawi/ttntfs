@@ -23,6 +23,11 @@
 #include <stdbool.h>
 #include <sys/types.h>
 
+/* NTFS_XATTR_CREATE / NTFS_XATTR_REPLACE for ntfs_setxattr(). Its own header
+ * because platform/include/linux/xattr.h derives from it and cannot include
+ * this one; see the file itself for why the values are Linux's, not Darwin's. */
+#include <ntfs_xattr_flags.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -262,10 +267,19 @@ int ntfs_seek_data_hole(ntfs_inode_t *ni, uint64_t offset, bool want_hole,
  * xattr (stream "com.apple.FinderInfo" etc.). listxattr enumerates the
  * inode's named $DATA streams. Names are UTF-8.
  */
+/*
+ * ntfs_setxattr()'s flags are NTFS_XATTR_CREATE / NTFS_XATTR_REPLACE, defined
+ * in ntfs_xattr_flags.h (included above) -- THE CONTRACT DEFINES THESE. Never
+ * substitute the system header's XATTR_CREATE / XATTR_REPLACE: on Darwin those
+ * are different numbers for the same two names, and the mistake is silent.
+ * That header is the only place the values are written down;
+ * platform/include/linux/xattr.h derives from it rather than keeping a copy.
+ */
 int ntfs_getxattr(ntfs_inode_t *ni, const char *name, void *buf, size_t size,
 		  size_t *len_out);	/* buf==NULL: size query */
+/* flags: 0, NTFS_XATTR_CREATE or NTFS_XATTR_REPLACE (see above). */
 int ntfs_setxattr(ntfs_inode_t *ni, const char *name, const void *buf,
-		  size_t size, int flags);	/* XATTR_CREATE / XATTR_REPLACE */
+		  size_t size, int flags);
 int ntfs_removexattr(ntfs_inode_t *ni, const char *name);
 /* Names concatenated, each NUL-terminated. buf==NULL: size query. */
 int ntfs_listxattr(ntfs_inode_t *ni, char *buf, size_t size, size_t *len_out);

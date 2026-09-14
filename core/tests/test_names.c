@@ -47,17 +47,37 @@
 #include "ntfsport/bdev.h"
 
 /*
- * ntfscore.h names XATTR_CREATE / XATTR_REPLACE in the ntfs_setxattr() comment
- * but defines neither, and the core is compiled against platform/include/linux/
- * xattr.h, where they are 1 and 2. Darwin's <sys/xattr.h> uses 2 and 4 for the
- * same two names, so a caller that includes the system header and passes
- * XATTR_CREATE hands the core a REPLACE. Do not include <sys/xattr.h> here.
- * test_xattr_flag_values below pins the core's values by behaviour so the
- * mismatch cannot go unnoticed; fskit/Bridge/NTFSExtension-Bridging-Header.h
- * keeps its own copy of the same two numbers.
+ * ntfs_setxattr()'s flags now come from ntfscore.h (core/include/
+ * ntfs_xattr_flags.h) as NTFS_XATTR_CREATE / NTFS_XATTR_REPLACE, and
+ * platform/include/linux/xattr.h derives its XATTR_CREATE / XATTR_REPLACE from
+ * the same two macros, so there is one definition rather than the several that
+ * used to be copied around. This file tests that from the outside, the way a
+ * real consumer sees it: it links against the built core, so the numbers below
+ * are whatever the core was actually compiled with.
+ *
+ * Do NOT include <sys/xattr.h> here. Darwin spells the same two ideas
+ * XATTR_CREATE 2 and XATTR_REPLACE 4, and letting those names into this file is
+ * how the confusion starts. The values are restated as literals instead.
  */
-#define CORE_XATTR_CREATE	1
-#define CORE_XATTR_REPLACE	2
+_Static_assert(NTFS_XATTR_CREATE == 1,
+	       "ABI break: NTFS_XATTR_CREATE is 1, the Linux value the core tests");
+_Static_assert(NTFS_XATTR_REPLACE == 2,
+	       "ABI break: NTFS_XATTR_REPLACE is 2, the Linux value the core tests");
+
+/* Darwin's numbers for the same two names, written out so the two can be
+ * compared without dragging the conflicting macros in. If these ever coincide
+ * the warnings elsewhere are stale and need rewriting -- but they must not be
+ * made to coincide by moving the core's values, which would silently change
+ * what every existing caller's flags mean. */
+#define DARWIN_XATTR_CREATE	2
+#define DARWIN_XATTR_REPLACE	4
+_Static_assert(NTFS_XATTR_CREATE != DARWIN_XATTR_CREATE &&
+	       NTFS_XATTR_REPLACE != DARWIN_XATTR_REPLACE,
+	       "the core's xattr flags are deliberately not Darwin's; see ntfs_xattr_flags.h");
+/* The trap this whole finding is about: Darwin's CREATE is the core's REPLACE,
+ * so the mistake is a wrong answer rather than an error. */
+_Static_assert(DARWIN_XATTR_CREATE == NTFS_XATTR_REPLACE,
+	       "Darwin's XATTR_CREATE is the core's REPLACE -- the reason this matters");
 
 static int failures, checks;
 
@@ -887,17 +907,18 @@ static void test_xattr_as_stream(void)
 	CHECK(memcmp(readback, big, sizeof(big)) == 0);
 
 	/*
-	 * XATTR_CREATE / XATTR_REPLACE. The core is built against
-	 * platform/include/linux/xattr.h, so these are 1 and 2, NOT Darwin's
-	 * 2 and 4 -- see the note at the top of this file.
+	 * The documented names do what they say. Using the public macros rather
+	 * than literals means this also checks that the header's values are the
+	 * ones the compiled core acts on: if ntfs_xattr_flags.h and the core ever
+	 * disagreed, CREATE below would come back as a REPLACE and fail here.
 	 */
-	CHECK_RC(ntfs_setxattr(ni, "user.created", "abc", 3, CORE_XATTR_CREATE), 0,
+	CHECK_RC(ntfs_setxattr(ni, "user.created", "abc", 3, NTFS_XATTR_CREATE), 0,
 		 "CREATE on a name that is free");
-	CHECK_RC(ntfs_setxattr(ni, "user.created", "xyz", 3, CORE_XATTR_CREATE), -EEXIST,
+	CHECK_RC(ntfs_setxattr(ni, "user.created", "xyz", 3, NTFS_XATTR_CREATE), -EEXIST,
 		 "CREATE on a name that exists");
-	CHECK_RC(ntfs_setxattr(ni, "user.created", "defgh", 5, CORE_XATTR_REPLACE), 0,
+	CHECK_RC(ntfs_setxattr(ni, "user.created", "defgh", 5, NTFS_XATTR_REPLACE), 0,
 		 "REPLACE on a name that exists");
-	CHECK_RC(ntfs_setxattr(ni, "user.notthere", "x", 1, CORE_XATTR_REPLACE), -ENOATTR,
+	CHECK_RC(ntfs_setxattr(ni, "user.notthere", "x", 1, NTFS_XATTR_REPLACE), -ENOATTR,
 		 "REPLACE on a name that is free");
 	memset(buf, 0, sizeof(buf));
 	CHECK_RC(ntfs_getxattr(ni, "user.created", buf, sizeof(buf), &len), 0,
@@ -909,20 +930,29 @@ static void test_xattr_as_stream(void)
 	CHECK_RC(ntfs_setxattr(ni, "user.flagless", "z", 1, 0), 0, "flags 0 creates");
 
 	/*
-	 * Pin the flag NUMBERS, not just the names. Darwin's XATTR_CREATE is 2,
-	 * which is this core's XATTR_REPLACE: a caller that includes
-	 * <sys/xattr.h> and means "create" gets ENOATTR instead, and one that
-	 * means "replace" passes 4, which the core reads as no flags at all and
-	 * happily creates. fskit/Bridge/NTFSExtension-Bridging-Header.h hardcodes
-	 * 0x1 and 0x2 for exactly this reason; if the core's values ever move,
-	 * that header goes silently wrong and this is what notices.
+	 * Pin the flag NUMBERS, not just the names, with bare literals -- so this
+	 * still fails if every named copy is renumbered together. The static
+	 * assertions at the top of this file catch the same drift at compile
+	 * time; these catch a core that stopped agreeing with its own header.
+	 *
+	 * Written as the mistake a Darwin caller makes: passing Darwin's
+	 * XATTR_CREATE (2) reaches the core as REPLACE and fails with ENOATTR
+	 * rather than creating, and Darwin's XATTR_REPLACE (4) reaches it as no
+	 * flags at all and creates the name it was supposed to require.
 	 */
-	CHECK_RC(ntfs_setxattr(ni, "user.flagprobe", "a", 1, 2), -ENOATTR,
-		 "flag value 2 behaves as REPLACE");
+	CHECK_RC(ntfs_setxattr(ni, "user.flagprobe", "a", 1, DARWIN_XATTR_CREATE), -ENOATTR,
+		 "Darwin's CREATE (2) is this core's REPLACE");
 	CHECK_RC(ntfs_setxattr(ni, "user.flagprobe", "a", 1, 1), 0,
 		 "flag value 1 behaves as CREATE");
 	CHECK_RC(ntfs_setxattr(ni, "user.flagprobe", "b", 1, 1), -EEXIST,
 		 "flag value 1 refuses an existing name");
+	CHECK_RC(ntfs_setxattr(ni, "user.flagprobe", "c", 1, 2), 0,
+		 "flag value 2 replaces an existing name");
+	/* Darwin's REPLACE (4) is not a flag the core knows: it creates. Removed
+	 * again so the listxattr expectations below stay about listing. */
+	CHECK_RC(ntfs_setxattr(ni, "user.darwinreplace", "d", 1, DARWIN_XATTR_REPLACE), 0,
+		 "Darwin's REPLACE (4) reaches the core as no flags and creates");
+	CHECK_RC(ntfs_removexattr(ni, "user.darwinreplace"), 0, "drop the probe");
 
 	/*
 	 * xattr names go through the same Windows-name policy as filenames,

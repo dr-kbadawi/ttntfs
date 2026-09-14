@@ -69,7 +69,7 @@ struct MountStatus: Codable, Equatable {
     }
 
     /// Human text for ntfs_ro_reason (kept here so the app does not need the C header).
-    static func reasonText(_ reason: Int, deviceReadOnly: Bool = false) -> String {
+    static func reasonText(_ reason: Int) -> String {
         switch reason {
         case 0: return ""
         case 1: return "Mounted read-only: requested in Settings or with -o ro."

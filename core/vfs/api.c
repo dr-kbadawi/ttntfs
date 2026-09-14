@@ -45,6 +45,21 @@
 #undef ntfs_setattr
 #include "glue.h"
 
+/*
+ * This is the one translation unit that sees both spellings: the public
+ * NTFS_XATTR_* (through glue.h -> ntfscore.h) that callers pass to
+ * ntfs_setxattr() below, and the Linux XATTR_* (through <linux/xattr.h>) that
+ * the ported code tests them with. They are one definition today -- linux/
+ * xattr.h derives from ntfs_xattr_flags.h -- and these assertions exist to fail
+ * the build the moment someone writes a literal back into either side. A
+ * disagreement here is silent at runtime: the wrong bit means the caller's
+ * CREATE is read as REPLACE and vice versa.
+ */
+_Static_assert(XATTR_CREATE == NTFS_XATTR_CREATE,
+	       "linux/xattr.h XATTR_CREATE drifted from ntfs_xattr_flags.h");
+_Static_assert(XATTR_REPLACE == NTFS_XATTR_REPLACE,
+	       "linux/xattr.h XATTR_REPLACE drifted from ntfs_xattr_flags.h");
+
 /* Kept in step with super_glue.c's copy: the resumable-image header. */
 #define NTFS_HIBERFIL_HEADER_SIZE 4096
 

@@ -86,6 +86,25 @@ Being explicit about this is the point of the document.
   views. `fskit/NTFSTests` covers the logic that could be separated from them.
 * **x86_64.** arm64 only, so nothing has ever been compiled for a second
   architecture.
+* **Specific gaps the new suites named**, each because the code is unreachable
+  from the public ABI or the input cannot be built here:
+  hole punching (`FALLOC_FL_PUNCH_HOLE` is never passed by `ntfs_fallocate`);
+  compressed and sparse together (the port reports `sparse=false` for compressed
+  inodes); compression at cluster sizes other than 4 KiB (the driver refuses it
+  above that, and no fixture exists below); a real EFS file (forged from
+  attribute flags, with no `$EFS` stream);
+  hard links into a different directory; Windows-authored
+  `IO_REPARSE_TAG_SYMLINK` reparse points, which is the branch that does string
+  surgery and so the likelier of the two to be wrong;
+  concurrent anything -- link/unlink, readdir against a splitting index, two
+  case variants racing -- because the ABI promises thread safety and a racing
+  test without a scheduling hook passes by luck;
+  torn writes and write reordering (the crash device is whole-write granular, so
+  it models "everything after write N is lost" and not a half-written sector,
+  which is what the update-sequence array exists for);
+  LCNs above 2^32, which turn out to be unreachable rather than untested because
+  NTFS caps a volume at 2^32 clusters, and above 2^31, which needs more than
+  half of a 16 TiB volume filled.
 
 ## 3. How to write a test here
 
@@ -145,7 +164,24 @@ extraction moved the comment with it and changed nothing else.
   `seq_number_bits == 67 - bit_length(file_size)` exactly and otherwise rejects
   the page as CORRUPT with no hint why. `test_mount.c` has a working builder.
 
-## 5. What CI runs
+## 5. Things that look like coverage and are not
+
+* **`ntfsck -n` does not catch everything.** Measured, not assumed: it reports a
+  dangling index entry and a `$Bitmap` that calls allocated clusters free, both
+  exit 4. It does **not** catch a zeroed MFT record with no index entry pointing
+  at it. Keep the in-test assertions as well as the structural check.
+* **A cached read proves nothing.** Several bugs this week passed a read-back and
+  failed only after a remount: a truncated symlink target served from
+  `ni->target`, and a compressed extension served from the page cache. Every
+  assertion about what reached the disk must remount first.
+* **A structural check is not a byte comparison.** A one-cluster-short length in
+  the compressed writer left `ntfsck` perfectly happy and the data unreadable.
+  Both are needed.
+* **Deleting from either end of a directory misses the interesting path.** It
+  rarely removes a key that lives in an internal B-tree node, so the shuffled
+  and middle-third cases are the ones that catch node removal.
+
+## 6. What CI runs
 
 `.github/workflows/ci.yml` calls `tools/ci.sh` on `macos-26` and caches the two
 NTFS toolchains. It cannot run `mount-test.sh` (needs an enabled module and a

@@ -1,10 +1,13 @@
 # Built ntfsprogs + libntfs-3g, downloaded sources, pip-installed cmake,
-# conda-installed autotools
-.local/
+# conda-installed autotools.
+# No trailing slash: a worktree usually symlinks these at the main checkout
+# rather than rebuilding them, and a trailing slash matches only directories,
+# so the symlink showed up as untracked and was easy to commit by accident.
+.local
 # Built ntfsprogs-plus (its own prefix; both projects install an ntfsck)
-.local-plus/
+.local-plus
 # Generated fixture images and manifests
-images/
+images
 # CMake build trees
 build/
 */build/

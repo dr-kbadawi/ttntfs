@@ -23,6 +23,7 @@
 #include "attrib.h"
 #include "inode.h"
 #include "debug.h"
+#include <asm/byteorder.h>
 #include "ntfs.h"
 #include "lcnalloc.h"
 #include "mft.h"
@@ -917,10 +918,17 @@ static inline unsigned int ntfs_hash(const u8 *p)
 	u32 hash;
 
 	/*
-	 * Unaligned access allowed, and little endian CPU.
 	 * Callers ensure that at least 4 (not 3) bytes are remaining.
+	 *
+	 * PORT: upstream writes this as *(const u32 *)p with a comment saying
+	 * unaligned access is allowed. It is allowed by the hardware and it is
+	 * still undefined behaviour by the C standard, which UBSan reports and
+	 * which aborts the test suite. get_unaligned_le32() is a memcpy the
+	 * compiler folds into the same single load, so this costs nothing and
+	 * also makes the little-endian assumption in the old comment explicit
+	 * rather than implied.
 	 */
-	str = *(const u32 *)p & 0xFFFFFF;
+	str = get_unaligned_le32(p) & 0xFFFFFF;
 	hash = str * HASH_MULTIPLIER;
 
 	/* High bits are more random than the low bits.  */

@@ -3,8 +3,18 @@
 #define _LINUX_XATTR_H
 #include <linux/types.h>
 #include <linux/fs.h>
-#define XATTR_CREATE 0x1
-#define XATTR_REPLACE 0x2
+#include <ntfs_xattr_flags.h>
+/*
+ * Derived, not restated. These same bits arrive from outside through the public
+ * ntfs_setxattr(), so the ported code that tests them here and the ABI that
+ * documents them have to be one set of numbers -- a second copy is how the two
+ * drift apart. ntfs_xattr_flags.h holds the values and says why they are the
+ * Linux ones (1 and 2) and not Darwin's (2 and 4). It is included instead of
+ * ntfscore.h because ntfscore.h's declarations collide with core/ntfs's own
+ * ntfs_attr / ntfs_getattr / ntfs_getxattr.
+ */
+#define XATTR_CREATE NTFS_XATTR_CREATE
+#define XATTR_REPLACE NTFS_XATTR_REPLACE
 #define XATTR_NAME_MAX 255
 #define XATTR_SIZE_MAX 65536
 #define XATTR_LIST_MAX 65536

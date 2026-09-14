@@ -703,10 +703,26 @@ extension NTFSVolume: FSVolume.XattrOperations {
         case .delete:
             rc = ntfs_removexattr(it.inode, cname)
         default:
-            // Linux flag values (the core is built with linux/xattr.h), see bridging header.
-            var flags: Int32 = 0
-            if policy == .mustCreate { flags = Int32(NTFS_XATTR_CREATE_FLAG) }
-            if policy == .mustReplace { flags = Int32(NTFS_XATTR_REPLACE_FLAG) }
+            // Translate FSKit's policy into the core's flags explicitly. Three
+            // different numberings are in play for the same three ideas, and
+            // two of them happen to agree: FSKit's mustCreate is 1 and
+            // mustReplace is 2, which are also NTFS_XATTR_CREATE and
+            // NTFS_XATTR_REPLACE, while Darwin's <sys/xattr.h> uses 2 and 4.
+            // So passing policy.rawValue straight through would work today and
+            // break silently the day either side renumbers. Spell the mapping
+            // out instead, and take the flag values from ntfscore.h (via the
+            // bridging header) so they are the ones the core was compiled with.
+            let flags: Int32
+            switch policy {
+            case .mustCreate:  flags = Int32(NTFS_XATTR_CREATE)
+            case .mustReplace: flags = Int32(NTFS_XATTR_REPLACE)
+            case .alwaysSet:   flags = 0
+            // .delete is handled above. A policy added by a future FSKit lands
+            // here: 0 is create-or-replace, the least surprising reading of
+            // "set", and the same thing the old code did for anything it did
+            // not recognise.
+            @unknown default:  flags = 0
+            }
             let v = value ?? Data()
             if v.isEmpty {
                 var dummy: UInt8 = 0
