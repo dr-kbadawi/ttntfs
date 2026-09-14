@@ -346,6 +346,61 @@ in the LSN field, the 1.1 convention) sitting beside v2.0 pages. That stick has
 lived as both versions, which is direct evidence of Windows' documented
 downgrade-to-1.1-on-clean-dismount and upgrade-on-mount cycle.
 
+### Cross-checked against ntfsrecover (2026-09-15)
+
+`ntfsrecover` is the only other userspace v2.0 replay engine, so it was run as
+an oracle over `base-cap1-19045.logfile` -- on a copy, in `-n` mode, never the
+original. It accepts a bare journal ("Assuming a log file copy").
+
+**First, it refuses v2.0 by default**, which is the posture the research
+described:
+
+    ** Fast restart mode detected, data could be lost
+       Use option --kill-fast-restart to bypass
+
+**Where it agrees with us, and it is the part that matters most:**
+
+    restart 0   latest 0x...b04408   synced 0x...b00000
+    restart 1   latest 0x...b04631   synced 0x...b0443d
+    * Using newer restart page, syncing from 0xb0443d, dirty
+
+It picks **restart page 1**, the same one `ntfslog` marks `[current]`, reaches
+the same sync point `0xb0443d`, and calls the volume **dirty**. Two independent
+implementations, same verdict. This also independently refutes the research
+claim that page 0 was the one to read.
+
+**Where it fails and we do not:**
+
+    ** Bad record size 8406108 in block 3 offset 0x148
+    ** Bad record size 2099292 in block 4 offset 0x148
+    * No block found overlapping on block 18, 19, 23, 35, 40
+
+It cannot walk the v2.0 tail-copy chain. The cause is in its own header,
+`include/logfile.h`, `RECORD_PAGE_HEADER`:
+
+```c
+union {
+        leLSN last_lsn;
+        sle64 file_offset;
+} __attribute__((__packed__)) copy;      /* at +0x08 */
+```
+
+It reads the fast-page target offset from a union at **+0x08**, which is the
+v1.1 convention. In v2.0 that field lives at **+0x3c**. Reading the wrong offset
+is exactly why it finds no overlapping blocks: block 18 really does name block
+34 at +0x3c, and the two are byte-identical. Our reader applies that override
+and reports `1 tail-copy override(s)`; ntfsrecover misses all of them. Its
+author's own TODO concedes the gap: *"Currently this is not checked for logfile
+version 2.x which use a different layout of temporary blocks."*
+
+**What this does and does not establish.** It confirms our **page-level v2.0
+layout** a third time, now against a live disagreement where the bytes decide in
+our favour. It says nothing about our **record interpretation** -- the redo/undo
+semantics -- because ntfsrecover cannot get far enough into this journal to be
+compared there. That remains the open part of phase 4, and no oracle for it
+exists: ntfs3 is the only other implementation and its replay is called
+inoperative by the author of the driver we port.
+
 ### A better reference than fslog.c, and we already have it
 
 `ntfs-3g`'s `ntfsrecover.c` + `playlog.c` (Jean-Pierre André, v2.0 support since
