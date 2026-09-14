@@ -186,28 +186,45 @@ writable handle. The hibernation discard request had the identical bug and the
 identical fix. Verified: the writable instance now takes the request and the
 core logs its result.
 
-### 17b: a part-way failure leaves the volume modified — **OPEN**
+### 17b: a failed *barrier* is reported as a part-way failure — **OPEN**
 
-With 17a fixed, replay ran and failed: `Replay failed part-way (-5). The volume
-may be inconsistent.` The comment in `super_glue.c` claims "a refusal leaves the
-volume exactly as it was". That is not true of this path.
+Corrected 2026-09-14, a few minutes after it was first written here. The first
+account said replay "failed part-way" and "left the volume modified", implying
+writes were abandoned mid-flush. **That was wrong**, and the correction matters
+because the original reading was considerably more alarming than the truth.
 
-`ntfs_logfile_replay()` builds every change in an in-memory overlay and only
-flushes if the whole plan succeeded, which protects against *planning* failures.
-It does not protect against a failure *during the flush*: records are written
-one at a time, so an error part-way leaves the earlier ones on disk.
+The `-EIO` did not come from a write. It came from the final barrier:
 
-Measured on the stick, before versus after: `$MFT` records **30 and 32
-changed** (`$TxfLog` and `$Tops`), while `$LogFile`, `$MFTMirr` and `$Bitmap`
-were untouched and both user files still read byte-for-byte. The changes are
-legitimate redo work -- new `$LogFile` LSNs stamped on the records, advanced
-mtimes, two counters incremented -- applied and then abandoned half way.
+    [bdev] flush: Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error"
 
-Unresolved: why the flush returned `-EIO`. The device was open read-write and
-the same device accepted the reads around it.
+`ap_sync` -> `bdev_sync` -> `fskit_flush` -> `metadataFlushWithError:`. Every
+redo write had already landed. `chkdsk /f` on the volume afterwards reported no
+problems, which corroborates that the replay completed correctly rather than
+half way.
 
-What this needs: the flush has to be all-or-nothing, or the failure has to leave
-a record of how far it got so a retry can resume rather than restart. Until
-then, replay can leave a volume in a state only chkdsk can judge -- which is
-what the message now tells the user to do, and is the right advice.
+And the flush failure is not specific to replay: **20 flush errors in 45 minutes**
+on that USB stick. This is the same defect recorded during the performance work
+-- `metadataFlush` fails on USB devices on this machine and succeeds on
+disk-image-backed ones -- which was deliberately left alone at the time because
+"whether a device that refuses to flush should fail the operation or merely warn
+is a data-integrity decision for the user". It now also makes a successful
+replay report itself as a possible corruption.
 
+So the real defects here are:
+
+1. **The message is wrong and frightening.** A failed barrier means "this may not
+   be durable yet", not "your volume may be inconsistent; run chkdsk". Those are
+   different problems and deserve different words.
+2. **The underlying flush failure is unaddressed**, and now has a second
+   consumer. It needs the decision it has been owed since the benchmarks: fail,
+   or warn once per volume.
+3. **Atomicity is still unproven.** Nothing here demonstrated a partial write,
+   but nothing rules it out either: the flush writes records one at a time, so a
+   genuine write error mid-way would leave exactly the state this finding
+   originally described. The overlay protects the planning phase only.
+
+What is now known to work, on a real Windows 10 v2.0 journal: the request
+reaches the writable instance, the dry run accounts for every record, the writes
+land, and Windows subsequently finds the volume clean. What is still unknown is
+whether the *content* of those writes is correct -- chkdsk validates structure,
+not intent -- and that remains the open part of phase 4.
