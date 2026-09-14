@@ -323,6 +323,40 @@ commit `f5ba6ba`):
 | `UpdateRelativeDataInIndex(2)` | not implemented: refused |
 | `$ATTRIBUTE_LIST` extents for open attributes | implemented, untested on real data |
 
+## 5.1 The clean rule, checked against a shipping implementation (2026-09-14)
+
+Our rule was verified against ntfsprogs-plus (the ntfs-3g fork maintained
+alongside the ntfs3 kernel driver), reading its source rather than its docs:
+`libntfs/logfile.c`, `ntfs_is_logfile_clean()`.
+
+```c
+if (ra->client_in_use_list != LOGFILE_NO_CLIENT &&
+        !(ra->flags & RESTART_VOLUME_IS_CLEAN))
+        return FALSE;           /* unclean */
+return TRUE;
+```
+
+That is `clean = closed || flagged-clean` -- **identical to ours** since 6835a53,
+and it confirms the AND/OR fix was right rather than merely plausible. Its
+version gate accepts **1.1 and 2.0** and nothing else, which our own module also
+does.
+
+Two consequences worth stating:
+
+* A volume we call unclean is one that **every non-Windows implementation calls
+  unclean**. When a Windows 10 stick came back from a *safe removal* with a v2.0
+  log, open and unflagged, and we refused it read-write, Linux would have refused
+  it too. If that were the ordinary outcome of safely removing a disk, ntfs-3g
+  would be unusable on Linux, which it demonstrably is not -- so that state is
+  not what a normal dismount produces. The prime suspect is the non-default
+  "Better performance" removal policy, which is what the stick was set to.
+* **The vendored Linux 7.1 driver is behind here.** `core/ntfs/logfile.c`
+  accepts only 1.1 and logs "LogFile version 2.0 is not supported"; ntfsprogs-plus
+  accepts 2.0. Our mount decision does not depend on it, because
+  `ntfs_glue_logfile_clean()` reads the restart area itself and `core/logfile`
+  handles 2.0, but the vendored path is noisier and more limited than the
+  ecosystem's.
+
 ## 6. Supported versions
 
 | `$LogFile` version | open | analyze | replay | `mark_clean` |
