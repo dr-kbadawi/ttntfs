@@ -71,6 +71,17 @@ stage_ctest() {
 	ctest --test-dir build --output-on-failure
 }
 
+# --- the same tests, instrumented ------------------------------------------
+# A separate build directory on purpose: the default tree produces the
+# libntfscore.a the Xcode app links, and an instrumented static library cannot
+# be linked into a shipping app. ASan is left off because it deadlocks in its
+# own initialiser on macOS 26 (see the top-level CMakeLists).
+stage_ubsan() {
+	cmake -S . -B build-ubsan -DNTFS_UBSAN=ON -DNTFS_LOGFILE_UBSAN=ON >/dev/null || return 1
+	cmake --build build-ubsan -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" >/dev/null || return 1
+	ctest --test-dir build-ubsan --output-on-failure
+}
+
 # --- the differential fixture suite ----------------------------------------
 stage_fixtures() {
 	NTFS_REQUIRE_FSCK=1 "$HERE/run-tests.sh" all
@@ -103,6 +114,7 @@ stage_build_app() {
 
 run_stage "toolchain (ntfsprogs + ntfsprogs-plus)" stage_toolchain
 run_stage "ctest (platform, mount decisions, logfile, scripts)" stage_ctest
+run_stage "ctest under UBSan" stage_ubsan
 [ "$QUICK" = 1 ] || run_stage "fixtures (run-tests.sh all, fsck required)" stage_fixtures
 run_stage "swift unit tests" stage_swift
 run_stage "app + extension build (Debug, unsigned)" stage_build_app

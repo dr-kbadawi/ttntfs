@@ -42,11 +42,20 @@ set(CMAKE_C_EXTENSIONS ON)	# -std=gnu11
 # Xcode update: ASan is what originally found the work-queue use-after-free and
 # the lookup-versus-invalidate race (docs/progress/platform-review.md).
 #
-#   -DNTFS_UBSAN=OFF     drop UBSan from the tests
+# Both default OFF, and that is a constraint rather than a preference: this
+# build tree produces libntfscore.a, which the Xcode app links directly
+# (NTFS_CORE_MODE=real). An instrumented static library needs the sanitizer
+# runtime on the final link line, which the app does not provide and must not
+# ship, so turning a sanitizer on here breaks the app build. Use a second build
+# directory instead, which is what tools/ci.sh does:
+#
+#   cmake -S . -B build-ubsan -DNTFS_UBSAN=ON && ctest --test-dir build-ubsan
+#
+#   -DNTFS_UBSAN=ON      UBSan (works; on in CI)
 #   -DNTFS_ASAN=ON       add ASan (see above before you do)
 #   -DNTFS_SANITIZE=ON   both, the old spelling, kept working
 option(NTFS_SANITIZE "Deprecated: same as -DNTFS_ASAN=ON -DNTFS_UBSAN=ON" OFF)
-option(NTFS_UBSAN "Build the tests with UndefinedBehaviorSanitizer" ON)
+option(NTFS_UBSAN "Build with UndefinedBehaviorSanitizer (use a separate build dir)" OFF)
 option(NTFS_ASAN "Build the tests with AddressSanitizer (hangs on macOS 26)" OFF)
 option(NTFS_BUILD_TESTS "Build the unit tests" ON)
 
