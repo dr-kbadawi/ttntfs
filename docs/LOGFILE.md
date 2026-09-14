@@ -323,6 +323,85 @@ commit `f5ba6ba`):
 | `UpdateRelativeDataInIndex(2)` | not implemented: refused |
 | `$ATTRIBUTE_LIST` extents for open attributes | implemented, untested on real data |
 
+## 5.2 v2.0: verified against real bytes and three implementations (2026-09-15)
+
+Our v2.0 layout was recorded as "inferred from fslog.c only". **It is now
+verified**, by decoding `tools/phase4-capture/captures/base-cap1-19045.logfile`
+-- a genuine Windows 10 19045 v2.0 journal -- and cross-checking three
+independent implementations that agree:
+
+| | ours | ntfs3 `fslog.c` | ntfs-3g `ntfsrecover` | dfir_ntfs |
+|---|---|---|---|---|
+| special area | 2 restart + 32 fast | `0x22 * page_size` | `BASEBLKS2 34` | `start_page = 34` |
+| circular area starts | page 0x22 | same | same | same |
+| fast-page target offset | **+0x3c** | `// 0x3c: used when major >= 2` | -- | `get_file_offset_2x()` byte 60 |
+
+The bytes confirm it: fast pages carry a real target at +0x3c, pages already at
+their target carry 0, and page 18 is byte-identical to the page 0x22 it names.
+**ntfs-3g's own header is wrong here** -- it unions the v2.0 file offset with
+`last_lsn` at +0x08. Do not follow it.
+
+Also found in the same capture: a leftover v1.1 tail copy (file offset carried
+in the LSN field, the 1.1 convention) sitting beside v2.0 pages. That stick has
+lived as both versions, which is direct evidence of Windows' documented
+downgrade-to-1.1-on-clean-dismount and upgrade-on-mount cycle.
+
+### A better reference than fslog.c, and we already have it
+
+`ntfs-3g`'s `ntfsrecover.c` + `playlog.c` (Jean-Pierre André, v2.0 support since
+2017) is an independent GPL replay engine with ~30 redo and ~32 undo actions and
+**actual explanatory comments**, where fslog.c has one v2.0 comment in 5,408
+lines. Two independent reverse engineerings reaching the same layout is much
+stronger than one. Use it as a cross-check oracle.
+
+### What ntfs-3g actually does, as opposed to what §5.1 says
+
+§5.1 is right that `ntfs_is_logfile_clean()` is our rule. It is not the whole
+gate. `libntfs-3g/volume.c` then rejects **every** v2.0 restart page
+unconditionally, after and independent of the clean test -- verified in the
+local source at line 1060:
+
+```c
+if (rp && rp->major_ver == const_cpu_to_le16(2) && rp->minor_ver == const_cpu_to_le16(0)) {
+        ntfs_log_error("Metadata kept in Windows cache, refused to mount.\n");
+        err = EPERM;
+}
+```
+
+and `EPERM` overrides the default `recover`. **ntfs-3g never mounts a Windows 8+
+dirty volume read-write at all.** We match its stated rule while being more
+permissive than its behaviour. That is a deliberate choice and should stay one.
+
+### If we replay, write the log back as 1.1 and clean
+
+ntfs3 and `ntfsrecover` converged independently on this: set `major_ver = 1`,
+`minor_ver = 1`, `RESTART_VOLUME_IS_CLEAN`, client off the in-use list. It is
+also what Windows itself does on a clean dismount. `ntfs_logfile_mark_clean()`
+already writes 1.1; this confirms that was right.
+
+### Do not treat ntfs3 as a correct oracle
+
+Its `do_action()` implements 23 of 37 opcodes; the rest hit `default:
+WARN_ON(1)` and are **silently skipped**, including `DeleteDirtyClusters`,
+`HotFix` and `UpdateRelativeDataInIndex`/`2`. In five years there has been one
+functional replay fix against a flood of fuzzer hardening. And Namjae Jeon --
+author of the driver this project ports -- states publicly and unrebutted that
+ntfs3's replay "in our testing did not function correctly", tabling it as
+**Inoperative**.
+
+### A correction, recorded because it nearly changed our behaviour
+
+The research that produced this section also claimed our clean rule returns a
+false "dirty" on that capture, on the grounds that its dirty-page and
+transaction tables are empty -- and recommended adopting ntfs3's criterion
+instead. **That was wrong**: it decoded restart page 0 (`current_lsn 0xb04408`),
+which is superseded by page 1 (`0xb04631`). The current page's checkpoint has
+**3 dirty pages**, and the analysis pass finds **1 transaction**. By ntfs3's own
+criterion this volume needs replay too. Both rules agree; our refusal was right.
+
+Always decode the restart page with the higher `current_lsn`. `ntfslog -v`
+marks it `[current]`.
+
 ## 5.1 The clean rule, checked against a shipping implementation (2026-09-14)
 
 Our rule was verified against ntfsprogs-plus (the ntfs-3g fork maintained
