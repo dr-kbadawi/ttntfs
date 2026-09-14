@@ -474,6 +474,12 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 		(void)rerr;
 	}
 
+	/*
+	 * Fresh window on the device's own errors for this attempt, so that a
+	 * failed mount can tell "the device refused to read" from "this is not
+	 * an NTFS volume" (ntfs_fill_super()'s last lines).
+	 */
+	dev->io_err = 0;
 	err = h->fc.ops->get_tree(&h->fc);
 	if (err)
 		goto err_fc;
@@ -681,6 +687,18 @@ int ntfs_volume_get_info(ntfs_volume_t *h, struct ntfs_volume_info *info)
 	info->total_mft_records = st.f_files;
 	info->free_mft_records = st.f_ffree;
 	info->read_only = sb_rdonly(h->sb);
+	/*
+	 * The reason ladder in ntfs_mount() runs once, before anything has had a
+	 * chance to fail. A volume that mounted read-write and is read-only now
+	 * got there through ntfs_handle_error(), which is what the errors=
+	 * remount-ro option does after a metadata write fails, so name that:
+	 * reporting NTFS_RO_NONE tells the user their disk went read-only for no
+	 * stated reason when the real answer is failing hardware and "copy your
+	 * data off now". Latched into the handle because the switch is one-way
+	 * for the life of the mount.
+	 */
+	if (info->read_only && h->ro_reason == NTFS_RO_NONE)
+		h->ro_reason = NTFS_RO_ERRORS;
 	info->ro_reason = info->read_only ? h->ro_reason : NTFS_RO_NONE;
 	info->dirty = h->dirty;
 	info->hibernated = h->hibernated;

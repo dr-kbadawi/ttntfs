@@ -124,7 +124,7 @@ divergence as a bug rather than a design choice.
 |---|---|---|---|
 | folio dirty granularity | buffer heads track sub-page dirtiness | whole folio only | a partial write dirties the entire folio. Harmless today because the macOS UBC hands us 16 KiB requests anyway (see vfs.md), but it is why sub-page tracking is not available if that changes |
 | `page_cache_sync_readahead()` | issues readahead | **no-op** (`pagemap.h`) | we never read ahead. Measured 2026-09-13: the device is 97% busy during a sequential read, so there is nothing to win here now; revisit only on faster media |
-| `errseq_check()` / `errseq_sample()` | per-fd once-only writeback error reporting | **no-op**; we keep a single `mapping->wb_err` | a writeback error is reported to whoever syncs next, not once per fd. Two syncing threads can both miss or both see it |
+| `errseq_check()` / `errseq_sample()` | per-fd once-only writeback error reporting | **no-op**; we keep a single `mapping->wb_err` | a writeback error is reported to whoever syncs next, not once per fd. Two syncing threads can both miss or both see it. Note this carries *writeback* errors only: a refused device barrier is not recorded here in Linux either, which is why finding 12 was fixed by keeping `blkdev_issue_flush()`'s return at the call sites rather than by implementing `errseq_t` |
 | `PAGE_SIZE` | the host MMU page | fixed 4 KiB (`NTFS_PAGE_SHIFT` 12) regardless of host | deliberate (PORTING.md §6) so the cache is independent of a 16 KiB host page. Do not confuse it with `SC_PAGE_SIZE`; doing so produced a wrong diagnosis on 2026-09-13 |
 | `bdev_freeze()` / `bdev_thaw()` | quiesce the filesystem | **no-op** | nothing freezes volumes here; a future snapshot feature would need real ones |
 

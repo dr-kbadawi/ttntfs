@@ -293,7 +293,23 @@ extension NTFSVolume: FSVolume.Operations {
         guard let vol else { reply(nil); return }
         guard writable else { reply(nil); return }
         let rc = ntfs_volume_sync(vol)
+        noticeReadOnlySwitch()
         reply(rc == 0 ? nil : posixError(rc, "sync"))
+    }
+
+    /// The core drops a volume to read-only on its own when a metadata write
+    /// fails (errors=remount-ro), and nothing calls back to say so. A sync is
+    /// the first thing that happens after a failed write, so check there: the
+    /// menu bar is the only place the user will ever hear that the disk has
+    /// started refusing writes, and by then it is urgent.
+    private func noticeReadOnlySwitch() {
+        guard let vol, !isReadOnly else { return }
+        var info = ntfs_volume_info()
+        guard ntfs_volume_get_info(vol, &info) == 0, info.read_only else { return }
+        isReadOnly = true
+        roReason = info.ro_reason
+        log.error("\(self.bsdName, privacy: .public): switched to read-only (\(MountStatus.reasonText(Int(self.roReason)), privacy: .public))")
+        publishStatus(info)
     }
 
     func getAttributes(_ desired: FSItem.GetAttributesRequest, of item: FSItem,

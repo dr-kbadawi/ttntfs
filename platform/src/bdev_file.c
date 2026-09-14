@@ -303,8 +303,10 @@ int ntfs_bdev_read(struct ntfs_bdev *dev, void *buf, u64 offset, size_t count)
 		return -EIO;
 	n = dev->ops->pread(dev, buf, count, offset);
 	if (n < 0)
-		return (int)n;
-	return (size_t)n == count ? 0 : -EIO;
+		return dev->io_err = (int)n;
+	if ((size_t)n == count)
+		return 0;
+	return dev->io_err = -EIO;
 }
 
 int ntfs_bdev_write(struct ntfs_bdev *dev, const void *buf, u64 offset, size_t count)
@@ -319,8 +321,10 @@ int ntfs_bdev_write(struct ntfs_bdev *dev, const void *buf, u64 offset, size_t c
 		return -EIO;
 	n = dev->ops->pwrite(dev, buf, count, offset);
 	if (n < 0)
-		return (int)n;
-	return (size_t)n == count ? 0 : -EIO;
+		return dev->io_err = (int)n;
+	if ((size_t)n == count)
+		return 0;
+	return dev->io_err = -EIO;
 }
 
 int ntfs_bdev_flush(struct ntfs_bdev *dev)

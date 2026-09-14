@@ -208,8 +208,16 @@ int ntfs_vfs_fsync(struct inode *vi, bool datasync)
 		ntfs_warning(vi->i_sb,
 				"Failed to f%ssync inode 0x%llx.  Error %u.",
 				datasync ? "data" : "", ni->mft_no, -ret);
+	/*
+	 * PORT: keep the barrier's return value, which upstream discards. That
+	 * discard is free in the kernel, where a device error has other ways
+	 * back to the caller; here blkdev_issue_flush() is ntfs_bdev_flush(), a
+	 * straight F_FULLFSYNC whose errno has nowhere else to go. Dropping it
+	 * makes fsync() report success for data still in a volatile write cache,
+	 * which is the one thing fsync() exists to rule out.
+	 */
 	if (!ret)
-		blkdev_issue_flush(vi->i_sb->s_bdev);
+		ret = blkdev_issue_flush(vi->i_sb->s_bdev);
 	return ret;
 }
 

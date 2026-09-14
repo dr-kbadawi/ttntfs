@@ -22,25 +22,25 @@
  * can tell the two apart. -n is not optional: ntfsck would otherwise repair the
  * damage it is being asked to measure.
  *
- * What this found, pinned below where it happens and deliberately NOT fixed:
+ * What this found, all three fixed on 2026-09-14 and now asserted the right way
+ * round (docs/UPSTREAM-BUGS.md findings 12-14):
  *
- *   [BUG] A failed device flush is dropped. ntfs_fsync() and ntfs_volume_sync()
- *   both return 0 after ntfs_bdev_flush() returned -EIO, so fsync() lies about
- *   durability: the caller is told its data survives a power cut while it is
- *   still sitting in a volatile write cache. core/vfs/file.c:212 and
- *   core/ntfs/super.c:1926-1927 call blkdev_issue_flush() and sync_blockdev()
- *   and throw the return value away. Those two lines are inherited verbatim
- *   from upstream (upstream/linux-v7.1/fs/ntfs/{file,super}.c), and in Linux
- *   they are harmless because blkdev_issue_flush() returns void there and the
- *   error comes back separately through the bdev mapping's writeback error.
- *   The port has no such second path -- ntfs_bdev_flush() is a direct
- *   F_FULLFSYNC whose errno has nowhere else to go -- so the port turned a
- *   void call into a dropped int. See test_flush_fail.
+ *   A failed device flush was dropped: ntfs_fsync() and ntfs_volume_sync() both
+ *   returned 0 after ntfs_bdev_flush() returned -EIO, so fsync() lied about
+ *   durability. Both call sites now keep the return value. See test_flush_fail.
  *
- * Everything else the port gets right, and the assertions below now say so:
- * read errors reach ntfs_read(), write errors reach ntfs_write()/ntfs_fsync()/
- * ntfs_volume_sync(), the volume drops to read-only with NTFS_RO_ERRORS, and
- * every case here leaves an image ntfsck calls clean.
+ *   A volume forced read-only by errors reported ro_reason NTFS_RO_NONE, so the
+ *   user was told their disk had gone read-only for no stated reason. See
+ *   test_write_fail_data.
+ *
+ *   A read error at mount was reported as -EINVAL, the same errno as a
+ *   partition that is not NTFS at all. See test_read_fail_mount, and
+ *   test_not_ntfs_is_einval for the direction that must not move.
+ *
+ * Everything else the port gets right, and the assertions below say so: read
+ * errors reach ntfs_read(), write errors reach ntfs_write()/ntfs_fsync()/
+ * ntfs_volume_sync(), the volume drops to read-only, and every case here leaves
+ * an image ntfsck calls clean.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -461,9 +461,9 @@ static void test_injector_is_transparent(void)
 static void test_read_fail_mount(void)
 {
 	static const struct { const char *what; int which; int expect_err; } cases[] = {
-		{ "boot sector", 0, -EINVAL },	/* should be -EIO; see the pin below */
-		{ "$MFT",        1, -EINVAL },	/* should be -EIO */
-		{ "root index",  3, -EINVAL },	/* should be -EIO */
+		{ "boot sector", 0, -EIO },
+		{ "$MFT",        1, -EIO },
+		{ "root index",  3, -EIO },
 		/* $MFTMirr is the one that gets it right-ish: the mirror check
 		 * fails, the volume refuses read-write and, with no fallback
 		 * requested, the mount is refused with -EROFS. */
@@ -518,13 +518,15 @@ static void test_read_fail_mount(void)
 		printf("  read_fail_mount[%s]: ntfs_mount -> %d (%s)\n", cases[i].what, err,
 		       err < 0 ? strerror(-err) : "success");
 		/*
-		 * [BUG] Pinned, NOT fixed. Three of these four report -EINVAL,
-		 * the same errno the driver uses for "this is not an NTFS
-		 * volume", when what happened is that the device refused to read.
-		 * A user whose disk is failing is told their partition is not
-		 * NTFS, which is the sentence that makes people reformat. -EIO
-		 * is the honest answer and the caller cannot recover it from
-		 * here. Invert the -EINVAL expectations when it is fixed.
+		 * The errno has to separate "the device refused to read" from
+		 * "this is not an NTFS volume". They were the same -EINVAL until
+		 * finding 14 was fixed on 2026-09-14, so a user whose disk was
+		 * failing was told their partition is not NTFS, which is the
+		 * sentence that makes people reformat. The other direction
+		 * matters just as much and is pinned by test_not_ntfs() below:
+		 * Disk Arbitration reads -EINVAL as "not mine, try another
+		 * driver", so claiming -EIO over a FAT partition would take the
+		 * disk away from the driver that can read it.
 		 */
 		CHECK_MSG(err == cases[i].expect_err,
 			  "%s: mount reported %d (%s), this test expected %d (%s)",
@@ -548,6 +550,71 @@ static void test_read_fail_mount(void)
 		drop_image();
 	}
 	printf("test_read_fail_mount\n");
+}
+
+/*
+ * The other half of finding 14, and the more dangerous direction to get wrong.
+ * -EINVAL from ntfs_mount() is what Disk Arbitration reads as "this volume is
+ * not mine", which is how a FAT or APFS partition gets handed to the driver
+ * that can actually read it. If the -EIO work above had widened to cover a
+ * volume that simply is not NTFS, this driver would start claiming disks it
+ * cannot mount and they would stop appearing in Finder at all.
+ *
+ * Both cases here run over a device that never fails a read, so the only
+ * honest answer is "not NTFS".
+ */
+static void test_not_ntfs_is_einval(void)
+{
+	static const char *const what[] = { "all zeroes", "a FAT boot sector" };
+	char cmd[2048];
+
+	for (int i = 0; i < 2; i++) {
+		struct ntfs_bdev *dev;
+		ntfs_volume_t *vol = NULL;
+		int err;
+
+		snprintf(img, sizeof(img), "/tmp/ttntfs-faults-%d-notntfs.img", (int)getpid());
+		snprintf(cmd, sizeof(cmd),
+			 "dd if=/dev/zero of='%s' bs=1m count=8 >/dev/null 2>&1", img);
+		if (system(cmd) != 0) {
+			fprintf(stderr, "SKIP not_ntfs: could not build an image\n");
+			img[0] = 0;
+			return;
+		}
+		if (i == 1) {
+			/* A plausible non-NTFS boot sector: the jump, an OEM id
+			 * that is not "NTFS    ", and the 0xaa55 marker. This is
+			 * what the partition types we must not claim look like. */
+			uint8_t bs[512];
+			int fd = open(img, O_WRONLY);
+
+			memset(bs, 0, sizeof(bs));
+			bs[0] = 0xeb; bs[1] = 0x58; bs[2] = 0x90;
+			memcpy(bs + 3, "MSDOS5.0", 8);
+			bs[510] = 0x55; bs[511] = 0xaa;
+			CHECK(fd >= 0 && pwrite(fd, bs, sizeof(bs), 0) == (ssize_t)sizeof(bs));
+			if (fd >= 0)
+				close(fd);
+		}
+
+		fault_clear();		/* no fault: every read succeeds */
+		dev = fault_open(false);
+		CHECK(dev != NULL);
+		if (!dev) { drop_image(); return; }
+		err = ntfs_mount(dev, &RW_OPTS, &vol);
+		printf("  not_ntfs[%s]: ntfs_mount -> %d (%s)\n", what[i], err,
+		       err < 0 ? strerror(-err) : "success");
+		CHECK_MSG(err == -EINVAL,
+			  "%s: ntfs_mount reported %d (%s), expected -EINVAL -- Disk "
+			  "Arbitration needs that to hand the disk to another driver",
+			  what[i], err, err < 0 ? strerror(-err) : "success");
+		CHECK(fi.fired == 0);
+		if (err == 0 && vol)
+			ntfs_unmount(vol);
+		ntfs_bdev_close(dev);
+		drop_image();
+	}
+	printf("test_not_ntfs_is_einval\n");
 }
 
 /* ====================================================================== */
@@ -897,17 +964,18 @@ static void test_write_fail_data(void)
 	CHECK_MSG(info.read_only,
 		  "the volume is still writable after every metadata write was refused");
 	/*
-	 * [BUG] Pinned, NOT fixed. The volume does go read-only, but it reports
-	 * ro_reason NTFS_RO_NONE (0) for it. NTFS_RO_ERRORS exists in ntfscore.h
-	 * for exactly this case -- "errors detected while mounted; switched to
-	 * ro" -- and nothing sets it. The consequence is not corruption but a
-	 * user who is told their disk is read-only and given no reason, when the
-	 * true reason is that the hardware is failing writes and they should copy
-	 * their data off now. Invert when ro_reason is set.
+	 * And it must say why. The consequence of not saying is not corruption
+	 * but a user who is told their disk is read-only and given no reason,
+	 * when the true reason is that the hardware is failing writes and they
+	 * should copy their data off now. NTFS_RO_ERRORS exists in ntfscore.h for
+	 * exactly this case -- "errors detected while mounted; switched to ro"
+	 * -- and until finding 13 was fixed on 2026-09-14 nothing set it: the
+	 * reason ladder in super_glue.c ran once at mount, before anything could
+	 * fail.
 	 */
-	CHECK_MSG(info.ro_reason == NTFS_RO_NONE,
-		  "ro_reason is now %d -- the bug is fixed, expect NTFS_RO_ERRORS (%d) "
-		  "and invert this assertion", info.ro_reason, NTFS_RO_ERRORS);
+	CHECK_MSG(info.ro_reason == NTFS_RO_ERRORS,
+		  "ro_reason is %d after errors forced the volume read-only, "
+		  "expected NTFS_RO_ERRORS (%d)", info.ro_reason, NTFS_RO_ERRORS);
 
 	ntfs_inode_put(f);
 out:
@@ -1060,29 +1128,23 @@ static void test_flush_fail(void)
 	       fs_err, sync_err, fi.fired);
 
 	/*
-	 * [BUG] Pinned, NOT fixed. Both of these return success although the
-	 * device refused the barrier. This is wrong: fsync()'s entire contract is
-	 * that the bytes are on stable storage when it returns 0, and here they
-	 * are still in a write cache that a power cut empties.
+	 * Both of these must report the refused barrier. fsync()'s entire
+	 * contract is that the bytes are on stable storage when it returns 0,
+	 * and after a refused flush they are still in a write cache that a power
+	 * cut empties.
 	 *
-	 * Where it is lost: core/vfs/file.c:212 does "blkdev_issue_flush(...)"
-	 * with no assignment, and core/ntfs/super.c:1926-1927 does the same for
-	 * sync_blockdev() and blkdev_issue_flush(). Both lines came over verbatim
-	 * from upstream/linux-v7.1/fs/ntfs/, where blkdev_issue_flush() returns
-	 * void and the error surfaces separately through the block device
-	 * mapping's writeback error. The port gave the call an int return
-	 * (ntfs_bdev_flush(), an F_FULLFSYNC) and inherited call sites that drop
-	 * it, and it has no second path to surface it on.
-	 *
-	 * The two assertions below pin today's behaviour so the change is
-	 * noticed. When the errno is plumbed through, invert both.
+	 * Where it used to be lost (finding 12, fixed 2026-09-14): core/vfs/
+	 * file.c and core/ntfs/super.c both called blkdev_issue_flush() with no
+	 * assignment, verbatim from upstream/linux-v7.1/fs/ntfs/. Here the call
+	 * is ntfs_bdev_flush(), an F_FULLFSYNC whose errno has nowhere else to
+	 * go, so both call sites now keep the return.
 	 */
-	CHECK_MSG(fs_err == 0,
-		  "ntfs_fsync now reports the failed flush (%d) -- the bug is fixed, "
-		  "invert this assertion", fs_err);
-	CHECK_MSG(sync_err == 0,
-		  "ntfs_volume_sync now reports the failed flush (%d) -- the bug is fixed, "
-		  "invert this assertion", sync_err);
+	CHECK_MSG(fs_err == -EIO,
+		  "ntfs_fsync returned %d after the device refused the barrier, "
+		  "expected -EIO", fs_err);
+	CHECK_MSG(sync_err == -EIO,
+		  "ntfs_volume_sync returned %d after the device refused the barrier, "
+		  "expected -EIO", sync_err);
 
 	if (!err)
 		ntfs_inode_put(f);
@@ -1204,6 +1266,7 @@ int main(void)
 	atexit(cleanup);
 	test_injector_is_transparent();
 	test_read_fail_mount();
+	test_not_ntfs_is_einval();
 	test_read_fail_file_data();
 	test_read_fail_lookup();
 	test_read_fail_midtransfer();

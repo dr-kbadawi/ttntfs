@@ -47,6 +47,21 @@ struct ntfs_bdev {
 	 * by ntfs_bdev_attach_mapping(); every bdev implementation must call it,
 	 * because nothing that uses this field checks it for NULL. */
 	struct address_space *bd_mapping;
+	/*
+	 * Sticky: the last errno the *device* itself reported, set by
+	 * ntfs_bdev_read()/ntfs_bdev_write() when ops->pread/pwrite fails or
+	 * transfers short, and cleared by whoever wants a fresh window (mount
+	 * does, per attempt). Deliberately not set by this layer's own range
+	 * check, which means the caller asked past the end of the device rather
+	 * than that the device is failing.
+	 *
+	 * It exists because failure paths in the core collapse many causes into
+	 * one errno: ntfs_fill_super() returns -EINVAL for everything, and
+	 * -EINVAL is what Disk Arbitration reads as "not an NTFS volume, try
+	 * another driver". This flag is how that path tells a failing disk apart
+	 * from a partition that genuinely is not NTFS.
+	 */
+	int io_err;
 };
 
 /* Convenience wrappers used by the core; return 0 or negative errno. */

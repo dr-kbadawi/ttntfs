@@ -78,7 +78,10 @@ struct MountStatus: Codable, Equatable {
         case 4: return "Mounted read-only: Windows is hibernated on this volume (Fast Startup). Shut Windows down fully (shutdown /s /t 0)."
         case 5: return "Mounted read-only: the NTFS journal ($LogFile) is not clean. Eject the volume properly in Windows."
         case 6: return "Mounted read-only: the volume uses a feature this driver cannot write safely."
-        case 7: return "Switched to read-only: errors were found while mounted. Check the volume in Windows."
+        // The volume was writable and a write failed. Whatever is wrong is
+        // happening now, so the first sentence has to be the action: a disk
+        // that has started refusing writes often stops answering reads next.
+        case 7: return "Switched to read-only after disk errors. Copy your files off this volume now, then check it in Windows with chkdsk /f."
         default: return "Mounted read-only."
         }
     }

@@ -1909,7 +1909,7 @@ static void ntfs_shutdown(struct super_block *sb)
 static int ntfs_sync_fs(struct super_block *sb, int wait)
 {
 	struct ntfs_volume *vol = NTFS_SB(sb);
-	int err = 0;
+	int err = 0, ret;
 
 	if (NVolShutdown(vol))
 		return -EIO;
@@ -1923,8 +1923,21 @@ static int ntfs_sync_fs(struct super_block *sb, int wait)
 		err = -EIO;
 	}
 	sync_inodes_sb(sb);
-	sync_blockdev(sb->s_bdev);
-	blkdev_issue_flush(sb->s_bdev);
+	/*
+	 * PORT: keep both return values, which upstream discards. sync_blockdev()
+	 * is the block device page cache writeback and blkdev_issue_flush() is
+	 * the durability barrier (ntfs_bdev_flush(), an F_FULLFSYNC here); in the
+	 * kernel a failure of either still reaches the caller through the bdev
+	 * mapping's writeback error, and this port has no such second path. A
+	 * dropped barrier error means ntfs_volume_sync() reports success for data
+	 * that is still only in a volatile write cache.
+	 */
+	ret = sync_blockdev(sb->s_bdev);
+	if (ret && !err)
+		err = ret;
+	ret = blkdev_issue_flush(sb->s_bdev);
+	if (ret && !err)
+		err = ret;
 	return err;
 }
 
@@ -2552,9 +2565,21 @@ iput_tmp_ino_err_out_now:
 err_out_now:
 	sb->s_fs_info = NULL;
 	kfree(vol);
-	ntfs_debug("Failed, returning -EINVAL.");
+	/*
+	 * PORT: upstream returns -EINVAL for every failure above. Here -EINVAL
+	 * is load-bearing: Disk Arbitration reads it as "not an NTFS volume,
+	 * offer the disk to another driver", so it has to keep meaning that. A
+	 * device that refused a read told us nothing about the format, and
+	 * saying "not an NTFS volume" to someone whose disk is dying is the
+	 * sentence that makes people reformat it. ntfs_bdev_read() records the
+	 * device's own errors in bdev->io_err and ntfs_mount() clears it before
+	 * each attempt, so this distinguishes the two without unwinding the
+	 * bool/NULL returns of read_ntfs_boot_sector() and load_system_files().
+	 */
+	result = sb->s_bdev && sb->s_bdev->io_err ? -EIO : -EINVAL;
+	ntfs_debug("Failed, returning %d.", result);
 	lockdep_on();
-	return -EINVAL;
+	return result;
 }
 
 /*
