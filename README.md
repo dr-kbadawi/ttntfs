@@ -91,6 +91,8 @@ what is still not covered.**
 
 | file | what |
 |---|---|
+| `RELEASE-NOTES.md` | what changed in each build, and what to check after upgrading |
+| `docs/TODO.md` | open work, grouped by what blocks it |
 | `docs/PORTING.md` | why this source, the dependency survey, phases, decisions |
 | `docs/TESTING.md` | what is checked, what is not, how to add a test |
 | `docs/LOGFILE.md` | `$LogFile` format, replay algorithm, verified vs inferred |
