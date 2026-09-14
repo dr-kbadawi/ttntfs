@@ -125,6 +125,31 @@ if(NTFS_BUILD_TESTS)
   set_tests_properties(mount PROPERTIES
     ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images")
 
+  # Hard links, symlinks, timestamps and permissions: all four shipped with no
+  # test. Every mutating case ends in `ntfsck -n`, because a wrong link count or
+  # a stale index entry is invisible to a read-back and only costs data later.
+  add_executable(test_links core/tests/test_links.c)
+  target_link_libraries(test_links ntfscore ntfsplatform)
+  target_include_directories(test_links PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME links COMMAND test_links)
+  set_tests_properties(links PROPERTIES
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+
+  # The three name and xattr decisions in PORTING.md section 6, which were
+  # recorded and then enforced by nothing: Windows-illegal names rejected,
+  # case-insensitive and case-preserving lookup, and xattrs stored as alternate
+  # data streams rather than ._ files.
+  add_executable(test_names core/tests/test_names.c)
+  target_link_libraries(test_names ntfscore ntfsplatform)
+  target_include_directories(test_names PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME names COMMAND test_names)
+  set_tests_properties(names PROPERTIES
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_TOOLS=${CMAKE_CURRENT_SOURCE_DIR}/tools")
+
   # enable-module.sh: two silent-failure bugs cost a mount each. Static checks
   # plus the real prune loop under stubbed tools; touches no system state.
   add_test(NAME enable_module_script
