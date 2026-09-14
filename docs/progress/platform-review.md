@@ -95,6 +95,53 @@ Done: findings 1–13 fixed and tested; `ctest` green in `build-review`,
 `build-review` with `-DNTFS_SANITIZE=ON`, standalone page cache under ASan
 and TSan (8× / 4× stress loops).
 
+## Semantics: what Linux guarantees, what we do (2026-09-14)
+
+The table the section below asked for. `platform/` reimplements ~174 Linux
+functions from their signatures rather than porting them, and that is where this
+project's bugs come from -- so this records, per function, what Linux promises,
+what we actually do, and whether the difference is deliberate. Rows are ordered
+by how much damage the difference can cause.
+
+`docs/LOGFILE.md` §5 does the same job for the journal (verified vs inferred).
+**Add a row here before changing any shim**, and treat an undocumented
+divergence as a bug rather than a design choice.
+
+### Divergences that have caused bugs
+
+| function | Linux | us | status |
+|---|---|---|---|
+| `sync_blockdev()` | `filemap_write_and_wait(bdev->bd_mapping)`; **no barrier** | was a full device flush, so every `ntfs_fsync()` issued two and every `sync_filesystem()` three | **fixed** a0e6310 |
+| `sync_inodes_sb()` | walks `wb->b_dirty`, the per-bdi dirty list | walked all of `sb->s_inodes`, making every unlink O(cached inodes) | **fixed** b58b5e8 (finding 16) |
+| our `pagecache_sync_sb()` | (Linux has per-bdi lists) | walked the whole mapping registry twice per sync | **fixed** 08c6f10 (finding 15) |
+| write-back ordering | none; Linux leaves ordering to the filesystem | ours: rank, then newest-first, so `$MFT`'s attribute inodes precede `$MFT` | **ours by design**, now explicit via `inode->i_seq` (finding 17) |
+| `bd_mapping` | always present on a block device | only `bdev_file.c` created one; the FSKit bdev had NULL and crashed | **fixed** 6835a53 (finding 14), contract now tested |
+| `filemap_write_and_wait()` | returns when writeback completes | same, plus a bounded retry when the backend re-dirties the folio | **ours by design** (finding 2); without it `ntfs_write_folio_resident` loses writes |
+
+### Divergences that are live
+
+| function | Linux | us | why it matters |
+|---|---|---|---|
+| folio dirty granularity | buffer heads track sub-page dirtiness | whole folio only | a partial write dirties the entire folio. Harmless today because the macOS UBC hands us 16 KiB requests anyway (see vfs.md), but it is why sub-page tracking is not available if that changes |
+| `page_cache_sync_readahead()` | issues readahead | **no-op** (`pagemap.h`) | we never read ahead. Measured 2026-09-13: the device is 97% busy during a sequential read, so there is nothing to win here now; revisit only on faster media |
+| `errseq_check()` / `errseq_sample()` | per-fd once-only writeback error reporting | **no-op**; we keep a single `mapping->wb_err` | a writeback error is reported to whoever syncs next, not once per fd. Two syncing threads can both miss or both see it |
+| `PAGE_SIZE` | the host MMU page | fixed 4 KiB (`NTFS_PAGE_SHIFT` 12) regardless of host | deliberate (PORTING.md §6) so the cache is independent of a 16 KiB host page. Do not confuse it with `SC_PAGE_SIZE`; doing so produced a wrong diagnosis on 2026-09-13 |
+| `bdev_freeze()` / `bdev_thaw()` | quiesce the filesystem | **no-op** | nothing freezes volumes here; a future snapshot feature would need real ones |
+
+### No-ops that are correct
+
+Userspace makes these vacuous, and they are safe: `kunmap_local`, `kunmap`,
+`kunmap_atomic` (no highmem), `flush_dcache_page`/`flush_dcache_folio` (no
+aliasing VIPT caches to worry about), `invalidate_kernel_vmap_range`,
+`memalloc_nofs_save`/`restore` (no reclaim recursion into the filesystem),
+`dput` (no dentry cache), `register_filesystem`/`unregister_filesystem`/
+`kill_block_super` (no VFS to register with), `BUILD_BUG`.
+
+### Not implemented at all
+
+`blkdev_issue_discard` is wired but the FSKit resource exposes no TRIM on
+macOS 26, so `discard_granularity` is 0 and the core never asks.
+
 ## The gap this layer keeps falling into (2026-09-13)
 
 `platform/` is ~5,200 lines implementing ~174 Linux functions. Linux implements

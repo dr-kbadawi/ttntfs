@@ -1,0 +1,42 @@
+# Copyright and licensing
+
+TT NTFS Native is licensed under the GNU General Public License, version 2.
+The full text is in `LICENSE`.
+
+## Why GPL-2.0 and not a choice
+
+The core is a port of the Linux kernel's `fs/ntfs` driver (ntfsplus, Linux 7.1,
+by Namjae Jeon and contributors), vendored unmodified under `upstream/` and
+ported under `core/ntfs/` and `core/vfs/`. That code is GPL-2.0, so this work is
+a derivative of it and carries the same licence. It is not a licence we picked;
+it is the one we inherited, and it is why this driver can exist at all — no
+other complete, GPL-licensed NTFS write implementation does.
+
+## Per-file identifiers
+
+Every source file carries an SPDX identifier, and the two differ on purpose:
+
+* `GPL-2.0` — files ported from or derived from the Linux driver, which is
+  GPL-2.0 only. 121 files.
+* `GPL-2.0-or-later` — files written from scratch for this project (parts of the
+  `$LogFile` module, the platform layer, tooling), where the author chose to
+  allow later versions. 53 files.
+
+`GPL-2.0-or-later` code combines with `GPL-2.0` code; the combined work is
+distributed under GPL-2.0, which is what `LICENSE` states.
+
+## Third-party components
+
+* `upstream/linux-v7.1/fs/ntfs` — Linux kernel, GPL-2.0. Pristine, never edited;
+  see `upstream/UPSTREAM.md`.
+* `tools/.local` and `tools/.local-plus` hold ntfs-3g/ntfsprogs and
+  ntfsprogs-plus, built from source at their own versions and **not**
+  redistributed with this project. They are developer tooling only: the shipped
+  application contains none of their code.
+
+## What distribution requires
+
+The DMG is a binary distribution of GPL-2.0 software, so the corresponding
+source must be offered to anyone who receives it. Publishing this repository at
+the tag a release was built from satisfies that; `fskit/scripts/package.sh`
+records the commit it builds.
