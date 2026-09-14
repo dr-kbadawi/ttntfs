@@ -162,7 +162,7 @@ Worth noting how this was found: the agent that met it said plainly that it had
 left it alone and not recorded it. It surfaced only because the whole set of
 agent reports was re-read against what had actually been done.
 
-## Finding 17: journal replay was unreachable, and is not atomic when it runs
+## Finding 17 **FIXED** (one property unproven): journal replay was unreachable, and misreported a refused barrier
 
 Found 2026-09-14 on the first real dirty volume this feature has ever met: a
 Windows 10 v2.0 journal on a USB stick. Two distinct defects, one fixed.
@@ -186,7 +186,7 @@ writable handle. The hibernation discard request had the identical bug and the
 identical fix. Verified: the writable instance now takes the request and the
 core logs its result.
 
-### 17b: a failed *barrier* is reported as a part-way failure — **OPEN**
+### 17b: a failed *barrier* was reported as a part-way failure — **FIXED**, one part still unproven
 
 Corrected 2026-09-14, a few minutes after it was first written here. The first
 account said replay "failed part-way" and "left the volume modified", implying
@@ -210,15 +210,28 @@ disk-image-backed ones -- which was deliberately left alone at the time because
 is a data-integrity decision for the user". It now also makes a successful
 replay report itself as a possible corruption.
 
-So the real defects here are:
+Both defects below were fixed on 2026-09-15; the third item is not a defect but
+an unproven property, and it is the only part of this finding still open.
 
-1. **The message is wrong and frightening.** A failed barrier means "this may not
-   be durable yet", not "your volume may be inconsistent; run chkdsk". Those are
-   different problems and deserve different words.
-2. **The underlying flush failure is unaddressed**, and now has a second
-   consumer. It needs the decision it has been owed since the benchmarks: fail,
-   or warn once per volume.
-3. **Atomicity is still unproven.** Nothing here demonstrated a partial write,
+The real defects here were:
+
+1. **The message was wrong and frightening.** A failed barrier means "this may
+   not be durable yet", not "your volume may be inconsistent; run chkdsk".
+   **FIXED**: `struct ntfs_log_replay_result` gained `flush_failed`, set only
+   when every write succeeded and the barrier did not, and the repair layer now
+   says the replay was written but could not be confirmed, the journal is
+   unchanged, and the work will be redone. Covered by
+   `test_flush_failure_is_not_a_partial_write`.
+2. **The underlying flush failure was unaddressed. FIXED**, and it was ours:
+   `FSResource.h` says `metadataFlushWithError:` flushes what was written with
+   `delayedMetadataWriteFrom:`, which this bridge never calls -- every write goes
+   through the direct `writeFrom:` path. We were flushing a buffer cache we never
+   write to, and failing operations on it. The call is kept (correct for the
+   delayed path, free), its failure is logged once per device and not
+   propagated, which is what Apple's own FSKit FAT driver does. The cost is
+   stated in `fskit/README.md`: FSKit exposes no barrier, so `fsync` cannot
+   promise the data has left the device's write cache.
+3. **Atomicity is still unproven — the one part of this finding still open.** Nothing here demonstrated a partial write,
    but nothing rules it out either: the flush writes records one at a time, so a
    genuine write error mid-way would leave exactly the state this finding
    originally described. The overlay protects the planning phase only.
