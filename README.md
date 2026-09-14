@@ -24,9 +24,15 @@ That is one Windows build, one disk, one pass; it is not a warranty. Journal
 replay remains the unproven part -- see below -- so keep a backup of anything
 you cannot replace.
 
-Journal replay is off unless you ask for it per volume, at your own risk: the
-v2.0 record layout is inferred rather than verified, and the apply path has only
-ever run against synthetic logs. **This is the one remaining gate.** A volume Windows left dirty
+Journal replay stays off unless you ask for it per volume, at your own risk --
+but it is no longer unverified. On 2026-09-15 it was run against a real Windows
+10 dirty v2.0 journal and **reproduced Windows' own replay**: the pending
+directory and file were recovered, the file's contents matched byte for byte,
+and the MFT record differed from Windows' in exactly the two update-sequence
+fixup slots, which differ on every write by definition. `ntfsck` calls the
+result clean. That is one journal and one scenario out of five, so the gate is
+not closed, but the engine is demonstrably correct rather than merely plausible.
+See `docs/LOGFILE.md` and finding 18 in `docs/UPSTREAM-BUGS.md`. A volume Windows left dirty
 or hibernated mounts read-only with the reason shown, and the app offers to fix
 either with the cost spelled out.
 

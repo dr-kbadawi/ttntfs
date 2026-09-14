@@ -203,6 +203,13 @@ extraction moved the comment with it and changed nothing else.
   failed only after a remount: a truncated symlink target served from
   `ni->target`, and a compressed extension served from the page cache. Every
   assertion about what reached the disk must remount first.
+* **Structural correctness is not correct data, and this one nearly shipped.**
+  A journal-replay fix passed every check available: the pending directory
+  appeared, the MFT records matched Windows on sequence, link count, flags and
+  size, and `ntfsck` called the volume clean. It was still writing the *next log
+  record's header* into a user's file. The only thing that caught it was reading
+  the file's contents and diffing them against the same file on Windows. When
+  replaying or repairing, compare payloads, not just metadata.
 * **A structural check is not a byte comparison.** A one-cluster-short length in
   the compressed writer left `ntfsck` perfectly happy and the data unreadable.
   Both are needed.
