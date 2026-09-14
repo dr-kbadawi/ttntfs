@@ -40,6 +40,9 @@ struct ntfs_bdev {
 	u32 physical_block_size;
 	u32 discard_granularity;	/* 0 = no discard */
 	bool read_only;
+	/* Set once a device has refused a flush, so the warning is logged once
+	 * instead of on every sync. See fskit_flush() for why it is not fatal. */
+	bool flush_warned;
 	char name[64];
 	void *priv;
 	/* Raw-device page cache mapping, used by kernel code that flushes or

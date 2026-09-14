@@ -192,6 +192,38 @@ static ssize_t fskit_pwrite(struct ntfs_bdev *dev, const void *buf, size_t count
 	return (ssize_t)done;
 }
 
+/*
+ * There is no device-cache barrier in FSKit, and this is not one.
+ *
+ * FSResource.h is explicit that metadataFlushWithError: "flushes data
+ * previously written with delayedMetadataWriteFrom:startingAt:length:error:".
+ * We never call that. Every write in this file goes through writeFrom:, the
+ * direct path, deliberately -- the core keeps its own metadata cache and
+ * double-caching would only cost memory. So this flushes a buffer cache we
+ * never put anything into.
+ *
+ * The comment that used to sit here claimed metadataFlush "reaches the device's
+ * write cache". That was wrong, and it cost real time: on USB devices the call
+ * fails with a blanket EIO (20 failures in 45 minutes on one stick), we turned
+ * that into a failed fsync, a failed sync, a failed unmount, and a successful
+ * journal replay reporting itself as possible corruption. None of those
+ * failures said anything about our data, because none of our data was in the
+ * cache being flushed.
+ *
+ * So the failure is not propagated. That is not papering over a problem: the
+ * call cannot tell us anything about the durability of a direct write, and
+ * failing on it makes nothing safer. Apple's own FSKit FAT driver takes the
+ * same posture -- msdosfs logs the error and continues, including on unmount.
+ *
+ * What this costs, stated plainly: fsync on this driver cannot promise the data
+ * has left the device's write cache, because FSKit exposes no primitive that
+ * would. Nothing in the API surface (no DKIOCSYNCHRONIZECACHE, no F_FULLFSYNC,
+ * no barrier or FUA) reaches it. That is a platform limitation and it is
+ * documented in fskit/README.md rather than hidden behind a success return.
+ *
+ * The call is kept because it is correct for the delayed path, cheap, and would
+ * matter immediately if this bridge ever adopted delayedMetadataWriteFrom:.
+ */
 static int fskit_flush(struct ntfs_bdev *dev)
 {
 	FSBlockDeviceResource *res = (__bridge FSBlockDeviceResource *)dev->priv;
@@ -199,13 +231,17 @@ static int fskit_flush(struct ntfs_bdev *dev)
 
 	if (dev->read_only)
 		return 0;
-	/* Direct writes are not staged in the FSKit buffer cache, but
-	 * metadataFlush is the only flush primitive the resource exposes and
-	 * it reaches the device's write cache (it is what Apple's own modules
-	 * call for fsync). */
 	if (![res metadataFlushWithError:&err]) {
-		os_log_error(bdev_log(), "flush: %{public}@", err);
-		return -errno_from_nserror(err, EIO);
+		/* Once per device. It fired on every sync before, which buried
+		 * the log and taught everyone to ignore it. */
+		if (!dev->flush_warned) {
+			dev->flush_warned = true;
+			os_log_info(bdev_log(),
+				    "%{public}s: metadataFlush is unavailable on this device (%{public}@). "
+				    "Writes are direct and unaffected; fsync cannot confirm the device's "
+				    "own write cache, which FSKit provides no way to reach.",
+				    dev->name, err);
+		}
 	}
 	return 0;
 }

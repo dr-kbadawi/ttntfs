@@ -201,6 +201,36 @@ xcodebuild test -project fskit/NTFS.xcodeproj -scheme NTFSTests -derivedDataPath
 Everything that needs a real mount stays in `scripts/mount-test.sh`, which is
 manual. See `docs/TESTING.md` for what is and is not covered.
 
+## Durability: fsync cannot promise what it usually promises
+
+**FSKit exposes no device-cache barrier, so this driver cannot guarantee that a
+successful `fsync` has pushed data out of the disk's own write cache.**
+
+`FSResource.h` is explicit that `metadataFlushWithError:` "flushes data
+previously written with `delayedMetadataWriteFrom:startingAt:length:error:`".
+This bridge never uses that path: every write goes through `writeFrom:`, the
+direct one, because the core keeps its own metadata cache and double-caching
+would only cost memory. So `metadataFlush` flushes a buffer cache we never put
+anything into. Nothing else in the API surface reaches a barrier -- no
+`DKIOCSYNCHRONIZECACHE`, no `F_FULLFSYNC`, no FUA.
+
+Until 2026-09-15 this bridge called `metadataFlush` believing it reached the
+device's write cache, and failed the operation when it returned an error. On USB
+devices it always does -- 20 failures in 45 minutes on one stick -- which turned
+into failed `fsync`s, failed syncs, failed unmounts, and a journal replay that
+had completed correctly reporting itself as possible corruption. None of those
+failures described our data, because none of our data was in the cache being
+flushed.
+
+The call is still made, because it is correct for the delayed path and free.
+Its failure is now logged once per device and not propagated. Apple's own FSKit
+FAT driver takes the same posture: `msdosfs` logs the error and continues,
+including on unmount.
+
+The honest position is that ordering is preserved and writes are direct, but
+final durability is out of our hands on this platform. That is worth knowing
+before yanking a disk immediately after a large copy.
+
 ## Known issues (macOS 26.3 and 26.6.2)
 
 - The System Settings switch for File System Extensions cannot enable a
