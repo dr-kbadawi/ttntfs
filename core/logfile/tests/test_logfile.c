@@ -424,6 +424,8 @@ static ntfs_logfile_t *open_log(struct memio *m, struct ntfs_log_io *io)
 struct vol {
 	uint8_t *disk;
 	int mft_writes, clu_writes, syncs;
+	int sync_errno;		/* non-zero: the device refuses the barrier */
+	int write_errno;	/* non-zero: the device refuses the writes themselves */
 	uint64_t last_mft_no;
 };
 
@@ -542,6 +544,8 @@ static int v_write_mft(void *ctx, uint64_t no, const void *buf)
 static int v_read_clu(void *ctx, uint64_t lcn, uint32_t n, void *buf)
 {
 	struct vol *v = ctx;
+	if (v->write_errno)
+		return v->write_errno;
 	if (lcn + n > VOL_CLUSTERS)
 		return -EIO;
 	memcpy(buf, v->disk + lcn * VCS, (size_t)n * VCS);
@@ -556,7 +560,12 @@ static int v_write_clu(void *ctx, uint64_t lcn, uint32_t n, const void *buf)
 	v->clu_writes += (int)n;
 	return 0;
 }
-static int v_sync(void *ctx) { ((struct vol *)ctx)->syncs++; return 0; }
+static int v_sync(void *ctx)
+{
+	struct vol *v = ctx;
+	v->syncs++;
+	return v->sync_errno;
+}
 
 static void vol_apply(struct vol *v, struct ntfs_log_apply *ap)
 {
@@ -1446,6 +1455,57 @@ static void test_images(void)
 	printf("test_images: %d image(s)\n", seen);
 }
 
+/*
+ * A device that accepts every write and then refuses the barrier.
+ *
+ * Not hypothetical: macOS FSKit's metadataFlush fails on every USB device on
+ * the development machine (20 failures in 45 minutes on one stick), and a real
+ * replay on a real Windows 10 volume reported itself as "Replay failed part-way.
+ * The volume may be inconsistent" when every write had in fact landed and chkdsk
+ * afterwards found no problems. The distinction matters: a failed write can
+ * leave a volume half-applied, a failed barrier only means the device would not
+ * confirm what it has already taken.
+ */
+static void test_flush_failure_is_not_a_partial_write(void)
+{
+	struct lb b;
+	struct memio m;
+	struct ntfs_log_io io;
+	ntfs_logfile_t *log;
+	struct vol v;
+	struct ntfs_log_apply ap;
+	struct ntfs_log_replay_result res;
+
+	printf("test_flush_failure_is_not_a_partial_write\n");
+
+	/* barrier refused, writes fine */
+	build_bitmap_scenario(&b, true, false, NULL);
+	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
+	log = open_log(&m, &io);
+	vol_init(&v);
+	vol_apply(&v, &ap);
+	v.sync_errno = -EIO;
+	memset(&res, 0, sizeof(res));
+	CHECK(ntfs_logfile_replay(log, &ap, false, &res) != 0);
+	CHECK(res.flush_failed);
+	CHECK_EQ(v.syncs, 1);
+	CHECK_EQ(v.clu_writes, 1);	/* the write still happened */
+	CHECK_EQ(res.clusters_written, 1);
+	ntfs_logfile_close(log);
+
+	/* a genuine write failure must NOT be reported as a flush failure */
+	build_bitmap_scenario(&b, true, false, NULL);
+	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
+	log = open_log(&m, &io);
+	vol_init(&v);
+	vol_apply(&v, &ap);
+	v.write_errno = -EIO;
+	memset(&res, 0, sizeof(res));
+	CHECK(ntfs_logfile_replay(log, &ap, false, &res) != 0);
+	CHECK(!res.flush_failed);
+	ntfs_logfile_close(log);
+}
+
 int main(void)
 {
 	test_states();
@@ -1457,6 +1517,7 @@ int main(void)
 	test_tail_copy_and_torn();
 	test_tables_api();
 	test_v2_log();
+	test_flush_failure_is_not_a_partial_write();
 	test_images();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

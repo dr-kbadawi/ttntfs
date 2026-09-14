@@ -237,6 +237,16 @@ struct ntfs_log_replay_result {
 	uint32_t clusters_written;
 	uint64_t redo_lsn;
 	bool needs_chkdsk;		/* a record could not be applied safely */
+	/*
+	 * Every write landed and only the final device barrier failed. The two
+	 * are very different: a failed write can leave the volume half-applied,
+	 * while a failed barrier only means the device would not confirm what it
+	 * has already accepted. The journal is deliberately NOT marked clean in
+	 * either case, so the work is retried on the next attempt or by Windows.
+	 * Added 2026-09-14, when a successful replay reported itself as possible
+	 * corruption on a USB device whose every flush fails.
+	 */
+	bool flush_failed;
 	/* Plan (dry run and real run). Owned by @log until close. */
 	const struct ntfs_log_plan_entry *plan;
 	uint32_t plan_len;

@@ -1974,8 +1974,17 @@ static int flush_overlay(struct replay *r)
 					  (unsigned long long)lcn, n);
 		r->res->clusters_written += n;
 	}
-	if (r->ap->sync)
-		return r->ap->sync(r->ap->ctx);
+	if (r->ap->sync) {
+		err = r->ap->sync(r->ap->ctx);
+		if (err) {
+			/* Everything above succeeded; only the barrier did not.
+			 * Tell the caller, so it can say so instead of implying
+			 * the volume is half-written. */
+			r->res->flush_failed = true;
+			return lfs_seterr(r->log, err < 0 ? err : -EIO,
+					  "the device refused the final flush");
+		}
+	}
 	return 0;
 }
 

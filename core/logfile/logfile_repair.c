@@ -154,9 +154,21 @@ int ntfs_logfile_replay_device(struct ntfs_bdev *dev, struct ntfs_logfile_analys
 	memset(&real, 0, sizeof(real));
 	err = ntfs_logfile_replay(log, &apply, false, &real);
 	if (err) {
-		snprintf(out->message, sizeof(out->message),
-			 "Replay failed part-way (%d). The volume may be inconsistent; "
-			 "run chkdsk in Windows before writing to it.", err);
+		if (real.flush_failed)
+			/* The writes landed; the device would not confirm them. The
+			 * journal is left dirty on purpose just below, so this replay
+			 * is redone next time or by Windows. Saying "the volume may be
+			 * inconsistent" here would be both wrong and frightening. */
+			snprintf(out->message, sizeof(out->message),
+				 "Replay was written but this device refused the final flush (%d), "
+				 "so it cannot be confirmed as saved. The journal has been left "
+				 "unchanged, so the same work will be redone next time or by "
+				 "Windows. Nothing was lost. A device that never accepts a flush "
+				 "is a hardware or enclosure problem, not a filesystem one.", err);
+		else
+			snprintf(out->message, sizeof(out->message),
+				 "Replay failed part-way (%d). The volume may be inconsistent; "
+				 "run chkdsk in Windows before writing to it.", err);
 		goto out_log;
 	}
 
