@@ -134,6 +134,11 @@ extraction moved the comment with it and changed nothing else.
 * **`io window` log lines aggregate over time**, so one covering a mixed phase
   describes whichever phase moved the most bytes. Isolate the phase before
   reading a cause out of them; a wrong diagnosis was published from one.
+* **`platform_bdev` is timing-sensitive.** It has `usleep`-based waits and a
+  lost-wake-up check with a 100 ms fallback, so it can fail under heavy load.
+  Observed once at load average 64 on an 8-core machine, passing immediately
+  afterwards three times in a row. If it fails, check the load before believing
+  it; on a shared CI runner this is the test most likely to flake.
 * **Device numbers are recycled.** `disk6` was three different physical disks in
   one session. Check `diskutil list` before trusting a path.
 * **A hand-built restart page must satisfy `check_ra()`**, which requires

@@ -125,6 +125,21 @@ if(NTFS_BUILD_TESTS)
   set_tests_properties(mount PROPERTIES
     ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images")
 
+  # Compressed writes and sparse files. core/ntfs/compress.c's write half had
+  # never been executed by anything, and the compressed-sparse fixture was only
+  # ever read. Several assertions here pin BUGS rather than correct behaviour;
+  # they are marked BUG: in the source and listed in docs/UPSTREAM-BUGS.md.
+  add_executable(test_compress core/tests/test_compress.c)
+  target_link_libraries(test_compress ntfscore ntfsplatform)
+  target_include_directories(test_compress PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/logfile
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME compress COMMAND test_compress)
+  set_tests_properties(compress PROPERTIES
+    TIMEOUT 600
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+
   # Hard links, symlinks, timestamps and permissions: all four shipped with no
   # test. Every mutating case ends in `ntfsck -n`, because a wrong link count or
   # a stale index entry is invisible to a read-back and only costs data later.

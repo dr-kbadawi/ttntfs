@@ -25,3 +25,29 @@ fixing one means updating the test that documents it.
 | 7 | `core/vfs/namei.c` `__ntfs_link` | **There is no 1023 hard-link cap.** `docs/PORTING.md` and this project's notes have referred to one; no such check exists anywhere in `core/` or `platform/`, and 1100 links were created successfully with `ntfsck -n` clean afterwards. `link_count` is a `__le16` incremented without a bound. Whether NTFS needs a cap is a separate question, but the documented one is not implemented. | pinned at 1030 links in `test_links.c: test_many_links` |
 | 8 | `core/vfs/api.c` symlinks | `ntfs_write()` on a symlink inode succeeds and writes to its `$DATA` stream, while `getattr` reports `size` as the target length, so the two disagree. Not asserted either way: it was not possible to establish which behaviour is intended. | noted, not pinned |
 
+## Compressed writes: three data-loss bugs (2026-09-14)
+
+Found by `core/tests/test_compress.c`, the first thing ever to write to a
+compressed file through this driver. **All three report success to the caller**,
+and all three are pinned by tests marked `BUG:` so that fixing one fails the
+test that documents it. `ntfsck` is clean in every case: the results are legal
+NTFS, just not what the writer asked for.
+
+Together they mean **appending to a compressed file does not work at all**
+through the public ABI. That matters before FSKit exposes the path.
+
+| # | Where | Symptom |
+|---|---|---|
+| 9 | `ntfs_compress_write`, `core/ntfs/compress.c` | Expands the attribute only when `pos + count > allocated_size`, never on `> data_size`. A compressed file's allocation is rounded up to the 64 KiB block, so a write into that rounding **returns success, re-encodes the block, writes it to disk, and leaves `i_size` unchanged**. The bytes are on the platter and permanently unreachable. Measured on a 102400-byte file with 131072 allocated: `ntfs_write(ni, buf, 8192, 102400)` returns 8192 and the file is still 102400 bytes. |
+| 10 | same | `initialized_size` is never advanced on the compressed path. When a write does pass `allocated_size`, `ntfs_attr_expand` moves `data_size` and nothing touches `initialized_size`. Confirmed on disk with `ntfsinfo`: `Data size: 201000 / Initialized size: 102400`. Everything past the old EOF reads back as zeroes, before and after a remount, though the compressed data is correctly written. |
+| 11 | `ntfs_write_cb`, same file | The `allzeroes` branch does `goto out` with `err = 0` **before** `ntfs_non_resident_attr_punch_hole`. Writing 64 KiB of zeroes over a block that holds data returns 65536 and the previous contents read back byte-for-byte after a remount. Correct and cheap when the block was already a hole; data loss when it was not. |
+
+Minor, not pinned: `ntfs_compress_write` returns `int` but assigns a `size_t`
+byte count, so a single write above 2 GiB would overflow the return.
+
+What does work, verified byte-for-byte after remount and `ntfsck`-clean:
+in-place overwrite of compressed files (compressible, incompressible via the
+store-raw fallback, unaligned tails, writes straddling and spanning compression
+blocks) and resident-to-non-resident growth. The sparse read, seek and
+`fallocate` paths are consistent.
+
