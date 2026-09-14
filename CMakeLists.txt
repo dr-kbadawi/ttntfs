@@ -125,6 +125,21 @@ if(NTFS_BUILD_TESTS)
   set_tests_properties(mount PROPERTIES
     ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images")
 
+  # Volume geometry: 4Kn sectors, cluster sizes on either side of the sector
+  # size, and a 16 TiB sparse volume whose metadata sits past the 32-bit byte
+  # mark. Builds its own images with mkntfs and checks them with ntfsck -n.
+  # Several cases pin a CORRUPTION bug: any sector size above 512 destroys the
+  # volume on the first write. See docs/UPSTREAM-BUGS.md finding 15.
+  add_executable(test_geometry core/tests/test_geometry.c)
+  target_link_libraries(test_geometry ntfscore ntfsplatform)
+  target_include_directories(test_geometry PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME geometry COMMAND test_geometry)
+  set_tests_properties(geometry PROPERTIES
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_TOOLS=${CMAKE_CURRENT_SOURCE_DIR}/tools"
+    TIMEOUT 600)
+
   # I/O error paths: reads and writes that fail, a device flush that fails, and
   # a volume that fills up. Wraps a real image's ntfs_bdev in a vtable that
   # refuses on demand, and runs ntfsck -n after every injected fault -- an error

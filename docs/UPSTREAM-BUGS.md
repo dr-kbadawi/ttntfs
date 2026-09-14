@@ -78,3 +78,46 @@ does report `-EIO`. **No injected fault left a volume `ntfsck` called dirty**,
 and no failed mount wrote a single byte, checked with a fingerprint of the whole
 image before and after.
 
+## Finding 15: any sector size but 512 destroys the volume on the first write
+
+The most serious defect found on 2026-09-14, by `core/tests/test_geometry.c`.
+**Mitigated, not fixed.**
+
+A volume whose logical sector size is 1024, 2048 or 4096 bytes mounts, reads
+correctly, and is then destroyed by the first metadata write. One `mkdir` is
+enough: MFT records 0 to 5 come back freshly formatted -- record 0 with
+`link_count` 0 and `bytes_in_use` 0x50, record 5 all zeroes -- and `ntfsck`
+then says `Failed to load $MFT(0), recover from $MFTMirr`. Reproduced
+independently outside the test: format with `mkntfs -s 4096 -c 4096`, confirm
+`ntfsck` clean, mount read-write, one `mkdir` returning 0, volume unmountable.
+
+Isolated carefully:
+
+* a read-only mount is clean; a read-write mount that changes nothing is clean;
+  the first MFT record allocation is what does it
+* **not** the block layer: forcing `logical_block_size` to 512 on a 4Kn volume
+  corrupts it identically
+* **not** the MFT record size: sector 512 with 1024-byte records is clean,
+  sector 1024 with 1024-byte records is not
+* the one variable is `vol->sector_size`, which mount hands to
+  `sb_set_blocksize()` (`core/ntfs/super.c`)
+
+**Mitigation, 2026-09-14:** `super_glue.c` now refuses a read-write mount of any
+volume whose sector size is not 512, reporting `NTFS_RO_UNSUPPORTED`. Reading
+stays available, which is the point of the read-only fallback. The volume is
+left untouched, verified by `ntfsck` after a refused mount. Removing the guard
+makes `test_geometry` fail in 4 places, so it is load-bearing rather than
+decorative.
+
+That is a safety net over a write path that is still wrong. Fixing it properly
+means finding why a non-512 `sector_size` corrupts the MFT during allocation;
+when that is done, drop the guard and flip `write_clean` in `test_geometry.c`,
+which fails until both are done.
+
+**Who this affects.** Not as many disks as it first appears. NTFS records only
+the logical sector size, so a 512e disk -- physically 4 KiB, logically 512, which
+is most external SSDs -- is byte-identical to a 512n one and is unaffected. The
+exposure is true 4Kn disks, and volumes deliberately formatted with a larger
+sector size. `test_geometry.c` pins a 512-sector volume on a 4 KiB-block device
+as refused at mount with `-EINVAL`, which is the other half of that story.
+

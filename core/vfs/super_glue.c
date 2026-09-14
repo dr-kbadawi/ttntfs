@@ -551,6 +551,20 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 		h->ro_reason = NTFS_RO_DIRTY;
 	else if (vol->vol_flags & VOLUME_MUST_MOUNT_RO_MASK)
 		h->ro_reason = NTFS_RO_UNSUPPORTED;
+	/*
+	 * SAFETY NET, not a design choice. A volume whose logical sector size is
+	 * anything but 512 mounts and reads correctly and then destroys itself on
+	 * the first metadata write: MFT records 0-5 come back freshly formatted
+	 * and the volume will not mount again. One mkdir is enough. Measured
+	 * 2026-09-14 at 1024, 2048 and 4096 bytes per sector; see
+	 * docs/UPSTREAM-BUGS.md finding 15, which has the isolation work.
+	 *
+	 * Reading such a volume is safe and stays available, which is the whole
+	 * point of the read-only fallback. Remove this the moment the write path
+	 * is fixed -- test_geometry.c pins both sides and will tell you.
+	 */
+	else if (vol->sector_size != 512)
+		h->ro_reason = NTFS_RO_UNSUPPORTED;
 	else if (!h->logfile_clean)
 		h->ro_reason = NTFS_RO_LOGFILE;
 	else if (NVolErrors(vol))
