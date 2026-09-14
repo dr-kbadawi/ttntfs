@@ -29,6 +29,45 @@ struct MountStatus: Codable, Equatable {
     /// Empty when the journal is clean or the analysis did not run.
     var journalSummary: String = ""
 
+    /*
+     * Decoded by hand because Swift's synthesized decoder ignores property
+     * defaults: a key missing from the JSON throws, default or not. That matters
+     * here because this file survives upgrades. journalSummary was added after
+     * the first builds shipped, so a status file written by an older extension
+     * has no such key -- and since readAll() decodes the whole dictionary in one
+     * go, one old entry made the decode fail and the app showed NO status for
+     * ANY volume until every one of them was remounted. Found by a unit test on
+     * 2026-09-14 that was written expecting the opposite.
+     *
+     * Every field added from here on should be decodeIfPresent with a default,
+     * for the same reason.
+     */
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        bsdName       = try c.decode(String.self, forKey: .bsdName)
+        label         = try c.decode(String.self, forKey: .label)
+        readOnly      = try c.decode(Bool.self,   forKey: .readOnly)
+        roReason      = try c.decode(Int.self,    forKey: .roReason)
+        roReasonText  = try c.decode(String.self, forKey: .roReasonText)
+        dirty         = try c.decode(Bool.self,   forKey: .dirty)
+        hibernated    = try c.decode(Bool.self,   forKey: .hibernated)
+        logfileClean  = try c.decode(Bool.self,   forKey: .logfileClean)
+        coreVersion   = try c.decode(String.self, forKey: .coreVersion)
+        mountedAt     = try c.decode(Date.self,   forKey: .mountedAt)
+        journalSummary = try c.decodeIfPresent(String.self, forKey: .journalSummary) ?? ""
+    }
+
+    /// The memberwise initialiser, which the custom `init(from:)` suppresses.
+    init(bsdName: String, label: String, readOnly: Bool, roReason: Int,
+         roReasonText: String, dirty: Bool, hibernated: Bool, logfileClean: Bool,
+         coreVersion: String, mountedAt: Date, journalSummary: String = "") {
+        self.bsdName = bsdName; self.label = label; self.readOnly = readOnly
+        self.roReason = roReason; self.roReasonText = roReasonText
+        self.dirty = dirty; self.hibernated = hibernated
+        self.logfileClean = logfileClean; self.coreVersion = coreVersion
+        self.mountedAt = mountedAt; self.journalSummary = journalSummary
+    }
+
     /// Human text for ntfs_ro_reason (kept here so the app does not need the C header).
     static func reasonText(_ reason: Int, deviceReadOnly: Bool = false) -> String {
         switch reason {
@@ -50,8 +89,15 @@ struct MountStatus: Codable, Equatable {
         return dir.appendingPathComponent(fileName)
     }
 
-    static func readAll() -> [String: MountStatus] {
-        guard let url = fileURL, let data = try? Data(contentsOf: url) else { return [:] }
+    static func readAll() -> [String: MountStatus] { readAll(from: fileURL) }
+
+    /// Takes the URL so the tests can point at a file they own; the container
+    /// path is fixed and shared with whatever extension process is running.
+    /// A missing or unreadable file is not an error and never throws: nothing
+    /// has been mounted yet is the normal state, and a half-written file must
+    /// leave the app showing no status rather than failing to start.
+    static func readAll(from url: URL?) -> [String: MountStatus] {
+        guard let url, let data = try? Data(contentsOf: url) else { return [:] }
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         return (try? dec.decode([String: MountStatus].self, from: data)) ?? [:]

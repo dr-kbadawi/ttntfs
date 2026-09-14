@@ -211,23 +211,43 @@ final class DiskInventory: ObservableObject {
             if (n.kind == .good) != p.isMounted { note = nil }
         }
 
-        // A result describes one attachment of one disk. Unplugging ends it,
-        // and BSD names are recycled, so the next disk plugged in is disk6 too:
-        // an eject failure shown for the disk that has just been removed
-        // reappeared, unchanged, against the disk that replaced it. Drop a note
-        // as soon as its disk is gone or a different attachment wears its name.
-        if let disk = noteForDisk {
-            let now = found.first { $0.wholeDisk == disk.wholeDisk }
-            if now == nil || (disk.attachmentID != 0 && now!.attachmentID != disk.attachmentID) {
-                noteForDisk = nil
-            }
+        if let disk = noteForDisk,
+           Self.diskNoteHasExpired(wholeDisk: disk.wholeDisk, attachmentID: disk.attachmentID, in: found) {
+            noteForDisk = nil
         }
-        if let n = note {
-            let now = found.first { $0.bsdName == n.bsdName }
-            if now == nil || (n.attachmentID != 0 && now!.attachmentID != n.attachmentID) {
-                note = nil
-            }
+        if let n = note,
+           Self.noteHasExpired(bsdName: n.bsdName, attachmentID: n.attachmentID, in: found) {
+            note = nil
         }
+    }
+
+    // A result describes one attachment of one disk. Unplugging ends it, and
+    // BSD names are recycled, so the next disk plugged in is disk6 too: an
+    // eject failure shown for the disk that had just been removed reappeared,
+    // unchanged, against the disk that replaced it. A note expires as soon as
+    // its disk is gone or a different attachment wears its name.
+    //
+    // Pure and static so it can be tested without IOKit; see NTFSTests.
+
+    /// Whether a per-volume note no longer describes what is on the machine.
+    nonisolated static func noteHasExpired(bsdName: String, attachmentID: UInt64,
+                                           in partitions: [Partition]) -> Bool {
+        hasExpired(attachmentID, partitions.first { $0.bsdName == bsdName })
+    }
+
+    /// The same for a whole-disk note, which is matched by the disk a partition
+    /// lives on: the eject note is about disk6, the partitions are disk6s1...
+    nonisolated static func diskNoteHasExpired(wholeDisk: String, attachmentID: UInt64,
+                                               in partitions: [Partition]) -> Bool {
+        hasExpired(attachmentID, partitions.first { $0.wholeDisk == wholeDisk })
+    }
+
+    private nonisolated static func hasExpired(_ attachmentID: UInt64, _ current: Partition?) -> Bool {
+        guard let current else { return true }        // the disk is gone
+        // attachmentID 0 means the note was made before we knew one. Keeping
+        // such a note is the lenient choice, and the only one available: with
+        // nothing to compare, "same disk" cannot be decided.
+        return attachmentID != 0 && current.attachmentID != attachmentID
     }
 
     // MARK: Actions

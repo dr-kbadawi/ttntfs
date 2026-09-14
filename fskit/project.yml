@@ -172,6 +172,46 @@ targets:
         Release:
           PROVISIONING_PROFILE_SPECIFIER: "TT NTFS Native Ext PP"
 
+  # Unit tests. A logic-test bundle with no host application: the pure code
+  # worth testing is split across the app and the extension, an ExtensionKit
+  # extension cannot host unit tests, and hosting them in the app would run
+  # them against the app group's real mount-status.json. So the files under
+  # test are compiled into the bundle instead, over the stub core -- nothing
+  # here calls into libntfscore, so the tests build without a CMake build
+  # having been done.
+  NTFSTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: NTFSTests
+      - path: Shared
+      - path: NTFSExtension/Options.swift
+      - path: NTFSExtension/Errors.swift          # defines `log`, which Options uses
+      - path: NTFS/DiskInventory.swift
+      - path: NTFS/ModuleEnabler.swift            # DiskInventory.refresh() calls into it
+      - path: NTFS/SharedSettings.swift
+      - path: ../core/stub/ntfscore_stub.c
+        group: Stub
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ch.techtag.ntfs.tests
+        PRODUCT_NAME: NTFSTests
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_OBJC_BRIDGING_HEADER: Bridge/NTFSExtension-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../core/include"
+          - "$(SRCROOT)/../platform/include"
+          - "$(SRCROOT)/Bridge"
+        CLANG_ENABLE_OBJC_ARC: YES
+        # Test bundles are loaded by xctest, never distributed: sign locally and
+        # leave the app's and the extension's signing alone.
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        ENABLE_HARDENED_RUNTIME: NO
+        DEVELOPMENT_TEAM: ""
+
 schemes:
   NTFS:
     build:
@@ -182,3 +222,14 @@ schemes:
       config: Debug
     archive:
       config: Release
+
+  # Separate from the NTFS scheme on purpose: running the tests must not need
+  # ../build/libntfscore.a, which only exists after a CMake build.
+  NTFSTests:
+    build:
+      targets:
+        NTFSTests: [test]
+    test:
+      config: Debug
+      targets:
+        - NTFSTests

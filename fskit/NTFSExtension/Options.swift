@@ -105,7 +105,9 @@ struct MountOptions {
         }
     }
 
-    private mutating func applyList(_ list: String) {
+    // Internal rather than private so the unit tests can drive it directly:
+    // this is the only place an -o list is interpreted.
+    mutating func applyList(_ list: String) {
         for opt in list.split(separator: ",") {
             switch opt.lowercased() {
             case "ro", "rdonly": readOnly = true

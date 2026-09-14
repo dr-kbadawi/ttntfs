@@ -7,14 +7,22 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0FE932E71F3172D65C517356 /* NoteExpiryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF94786F3FEE8A7680967946 /* NoteExpiryTests.swift */; };
 		121312321DF34FF9FD4A2614 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
 		1D98488B3CCD85AE5E2FE4D0 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
+		26B443FBBC3143E710CDD55F /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F30CB423189222B7D3898A /* SharedSettings.swift */; };
 		3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */; };
+		4888F91B5969DE5DA1D96C3D /* ntfscore_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = 21592494DAEE07BF86761556 /* ntfscore_stub.c */; };
+		50638278315C30661B0EB14E /* ModuleEnabler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46E9124D88A86CA415124E8A /* ModuleEnabler.swift */; };
 		5B2411379ACF6F4A93963E62 /* LoginItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B0B51465CA38950094AABD2 /* LoginItem.swift */; };
 		67A44AFE5BD1D0652DBBF55A /* Uninstaller.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC4CCF9F76F32BAC5EB46CBC /* Uninstaller.swift */; };
+		69C51FCF74DDC791DF9FB88B /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3315E373241BC5A5359B9759 /* Errors.swift */; };
+		6E876ED46A85A8404A455361 /* Options.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A89785ABD0C6A5D4BE75297 /* Options.swift */; };
 		70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D88AB6F444249E71E139018 /* VolumeMonitor.swift */; };
+		72C3503AE9116F41E484B5D4 /* MountStatusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59E35CFA95134137ACE993DB /* MountStatusTests.swift */; };
 		747947B10E65D12D8E36C4F3 /* NTFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8A10B01A7F509E33D0A02754 /* NTFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE2682EA100F44295076F7DE /* NTFSExtension.swift */; };
+		9A6F914F0B807B9FE9107F45 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
 		A03A39F6CA160CE1691A5427 /* NTFSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D80DAAE4977838464ED6255 /* NTFSApp.swift */; };
 		A2549823DEA9B9023D99262B /* ModuleEnabler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46E9124D88A86CA415124E8A /* ModuleEnabler.swift */; };
 		A47E2521C83A6E5A365131F8 /* ntfscore_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = 21592494DAEE07BF86761556 /* ntfscore_stub.c */; };
@@ -23,10 +31,12 @@
 		ADA25FC06F27ED6F37F71075 /* ExtensionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */; };
 		B918A3CCC2D1D2E71DA50A82 /* MenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 88488AA353AAC885FE74E9F9 /* MenuView.swift */; };
 		B971CE42F874331618BF0199 /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F30CB423189222B7D3898A /* SharedSettings.swift */; };
+		B9A9FCB9074172A708781239 /* MountOptionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F0EECD48947D4F9073B01BC /* MountOptionsTests.swift */; };
 		BF98677B5A8DB1AA94BE67F8 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
 		C2A57306E42C69D67937E131 /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3315E373241BC5A5359B9759 /* Errors.swift */; };
 		D16A3E6461DFA2F3C812AC47 /* NTFSVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = B389C0EB1D9C689FA426953F /* NTFSVolume.swift */; };
 		D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */; };
+		DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
 		F0989E06E6B8D261A2BE925E /* ntfs_bdev_fskit.m in Sources */ = {isa = PBXBuildFile; fileRef = 3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */; settings = {COMPILER_FLAGS = "-fno-modules"; }; };
 		F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 223EFAF44C74CB35E5902EFC /* SettingsView.swift */; };
 /* End PBXBuildFile section */
@@ -56,6 +66,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		167B746C76BF2F4D73289246 /* NTFSTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NTFSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		1D88AB6F444249E71E139018 /* VolumeMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VolumeMonitor.swift; sourceTree = "<group>"; };
 		21592494DAEE07BF86761556 /* ntfscore_stub.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = ntfscore_stub.c; path = ../core/stub/ntfscore_stub.c; sourceTree = "<group>"; };
 		223EFAF44C74CB35E5902EFC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
@@ -67,6 +78,7 @@
 		46E9124D88A86CA415124E8A /* ModuleEnabler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleEnabler.swift; sourceTree = "<group>"; };
 		49CC0869C89E4C38774395AC /* MountStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountStatus.swift; sourceTree = "<group>"; };
 		58F792F8227F5EA72F72433B /* Confirm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Confirm.swift; sourceTree = "<group>"; };
+		59E35CFA95134137ACE993DB /* MountStatusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountStatusTests.swift; sourceTree = "<group>"; };
 		67642D3967176F0F3848BF48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7A89785ABD0C6A5D4BE75297 /* Options.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Options.swift; sourceTree = "<group>"; };
 		7D80DAAE4977838464ED6255 /* NTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSApp.swift; sourceTree = "<group>"; };
@@ -74,8 +86,10 @@
 		88488AA353AAC885FE74E9F9 /* MenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuView.swift; sourceTree = "<group>"; };
 		8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = NTFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		9B0B51465CA38950094AABD2 /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
+		9F0EECD48947D4F9073B01BC /* MountOptionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountOptionsTests.swift; sourceTree = "<group>"; };
 		A3736E04BD94D01BF34B5ADD /* NTFSExtension-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "NTFSExtension-Bridging-Header.h"; sourceTree = "<group>"; };
 		A69E766B5F4D89F7E9A6EF54 /* NTFSExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NTFSExtension.entitlements; sourceTree = "<group>"; };
+		AF94786F3FEE8A7680967946 /* NoteExpiryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NoteExpiryTests.swift; sourceTree = "<group>"; };
 		B26FF508F1A90A37416CBD99 /* DiskInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskInventory.swift; sourceTree = "<group>"; };
 		B382EF12119CB428297CCB7B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B389C0EB1D9C689FA426953F /* NTFSVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSVolume.swift; sourceTree = "<group>"; };
@@ -123,6 +137,16 @@
 			path = NTFS;
 			sourceTree = "<group>";
 		};
+		168529527E28750DBE6E50CD /* NTFSTests */ = {
+			isa = PBXGroup;
+			children = (
+				9F0EECD48947D4F9073B01BC /* MountOptionsTests.swift */,
+				59E35CFA95134137ACE993DB /* MountStatusTests.swift */,
+				AF94786F3FEE8A7680967946 /* NoteExpiryTests.swift */,
+			);
+			path = NTFSTests;
+			sourceTree = "<group>";
+		};
 		33EDF5C75C363D794D8D58F2 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
@@ -164,6 +188,7 @@
 				475B00E6072BC0CE74677AF4 /* Config */,
 				041363860B3DB1C67B5D663E /* NTFS */,
 				02D659AB1C3A0C8F08BE9A5F /* NTFSExtension */,
+				168529527E28750DBE6E50CD /* NTFSTests */,
 				33EDF5C75C363D794D8D58F2 /* Shared */,
 				64E5222DC489967AF36A743D /* Stub */,
 				BD6F6AE27F063FC8CF12AC15 /* Products */,
@@ -175,6 +200,7 @@
 			children = (
 				F0994252735E8DC1C493157B /* NTFS.app */,
 				8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */,
+				167B746C76BF2F4D73289246 /* NTFSTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -218,6 +244,23 @@
 			productReference = F0994252735E8DC1C493157B /* NTFS.app */;
 			productType = "com.apple.product-type.application";
 		};
+		F9CD1262B49E98BC4B37EF85 /* NTFSTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BE60E51B22CD0BF93A7292CD /* Build configuration list for PBXNativeTarget "NTFSTests" */;
+			buildPhases = (
+				5171472640FC43DFB9D558FF /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NTFSTests;
+			packageProductDependencies = (
+			);
+			productName = NTFSTests;
+			productReference = 167B746C76BF2F4D73289246 /* NTFSTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -232,6 +275,10 @@
 					};
 					ACDDED9AC001243BCEC42613 = {
 						DevelopmentTeam = "$(NTFS_TEAM_ID)";
+					};
+					F9CD1262B49E98BC4B37EF85 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
 					};
 				};
 			};
@@ -251,11 +298,29 @@
 			targets = (
 				ACDDED9AC001243BCEC42613 /* NTFS */,
 				9727C5B03DACEC3085AC7BC5 /* NTFSExtension */,
+				F9CD1262B49E98BC4B37EF85 /* NTFSTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
+		5171472640FC43DFB9D558FF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */,
+				69C51FCF74DDC791DF9FB88B /* Errors.swift in Sources */,
+				50638278315C30661B0EB14E /* ModuleEnabler.swift in Sources */,
+				B9A9FCB9074172A708781239 /* MountOptionsTests.swift in Sources */,
+				9A6F914F0B807B9FE9107F45 /* MountStatus.swift in Sources */,
+				72C3503AE9116F41E484B5D4 /* MountStatusTests.swift in Sources */,
+				0FE932E71F3172D65C517356 /* NoteExpiryTests.swift in Sources */,
+				6E876ED46A85A8404A455361 /* Options.swift in Sources */,
+				26B443FBBC3143E710CDD55F /* SharedSettings.swift in Sources */,
+				4888F91B5969DE5DA1D96C3D /* ntfscore_stub.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		65F633C8F8764BEB1B969C69 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -392,6 +457,36 @@
 			};
 			name = Debug;
 		};
+		8B526199E9822B86006B409F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../core/include",
+					"$(SRCROOT)/../platform/include",
+					"$(SRCROOT)/Bridge",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs.tests;
+				PRODUCT_NAME = NTFSTests;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Bridge/NTFSExtension-Bridging-Header.h";
+			};
+			name = Debug;
+		};
 		A1451E897FF04E3C5E82C96A /* Release */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 8405521593E3450B24B859E3 /* Shared.xcconfig */;
@@ -522,6 +617,36 @@
 			};
 			name = Debug;
 		};
+		F380F5332DCCD1B426347F4A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/../core/include",
+					"$(SRCROOT)/../platform/include",
+					"$(SRCROOT)/Bridge",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = ch.techtag.ntfs.tests;
+				PRODUCT_NAME = NTFSTests;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = "Bridge/NTFSExtension-Bridging-Header.h";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -539,6 +664,15 @@
 			buildConfigurations = (
 				6F62EB16C9998AD4637978B0 /* Debug */,
 				51F1493EFEF9C6DB3A4611DC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		BE60E51B22CD0BF93A7292CD /* Build configuration list for PBXNativeTarget "NTFSTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8B526199E9822B86006B409F /* Debug */,
+				F380F5332DCCD1B426347F4A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
