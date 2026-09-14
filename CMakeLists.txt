@@ -125,6 +125,33 @@ if(NTFS_BUILD_TESTS)
   set_tests_properties(mount PROPERTIES
     ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images")
 
+  # I/O error paths: reads and writes that fail, a device flush that fails, and
+  # a volume that fills up. Wraps a real image's ntfs_bdev in a vtable that
+  # refuses on demand, and runs ntfsck -n after every injected fault -- an error
+  # the driver swallows becomes silent corruption on someone's disk.
+  add_executable(test_faults core/tests/test_faults.c)
+  target_link_libraries(test_faults ntfscore ntfsplatform)
+  target_include_directories(test_faults PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME faults COMMAND test_faults)
+  set_tests_properties(faults PROPERTIES
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+
+  # Crash consistency: the write ordering in platform/src/inode.c is the only
+  # thing between an interrupted operation and a volume whose next allocation
+  # overwrites live data. Records a sync's device writes and asserts the order,
+  # then cuts real operations short at sampled write counts and asks ntfsck.
+  add_executable(test_crash core/tests/test_crash.c)
+  target_link_libraries(test_crash ntfscore ntfsplatform)
+  target_include_directories(test_crash PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/logfile
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME crash COMMAND test_crash)
+  set_tests_properties(crash PROPERTIES
+    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+
   # Large directories: the index B-tree. Nothing exercised a directory past a
   # handful of entries, so ntfs_ib_split(), ntfs_ir_reparent(),
   # ntfs_index_rm_node/_rm_leaf() and ntfs_ih_takeout() had never run under a

@@ -51,3 +51,21 @@ store-raw fallback, unaligned tails, writes straddling and spanning compression
 blocks) and resident-to-non-resident growth. The sparse read, seek and
 `fallocate` paths are consistent.
 
+## Error handling: three findings from fault injection (2026-09-14)
+
+Found by `core/tests/test_faults.c`, the first fault injection this project has
+had. All pinned; each pin says "invert when fixed".
+
+| # | Where | Symptom |
+|---|---|---|
+| 12 | `core/vfs/file.c` `ntfs_fsync`, `core/ntfs/super.c` `ntfs_sync_fs` | **A failed device flush is silently dropped.** With the barrier refused, `ntfs_fsync()` and `ntfs_volume_sync()` both return **0**. fsync's entire contract is broken: the caller is told the data is on stable storage while it sits in a volatile write cache, which is exactly the case a power cut then loses. Both call sites discard the return (`blkdev_issue_flush(...)` with no assignment). **This is a porting bug, not upstream's**: in Linux `blkdev_issue_flush()` returns `void` and the error surfaces through the bdev mapping's writeback error, which this port does not have. Our shim gave it an `int` return (an `F_FULLFSYNC`) and nothing reads it. |
+| 13 | `core/vfs/super_glue.c` | **`ro_reason` is never set when errors force a read-only switch.** After every metadata write is refused the volume correctly drops to read-only, but `ntfs_volume_get_info()` reports `ro_reason = NTFS_RO_NONE`. `NTFS_RO_ERRORS` exists in the ABI for exactly this and nothing assigns it, so the menu bar tells the user their disk went read-only for no stated reason when the true reason is failing hardware and they should copy data off now. |
+| 14 | mount path | **An I/O error at mount is reported as `-EINVAL`.** A read failure on the boot sector, on `$MFT` record 0, or on the root directory's record all return `-EINVAL`, the same errno as a genuinely non-NTFS partition, and the log says "Not an NTFS volume". A user with a dying disk or a flaky cable is told their partition is not NTFS, which is the sentence that makes people reformat. `-EIO` is the honest answer. `$MFTMirr` is the one case that behaves, returning `-EROFS`. |
+
+Verified not to be problems: `ntfs_volume_sync` returning 0 after a data write
+failure is correct, because fsync already reported it and errors report once; a
+torn buffered write returning the full count is correct, and the following sync
+does report `-EIO`. **No injected fault left a volume `ntfsck` called dirty**,
+and no failed mount wrote a single byte, checked with a fingerprint of the whole
+image before and after.
+
