@@ -11,12 +11,22 @@ Phases 0 to 3 are done. Real NTFS disks mount read/write in Finder on macOS 26.3
 and 26.6.2, from a notarized Developer ID DMG whose app enables its own
 extension.
 
-**Treat writes as unproven for data you cannot replace.** `chkdsk` has never
-inspected anything this driver wrote. That is the one gate that matters and it
-needs a Windows PC; see `docs/TESTING.md`.
+**Windows has checked our writes.** On 2026-09-14 `chkdsk /f` (Windows 10,
+19045) reported no problems on a volume this driver had written 626 files to --
+covering the resident/non-resident boundary, fragmented 200 MiB files, a
+500-entry index B-tree, 255-unit and CJK and NFC-vs-NFD names, alternate data
+streams, hard links, symlinks, and a delete/rename churn -- and all 626 files
+then verified byte-for-byte on the way back. Both halves matter: chkdsk repairs
+what it finds, so a clean verdict alone would not have been enough. Procedure
+and scripts are in `tools/phase2-gate/`.
+
+That is one Windows build, one disk, one pass; it is not a warranty. Journal
+replay remains the unproven part -- see below -- so keep a backup of anything
+you cannot replace.
 
 Journal replay is off unless you ask for it per volume, at your own risk: the
-v2.0 record layout is inferred rather than verified. A volume Windows left dirty
+v2.0 record layout is inferred rather than verified, and the apply path has only
+ever run against synthetic logs. **This is the one remaining gate.** A volume Windows left dirty
 or hibernated mounts read-only with the reason shown, and the app offers to fix
 either with the cost spelled out.
 

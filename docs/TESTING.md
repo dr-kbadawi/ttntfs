@@ -76,10 +76,17 @@ of a skip. CI sets it.
 
 Being explicit about this is the point of the document.
 
-* **`chkdsk` has never seen anything we wrote.** This is the phase 2 gate.
-  ntfsprogs-plus is a good structural check and it runs on every commit, but
-  Windows defines NTFS: agreement with a third-party checker is evidence, not
-  proof. Needs a physical Windows PC; the procedure is `docs/LOGFILE.md` §7.
+* ~~**`chkdsk` has never seen anything we wrote.**~~ **Closed 2026-09-14.**
+  `chkdsk /f` on Windows 10 (19045) found no problems on a volume this driver
+  wrote 626 files to, and all 626 verified byte-for-byte afterwards. Its own
+  counts corroborate what we wrote: +2 reparse records for our two symlinks,
+  +618 index entries, +16 data files for the alternate data streams. Procedure
+  and scripts: `tools/phase2-gate/`.
+
+  What that does **not** cover, and is worth stating: one Windows build, one
+  disk, one pass. Compressed writes were not exercised, because this driver
+  cannot create a compressed file (`ntfs_create` never sets the flag), so only
+  a volume Windows compressed would test that path end to end.
 * **Journal replay has only ever run against synthetic logs.** The v2.0 record
   layout is inferred from a single source (`docs/LOGFILE.md` §5). Replay is
   therefore off unless a user asks for it per volume, at their own risk.

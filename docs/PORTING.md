@@ -11,8 +11,10 @@ only on an explicit per-volume instruction; its apply path has still only run
 against synthetic logs. Phase 5 in progress: metadata and write throughput now
 meet the "within 2× of Apple's exFAT" bar except random 4 KiB writes, which is
 the macOS buffer cache rather than this driver. `fsck.ntfs` runs on every write
-test, and `tools/ci.sh` runs every suite that needs no hardware. **The two open gates are both `chkdsk`:**
-the write path has never been checked by Windows, and neither has replay. No
+test, and `tools/ci.sh` runs every suite that needs no hardware. **Phase 2 closed on 2026-09-14**: `chkdsk /f` found no problems on a volume
+this driver wrote, and the data verified byte-for-byte afterwards. The one
+remaining gate is phase 4: journal replay has still only run against synthetic
+logs. No
 x86_64 build, no `mkfs`/`fsck` in the app, no Homebrew cask. See
 `docs/progress/*.md` for the detail and the current numbers.
 
@@ -166,7 +168,7 @@ Design rules:
 |---|---|---|
 | 0 | Skeleton: `platform/` headers, Tier 0/1 files compile with clang on macOS, stubs for Tier 2 | `make` produces `libntfscore.a` for arm64 |
 | 1 | **Read path**: mount image, `ls`, `stat`, `cat`, compressed/sparse/ADS files, Unicode names | `ntfscli` output matches `ntfsls`/`ntfscat` and a Linux 7.1 mount on a corpus of Windows-formatted images |
-| 2 | **Write path**: create, write, truncate, mkdir, rename, unlink, xattr, timestamps, permissions | `chkdsk /f` reports clean after every test on a Windows VM; `fsck.ntfs` (ntfsprogs-plus) clean **[done 2026-09-13: all 7 fixtures, every run, see tools/README.md]**; xfstests-style cases pass in `ntfscli` |
+| 2 | **Write path**: create, write, truncate, mkdir, rename, unlink, xattr, timestamps, permissions | **DONE 2026-09-14.** `chkdsk /f` on Windows 10 (19045) reported no problems on a volume this driver wrote 626 files to, and all 626 verified byte-for-byte afterwards -- chkdsk repairs what it finds, so the second check is half the gate. Procedure and scripts: `tools/phase2-gate/`. `fsck.ntfs` (ntfsprogs-plus) also runs clean on every fixture on every commit. |
 | 3 | **FSKit extension + host app**: probe, auto-mount, unmount, read-only fallback for dirty volumes, menu-bar status | An NTFS USB drive mounts in Finder on plug-in with no terminal, no Recovery, no reboot; survives unplug |
 | 4 | **`$LogFile` replay** — our own module; no open implementation currently works | Volumes left dirty by Windows Fast Startup mount rw and `chkdsk` agrees with the result |
 | 5 | Performance, x86_64 build, `mkfs`/`fsck` in the app, notarized DMG + Homebrew cask | Throughput at device speed on USB 3 / Thunderbolt SSDs; metadata ops within 2× of Apple's exFAT FSKit module |
