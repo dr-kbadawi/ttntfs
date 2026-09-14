@@ -245,7 +245,7 @@ static int load_table_record(ntfs_logfile_t *log, uint64_t lsn, struct lfs_table
 	if (err)
 		return lfs_seterr(log, err, "%s table: cannot read record at lsn 0x%llx", what,
 				  (unsigned long long)lsn);
-	if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry)) {
+	if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry, NULL)) {
 		lfs_free_record(&rec);
 		return lfs_seterr(log, -EINVAL, "%s table: malformed client record", what);
 	}
@@ -268,7 +268,7 @@ static int load_attr_names(ntfs_logfile_t *log, uint64_t lsn)
 	err = lfs_read_record(log, lsn, &rec);
 	if (err)
 		return lfs_seterr(log, err, "attribute names: cannot read record");
-	if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry)) {
+	if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry, NULL)) {
 		lfs_free_record(&rec);
 		return lfs_seterr(log, -EINVAL, "attribute names: malformed client record");
 	}

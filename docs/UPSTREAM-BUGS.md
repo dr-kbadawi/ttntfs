@@ -228,3 +228,56 @@ reaches the writable instance, the dry run accounts for every record, the writes
 land, and Windows subsequently finds the volume clean. What is still unknown is
 whether the *content* of those writes is correct -- chkdsk validates structure,
 not intent -- and that remains the open part of phase 4.
+
+## Finding 18: replay refuses a record Windows accepts — **OPEN**
+
+The first end-to-end phase 4 ground-truth run, 2026-09-15, on a real Windows 10
+dirty v2.0 journal (`tools/phase4-capture/captures/run2-dirty.img`, kept).
+
+**The good half.** Our analysis identified exactly the right work. It planned
+`InitializeFileRecordSegment` on MFT records 43 and 44; before replay both were
+all zeros, and after Windows replayed the same journal record 43 was an in-use
+**directory** and record 44 an in-use **file** -- matching the directory and file
+created on Windows before the stick was yanked. The engine's understanding of
+this journal is correct.
+
+**The bad half.** We never applied any of it. The dry run refused:
+
+    redo: malformed client record at lsn 0x204c8d:
+    redo data runs past the end of the record
+
+and `needs_chkdsk` was set, so `--apply` correctly wrote nothing -- verified by
+diffing our output against the input: **0 changed regions**. That refusal is also
+the `-22` the driver reports when mounting this volume.
+
+**The record, exactly:**
+
+    redo_off 40  redo_len 4  undo_off 40  undo_len 0  data_len 40  lcns 1  target 0x18
+
+`NR_HEADER_SIZE` (32) + `8 * lcns` (8) = 40, so the redo payload begins
+immediately after the LCN array, which is sensible framing. But `data_len` says
+the record ends at 40, so `40 + 4 > 40` and `lfs_check_client_rec()` rejects it.
+
+**Windows replayed this record without complaint**, so the record is not
+malformed -- our validator is too strict, or our `data_len` is short by at least
+four bytes.
+
+Two candidate causes, not yet distinguished:
+
+1. **Our reassembly truncates a record that spans a page boundary.**
+   `docs/LOGFILE.md` §5 already lists "v2.0 multi-page tail transfers --
+   simplified vs fslog.c (page-by-page through `file_off`), inferred" as a known
+   simplification. This is the shape that simplification would produce.
+2. **Windows' own framing permits redo data beyond the declared length**, and
+   reads it from the page buffer without checking. Then the check itself is
+   wrong rather than the input.
+
+**Do not simply delete the check.** It exists to stop a read running off the end
+of a buffer. The fix has to either recover the missing bytes (if they are in the
+page) or treat the payload as absent rather than failing the entire replay.
+
+Also fixed here, and worth keeping regardless: `lfs_check_client_rec()` now
+reports **which** of its six checks failed. It previously said only "malformed
+client record", which was the sum total of the evidence for a rejection that
+turned out to be wrong.
+

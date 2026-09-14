@@ -201,14 +201,27 @@ static bool op_needs_target(uint16_t op)
 }
 
 /* Sanity checks on an NTFS client record before it is interpreted. */
-bool lfs_check_client_rec(const struct lfs_record *rec, uint32_t bytes_per_attr_entry)
+/*
+ * Validate a client record's framing.
+ *
+ * @why, when non-NULL, receives which check failed. That is not a nicety: on
+ * 2026-09-15 this function rejected a record in a real Windows 10 journal that
+ * Windows itself then replayed without complaint, and "malformed client record"
+ * was all the evidence there was. A validator that can be wrong has to say how.
+ */
+bool lfs_check_client_rec(const struct lfs_record *rec, uint32_t bytes_per_attr_entry,
+			  const char **why)
 {
 	const uint8_t *lr = rec->data;
 	uint16_t redo_off, redo_len, undo_off, undo_len, lcns, target;
 	uint32_t hdr_len;
 
+#define REJECT(reason) do { if (why) *why = (reason); return false; } while (0)
+
+	if (why)
+		*why = NULL;
 	if (rec->data_len < NR_HEADER_SIZE)
-		return false;
+		REJECT("shorter than the record header");
 	redo_off = lf_get16(lr + NR_REDO_OFFSET);
 	redo_len = lf_get16(lr + NR_REDO_LENGTH);
 	undo_off = lf_get16(lr + NR_UNDO_OFFSET);
@@ -216,23 +229,25 @@ bool lfs_check_client_rec(const struct lfs_record *rec, uint32_t bytes_per_attr_
 	lcns = lf_get16(lr + NR_LCNS_TO_FOLLOW);
 	target = lf_get16(lr + NR_TARGET_ATTRIBUTE);
 	if ((redo_off & 7) || (undo_off & 7))
-		return false;
+		REJECT("redo or undo offset is not 8-byte aligned");
 	if (!target) {
 		if (op_needs_target(lf_get16(lr + NR_REDO_OP)) ||
 		    op_needs_target(lf_get16(lr + NR_UNDO_OP)))
-			return false;
+			REJECT("no target attribute, but the operation needs one");
 	}
 	if (lcns && target && bytes_per_attr_entry &&
 	    (target < RT_HEADER_SIZE || (target - RT_HEADER_SIZE) % bytes_per_attr_entry))
-		return false;
+		REJECT("target attribute is not on an open-attribute-table boundary");
 	hdr_len = NR_HEADER_SIZE + 8u * (lcns ? lcns : 1);
 	if (rec->data_len < hdr_len)
-		return false;
+		REJECT("too short for the LCNs it declares");
 	if (redo_len && (uint32_t)redo_off + redo_len > rec->data_len)
-		return false;
+		REJECT("redo data runs past the end of the record");
 	if (undo_len && (uint32_t)undo_off + undo_len > rec->data_len)
-		return false;
+		REJECT("undo data runs past the end of the record");
 	return true;
+
+#undef REJECT
 }
 
 int lfs_decode_record(const struct lfs_record *rec, struct ntfs_log_record *out)

@@ -1491,7 +1491,7 @@ static int analysis_pass(struct replay *r, uint64_t *rlsn_out)
 			rlsn = lsn;
 		if (lf_get32(rec.hdr + LR_RECORD_TYPE) != LFS_RECORD_TYPE_CLIENT)
 			continue;
-		if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry)) {
+		if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry, NULL)) {
 			lfs_free_record(&rec);
 			return lfs_seterr(log, -EINVAL, "analysis: malformed client record at lsn 0x%llx",
 					  (unsigned long long)lsn);
@@ -1731,10 +1731,15 @@ static int redo_pass(struct replay *r, uint64_t rlsn)
 
 		if (lf_get32(rec.hdr + LR_RECORD_TYPE) != LFS_RECORD_TYPE_CLIENT)
 			goto next_rec;
-		if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry)) {
-			lfs_free_record(&rec);
-			return lfs_seterr(log, -EINVAL, "redo: malformed client record at lsn 0x%llx",
-					  (unsigned long long)lsn);
+		{
+			const char *why = NULL;
+
+			if (!lfs_check_client_rec(&rec, log->bytes_per_attr_entry, &why)) {
+				lfs_free_record(&rec);
+				return lfs_seterr(log, -EINVAL,
+						  "redo: malformed client record at lsn 0x%llx: %s",
+						  (unsigned long long)lsn, why ? why : "?");
+			}
 		}
 		lcns = lf_get16(lr + NR_LCNS_TO_FOLLOW);
 		if (!lcns)
@@ -1842,7 +1847,7 @@ static int undo_pass(struct replay *r)
 			if (err)
 				return err;
 			if (lf_get32(rec.hdr + LR_RECORD_TYPE) != LFS_RECORD_TYPE_CLIENT ||
-			    !lfs_check_client_rec(&rec, log->bytes_per_attr_entry)) {
+			    !lfs_check_client_rec(&rec, log->bytes_per_attr_entry, NULL)) {
 				lfs_free_record(&rec);
 				return lfs_seterr(log, -EINVAL, "undo: malformed record at lsn 0x%llx",
 						  (unsigned long long)lsn);

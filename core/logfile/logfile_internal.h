@@ -142,7 +142,8 @@ int lfs_tail_scan(ntfs_logfile_t *log);
 int lfs_read_record(ntfs_logfile_t *log, uint64_t lsn, struct lfs_record *rec);
 void lfs_free_record(struct lfs_record *rec);
 int lfs_next_lsn(ntfs_logfile_t *log, const struct lfs_record *rec, uint64_t *next);
-bool lfs_check_client_rec(const struct lfs_record *rec, uint32_t bytes_per_attr_entry);
+bool lfs_check_client_rec(const struct lfs_record *rec, uint32_t bytes_per_attr_entry,
+			  const char **why);
 int lfs_decode_record(const struct lfs_record *rec, struct ntfs_log_record *out);
 
 /* logfile_tables.c */
