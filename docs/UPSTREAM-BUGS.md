@@ -162,3 +162,52 @@ Worth noting how this was found: the agent that met it said plainly that it had
 left it alone and not recorded it. It surfaced only because the whole set of
 agent reports was re-read against what had actually been done.
 
+## Finding 17: journal replay was unreachable, and is not atomic when it runs
+
+Found 2026-09-14 on the first real dirty volume this feature has ever met: a
+Windows 10 v2.0 journal on a USB stick. Two distinct defects, one fixed.
+
+### 17a: the one-shot request was eaten by the read-only probe **FIXED**
+
+Disk Arbitration loads the extension **twice** for one mount: a probe instance
+with a read-only handle, then a serving instance with a writable one, in a
+different process. `loadResource` consumed the app's one-shot replay request in
+whichever arrived first. That was always the probe, which then refused the very
+work it had claimed, because `ntfs_logfile_replay_device()` returns `-EROFS` on
+a read-only device. The serving instance found nothing pending.
+
+Measured: pid 41749 `(ro)` took the request; pid 41750, the one that could have
+acted, never saw it. So **the Replay Journal button had never done anything, on
+any volume, ever** -- and silently, because the refusal was logged by an
+instance that was about to be torn down.
+
+Fixed in `NTFSFileSystem.loadResource`: one-shot requests are only consumed on a
+writable handle. The hibernation discard request had the identical bug and the
+identical fix. Verified: the writable instance now takes the request and the
+core logs its result.
+
+### 17b: a part-way failure leaves the volume modified — **OPEN**
+
+With 17a fixed, replay ran and failed: `Replay failed part-way (-5). The volume
+may be inconsistent.` The comment in `super_glue.c` claims "a refusal leaves the
+volume exactly as it was". That is not true of this path.
+
+`ntfs_logfile_replay()` builds every change in an in-memory overlay and only
+flushes if the whole plan succeeded, which protects against *planning* failures.
+It does not protect against a failure *during the flush*: records are written
+one at a time, so an error part-way leaves the earlier ones on disk.
+
+Measured on the stick, before versus after: `$MFT` records **30 and 32
+changed** (`$TxfLog` and `$Tops`), while `$LogFile`, `$MFTMirr` and `$Bitmap`
+were untouched and both user files still read byte-for-byte. The changes are
+legitimate redo work -- new `$LogFile` LSNs stamped on the records, advanced
+mtimes, two counters incremented -- applied and then abandoned half way.
+
+Unresolved: why the flush returned `-EIO`. The device was open read-write and
+the same device accepted the reads around it.
+
+What this needs: the flush has to be all-or-nothing, or the failure has to leave
+a record of how far it got so a retry can resume rather than restart. Until
+then, replay can leave a volume in a state only chkdsk can judge -- which is
+what the message now tells the user to do, and is the right advice.
+

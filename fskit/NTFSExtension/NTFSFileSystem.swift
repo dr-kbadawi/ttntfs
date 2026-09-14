@@ -96,15 +96,34 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         let name = NTFSFileSystem.label(from: info)
         var mountOptions = MountOptions.fromDefaults()
         mountOptions.apply(taskOptions: options)
-        // A one-shot request from the app, consumed here so it cannot apply
-        // twice. The core still refuses unless the volume is otherwise clean.
-        if MountOptions.takeJournalReplayRequest(for: block.bsdName) {
-            mountOptions.replayJournal = true
-            log.notice("\(block.bsdName, privacy: .public): replaying the journal at the user's request")
-        }
-        if MountOptions.takeHibernationDiscardRequest(for: block.bsdName) {
-            mountOptions.discardHibernation = true
-            log.notice("\(block.bsdName, privacy: .public): discarding the saved Windows hibernation image at the user's request")
+        /*
+         * One-shot requests from the app, consumed here so they cannot apply
+         * twice -- but ONLY on a writable device.
+         *
+         * Disk Arbitration loads this extension twice for one mount: a probe
+         * instance with a read-only handle, then a serving instance with a
+         * writable one, in a different process. Both reach this line. The probe
+         * instance used to consume the request and then refuse the very work it
+         * had claimed, because ntfs_logfile_replay_device() returns -EROFS on a
+         * read-only device -- so the serving instance found nothing pending and
+         * the Replay Journal button silently did nothing. Measured 2026-09-14 on
+         * a real Windows v2.0 dirty volume: pid 41749 "(ro)" took the request,
+         * and pid 41750, the one that could have acted on it, never saw it.
+         *
+         * Leaving the request pending on a read-only handle is safe: it is keyed
+         * by BSD name and the serving instance arrives milliseconds later.
+         */
+        if ntfs_bdev_fskit_is_read_only(dev) {
+            log.debug("\(block.bsdName, privacy: .public): read-only handle; leaving one-shot requests pending")
+        } else {
+            if MountOptions.takeJournalReplayRequest(for: block.bsdName) {
+                mountOptions.replayJournal = true
+                log.notice("\(block.bsdName, privacy: .public): replaying the journal at the user's request")
+            }
+            if MountOptions.takeHibernationDiscardRequest(for: block.bsdName) {
+                mountOptions.discardHibernation = true
+                log.notice("\(block.bsdName, privacy: .public): discarding the saved Windows hibernation image at the user's request")
+            }
         }
         if mountOptions.kernelReadOnly { _ = ntfs_bdev_fskit_set_read_only(dev, true) }
 
