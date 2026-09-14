@@ -63,6 +63,15 @@ add_custom_target(ntfscore_merged ALL DEPENDS ${NTFS_MERGED_LIB})
 if(NTFS_BUILD_TESTS)
   enable_testing()
 
+  # The $LogFile module keeps its own CMake project so it can be built alone.
+  # Pull its tests in here as well: for a day they existed but were never run by
+  # `ctest --test-dir build`, which is how a stale header that aborted ntfslog,
+  # and an ASan hang that stopped logfile_unit's 243 checks from executing, both
+  # went unnoticed. A test nobody runs is not coverage.
+  set(NTFS_LOGFILE_TOOLS ON CACHE BOOL "" FORCE)
+  set(NTFS_IMAGES "${CMAKE_CURRENT_SOURCE_DIR}/tools/images" CACHE PATH "" FORCE)
+  add_subdirectory(core/logfile logfile-tools)
+
   add_executable(test_inode platform/tests/test_inode.c)
   target_link_libraries(test_inode ntfsplatform)
   add_test(NAME platform_inode COMMAND test_inode)

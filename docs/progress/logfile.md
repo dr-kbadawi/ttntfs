@@ -49,3 +49,28 @@ Owner: logfile agent. Paths: `core/logfile/`, `docs/LOGFILE.md`.
   accepts it.
 - v2.0 multi-page tail transfers are matched page by page through `file_off`, not
   reassembled as one transfer as fslog.c does.
+
+## 2026-09-14: the unit tests were not running
+
+Two faults, found while auditing test coverage. Both made existing tests silent
+rather than failing, which is worse than having none.
+
+1. **`logfile_unit` hung forever.** The ASan/UBSan runtime deadlocks inside
+   `__asan::AsanInitInternal()` on macOS 26 / Apple Silicon, before `main()`.
+   The 243 checks never executed, `ctest` never returned, and a runaway process
+   sat burning a core -- one had been doing so for 23h29m when it was noticed.
+   Because `logfile_unit` runs first, it also blocked `logfile_images`. The
+   suite itself is healthy: without the sanitizer it finishes in 0.4 s with
+   243 checks and 0 failures. Sanitizers are now opt-in
+   (`-DNTFS_LOGFILE_SANITIZE=ON`).
+2. **Nothing ran this suite anyway.** It lives in its own CMake project, so
+   `ctest --test-dir build` -- the command used all through development -- only
+   ever ran the four platform tests. The top-level build now pulls the logfile
+   tests in; `ctest` reports 6.
+
+That second gap is what let commit 2524eb3 leave untracked pre-move copies of
+`ntfs_image.{c,h}` in `cli/`, where a quote-include beside `ntfslog.c` picked
+the stale header. Its `struct ntfs_image` predates the `io` member added at the
+front, so every field access was off by 32 bytes and `ntfslog` aborted with
+SIGABRT on a clean fixture for a day. `logfile_images` runs `ntfslog` over every
+fixture and would have caught it the same minute.

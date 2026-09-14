@@ -43,7 +43,11 @@ if(PROJECT_IS_TOP_LEVEL OR NTFS_LOGFILE_TOOLS)
 	# Minimal NTFS image access (boot sector, MFT record 0/2, run lists)
 	# shared by the CLI and the tests.
 	add_library(ntfslogimg STATIC ntfs_image.c)
-	target_include_directories(ntfslogimg PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/cli)
+	# The logfile root, where ntfs_image.h lives. It used to be cli/, and
+	# leaving that stale entry here is what let an untracked pre-move copy of
+	# the header shadow the real one for cli/ntfslog.c (quote-include looks
+	# beside the including file first) and abort ntfslog at runtime.
+	target_include_directories(ntfslogimg PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 	target_link_libraries(ntfslogimg PUBLIC ntfslogfile)
 	target_compile_options(ntfslogimg PRIVATE ${NTFS_LOGFILE_WARNINGS})
 
@@ -52,9 +56,24 @@ if(PROJECT_IS_TOP_LEVEL OR NTFS_LOGFILE_TOOLS)
 	target_compile_options(ntfslog PRIVATE ${NTFS_LOGFILE_WARNINGS})
 
 	# Tests: the whole module is recompiled with sanitizers.
-	set(NTFS_LOGFILE_SAN -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+	# Sanitizers are opt-in (-DNTFS_LOGFILE_SANITIZE=ON), not the default.
+	#
+	# On macOS 26 / Apple Silicon the ASan runtime hangs inside
+	# __asan::AsanInitInternal() before main() ever runs: the test never starts,
+	# ctest never returns, and a runaway process sits burning a core. One did
+	# for 23 hours before it was noticed on 2026-09-14, and because
+	# logfile_unit is the first test in this project's suite it blocked
+	# logfile_images behind it too. The suite itself is fine -- 243 checks,
+	# 0 failures, a few seconds -- so the default build runs it and the
+	# sanitizer build is there for whoever wants it on a toolchain where it works.
+	option(NTFS_LOGFILE_SANITIZE "Build the logfile tests with ASan/UBSan" OFF)
+	if(NTFS_LOGFILE_SANITIZE)
+		set(NTFS_LOGFILE_SAN -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+	else()
+		set(NTFS_LOGFILE_SAN -fno-omit-frame-pointer -g -O1)
+	endif()
 	add_executable(test_logfile tests/test_logfile.c ntfs_image.c ${NTFS_LOGFILE_SOURCES})
-	target_include_directories(test_logfile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/cli)
+	target_include_directories(test_logfile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 	target_compile_options(test_logfile PRIVATE ${NTFS_LOGFILE_WARNINGS} ${NTFS_LOGFILE_SAN})
 	target_link_options(test_logfile PRIVATE ${NTFS_LOGFILE_SAN})
 
