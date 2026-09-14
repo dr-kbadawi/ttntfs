@@ -414,6 +414,104 @@ static void test_mem(void)
 	}
 }
 
+
+/*
+ * The bd_mapping contract.
+ *
+ * bdev.h says every ntfs_bdev must have one, and kernel code dereferences
+ * sb->s_bdev->bd_mapping without ever checking it -- ntfs_empty_logfile() reads
+ * ahead and writes back through it. Until 2026-09-13 only bdev_file.c created
+ * one: the FSKit bridge builds its own struct ntfs_bdev by hand, got NULL, and
+ * killed the extension on the first read-write mount of a volume whose journal
+ * was not empty.
+ *
+ * test_rw() asserts bd_mapping on a *file* bdev, which is precisely the
+ * implementation that always had it. This tests the contract instead, on a
+ * hand-built device like the one the FSKit bridge makes.
+ */
+static u8 fake_store[64 * 1024];
+
+static ssize_t fake_pread(struct ntfs_bdev *d, void *buf, size_t c, u64 off)
+{
+	(void)d;
+	if (off >= sizeof(fake_store))
+		return 0;
+	if (c > sizeof(fake_store) - off)
+		c = sizeof(fake_store) - off;
+	memcpy(buf, fake_store + off, c);
+	return (ssize_t)c;
+}
+
+static ssize_t fake_pwrite(struct ntfs_bdev *d, const void *buf, size_t c, u64 off)
+{
+	(void)d;
+	if (off >= sizeof(fake_store))
+		return 0;
+	if (c > sizeof(fake_store) - off)
+		c = sizeof(fake_store) - off;
+	memcpy(fake_store + off, buf, c);
+	return (ssize_t)c;
+}
+
+static int fake_flush(struct ntfs_bdev *d) { (void)d; return 0; }
+static void fake_close(struct ntfs_bdev *d) { free(d); }
+
+static const struct ntfs_bdev_ops fake_ops = {
+	.pread = fake_pread, .pwrite = fake_pwrite,
+	.flush = fake_flush, .discard = NULL, .close = fake_close,
+};
+
+static void test_bd_mapping_contract(void)
+{
+	struct ntfs_bdev *dev;
+	struct folio *f;
+
+	/* A device built the way the FSKit bridge builds one. */
+	dev = calloc(1, sizeof(*dev));
+	CHECK(dev != NULL);
+	if (!dev)
+		return;
+	dev->ops = &fake_ops;
+	dev->logical_block_size = 512;
+	dev->physical_block_size = 512;
+	dev->size_bytes = sizeof(fake_store);
+	strlcpy(dev->name, "fake0", sizeof(dev->name));
+
+	/* calloc alone leaves it NULL: that is the bug, and the reason the
+	 * constructor must attach one explicitly. */
+	CHECK(dev->bd_mapping == NULL);
+
+	CHECK(ntfs_bdev_attach_mapping(dev) == 0);
+	CHECK(dev->bd_mapping != NULL);
+	/* Idempotent: a second call must not leak or replace the mapping. */
+	{
+		struct address_space *first = dev->bd_mapping;
+		CHECK(ntfs_bdev_attach_mapping(dev) == 0);
+		CHECK(dev->bd_mapping == first);
+	}
+
+	/* It has to be a working page cache over the device, not just non-NULL:
+	 * this is what ntfs_empty_logfile() reads and writes through. */
+	memset(fake_store, 0xAB, sizeof(fake_store));
+	f = read_mapping_folio(dev->bd_mapping, 0, NULL);
+	CHECK(!IS_ERR(f));
+	if (!IS_ERR(f)) {
+		CHECK(((u8 *)f->data)[0] == 0xAB);
+		folio_unlock(f);
+		folio_put(f);
+	}
+	/* And the flush path kernel code uses on it must work. */
+	CHECK(filemap_write_and_wait(dev->bd_mapping) == 0);
+
+	ntfs_bdev_detach_mapping(dev);
+	CHECK(dev->bd_mapping == NULL);
+	/* Detaching twice is safe (close paths call it unconditionally). */
+	ntfs_bdev_detach_mapping(dev);
+	CHECK(dev->bd_mapping == NULL);
+
+	dev->ops->close(dev);
+}
+
 int main(void)
 {
 	make_image();
@@ -423,6 +521,7 @@ int main(void)
 	test_work();
 	test_wait();
 	test_mem();
+	test_bd_mapping_contract();
 	unlink(path);
 	pagecache_writeback_stop();
 	if (failures) {

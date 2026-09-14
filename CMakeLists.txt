@@ -63,6 +63,24 @@ add_custom_target(ntfscore_merged ALL DEPENDS ${NTFS_MERGED_LIB})
 if(NTFS_BUILD_TESTS)
   enable_testing()
 
+  # Mount-time decisions: the journal clean rule, the read-only reason, the
+  # probe fast path, and the device-flush count. Every case is a bug that
+  # reached a real disk before it had a test.
+  add_executable(test_mount core/tests/test_mount.c)
+  target_link_libraries(test_mount ntfscore ntfsplatform)
+  target_include_directories(test_mount PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/logfile
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  add_test(NAME mount COMMAND test_mount)
+  set_tests_properties(mount PROPERTIES
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images")
+
+  # enable-module.sh: two silent-failure bugs cost a mount each. Static checks
+  # plus the real prune loop under stubbed tools; touches no system state.
+  add_test(NAME enable_module_script
+           COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/fskit/scripts/tests/test-enable-module.sh)
+
   # The $LogFile module keeps its own CMake project so it can be built alone.
   # Pull its tests in here as well: for a day they existed but were never run by
   # `ctest --test-dir build`, which is how a stale header that aborted ntfslog,

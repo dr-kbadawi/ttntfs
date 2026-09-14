@@ -142,3 +142,27 @@ Known divergences to seed it with, all from this session:
 | folio dirty granularity | buffer heads track sub-page dirtiness | whole folio; 4x write amplification at 16 KiB pages |
 | `bd_mapping` | always present on a block device | only `bdev_file.c` created one until finding 14 |
 
+## Tests written 2026-09-14, and what each one would have caught
+
+Every case below is a bug that reached a real disk before anything tested it.
+Each was verified by reintroducing the original defect and confirming the test
+fails, which is the only evidence that a regression test is worth its lines.
+
+| test | the bug it locks down | proven by |
+|---|---|---|
+| `core/tests/test_mount.c: journal_clean_rule` | `ntfs_glue_logfile_clean()` requiring closed **and** flagged clean, which held nearly every cleanly dismounted Windows volume read-only (6835a53) | reverting `\|\|` to `&&` -> 5 failures |
+| ...its differential half | the mount path and `core/logfile` disagreeing about one decision on the same bytes | same revert -> "the two implementations DISAGREE" |
+| `...: nonempty_journal_rw` | every fixture having an EMPTY `$LogFile`, so `ntfs_empty_logfile()` returned at its first line and its real path had never run under any test | same revert -> read-only where read-write was required |
+| `...: probe_light_matches` | `ntfs_probe_light()` checked against `ntfs_probe()` once by hand with a throwaway program (eea4f90), then deleted | kept as a test over all 7 fixtures |
+| `...: one_flush_per_sync` | `sync_blockdev()` and `blkdev_issue_flush()` both meaning a device flush, so an fsync issued two and a volume sync three (a0e6310) | counts flushes through a bdev shim; asserts exactly 1 |
+| `platform/tests/test_bdev.c: bd_mapping_contract` | only `bdev_file.c` attaching a `bd_mapping`; the FSKit bridge built its own bdev, got NULL, and killed the extension (6835a53). `test_rw` asserted it for the one implementation that always had it -- this tests the *contract* on a hand-built device | deleting the attach from a constructor -> FAIL |
+| `fskit/scripts/tests/test-enable-module.sh` | the prune loop aborting the script silently, and the guard piping `lsof` into `grep -q` so it never fired (506ba4a, c4ec674) | reintroducing both -> 5 of 7 fail |
+
+The restart-page builder in `test_mount.c` is the reusable part: it writes a
+valid v1.1 restart page pair into a fixture's `$LogFile`, which is what the
+project lacked. Note `check_ra()` requires `seq_number_bits == 67 -
+bit_length(file_size)` exactly; a hand-built page that gets this wrong is
+rejected as CORRUPT with no hint as to why.
+
+Still untested, and honestly so: 3,070 lines of Swift with no test target, and
+the FSKit extension's own request path, which is not reachable from `ctest`.
