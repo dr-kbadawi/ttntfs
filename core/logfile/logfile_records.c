@@ -76,7 +76,7 @@ out:
 int lfs_read_record(ntfs_logfile_t *log, uint64_t lsn, struct lfs_record *rec)
 {
 	uint8_t *page;
-	uint32_t vbo, poff, len;
+	uint32_t vbo, poff, len, avail;
 	uint64_t total_avail;
 	int err;
 
@@ -127,18 +127,47 @@ int lfs_read_record(ntfs_logfile_t *log, uint64_t lsn, struct lfs_record *rec)
 		free(page);
 		return 0;
 	}
-	rec->data = malloc(len);
+	/*
+	 * Read as far as the record actually reaches, not as far as it says it
+	 * is. A client record's redo or undo payload can start at or beyond the
+	 * client_data_length in its header -- see struct lfs_record. Sizing the
+	 * buffer to the declared length made those payloads a read past our own
+	 * allocation, which lfs_check_client_rec() correctly refused, which
+	 * aborted the whole replay on journals Windows itself replays.
+	 *
+	 * Only the client record's own framing is trusted here, and only after
+	 * the same total_avail bound the declared length already had, so a
+	 * corrupt record cannot make this allocate anything the log could not
+	 * hold. Everything beyond that is validated by lfs_check_client_rec().
+	 */
+	avail = len;
+	if (len >= NR_HEADER_SIZE &&
+	    lf_get32(rec->hdr + LR_RECORD_TYPE) == LFS_RECORD_TYPE_CLIENT &&
+	    poff + log->record_header_len + NR_HEADER_SIZE <= log->page_size) {
+		const uint8_t *lr = page + poff + log->record_header_len;
+		uint32_t r = (uint32_t)lf_get16(lr + NR_REDO_OFFSET) + lf_get16(lr + NR_REDO_LENGTH);
+		uint32_t u = (uint32_t)lf_get16(lr + NR_UNDO_OFFSET) + lf_get16(lr + NR_UNDO_LENGTH);
+
+		if (r > avail)
+			avail = r;
+		if (u > avail)
+			avail = u;
+		if ((uint64_t)avail + log->record_header_len >= total_avail)
+			avail = len;		/* implausible; leave it to the validator */
+	}
+	rec->data_avail = avail;
+	rec->data = malloc(avail);
 	if (!rec->data) {
 		free(page);
 		return -ENOMEM;
 	}
 	if (lf_get16(rec->hdr + LR_FLAGS) & LFS_RECORD_MULTI_PAGE) {
-		err = read_record_data(log, lsn, len, rec->data);
+		err = read_record_data(log, lsn, avail, rec->data);
 	} else {
-		if (poff + log->record_header_len + len > log->page_size) {
+		if (poff + log->record_header_len + avail > log->page_size) {
 			err = -EINVAL;
 		} else {
-			memcpy(rec->data, page + poff + log->record_header_len, len);
+			memcpy(rec->data, page + poff + log->record_header_len, avail);
 			err = 0;
 		}
 	}
@@ -241,9 +270,11 @@ bool lfs_check_client_rec(const struct lfs_record *rec, uint32_t bytes_per_attr_
 	hdr_len = NR_HEADER_SIZE + 8u * (lcns ? lcns : 1);
 	if (rec->data_len < hdr_len)
 		REJECT("too short for the LCNs it declares");
-	if (redo_len && (uint32_t)redo_off + redo_len > rec->data_len)
+	/* Against what was actually read. The declared client_data_length is not
+	 * an upper bound on what a record references -- see struct lfs_record. */
+	if (redo_len && (uint32_t)redo_off + redo_len > rec->data_avail)
 		REJECT("redo data runs past the end of the record");
-	if (undo_len && (uint32_t)undo_off + undo_len > rec->data_len)
+	if (undo_len && (uint32_t)undo_off + undo_len > rec->data_avail)
 		REJECT("undo data runs past the end of the record");
 	return true;
 

@@ -229,7 +229,7 @@ land, and Windows subsequently finds the volume clean. What is still unknown is
 whether the *content* of those writes is correct -- chkdsk validates structure,
 not intent -- and that remains the open part of phase 4.
 
-## Finding 18: replay refuses a record Windows accepts — **OPEN**
+## Finding 18 **FIXED**: replay refused a record Windows accepts
 
 The first end-to-end phase 4 ground-truth run, 2026-09-15, on a real Windows 10
 dirty v2.0 journal (`tools/phase4-capture/captures/run2-dirty.img`, kept).
@@ -271,6 +271,43 @@ Two candidate causes, not yet distinguished:
 2. **Windows' own framing permits redo data beyond the declared length**, and
    reads it from the page buffer without checking. Then the check itself is
    wrong rather than the input.
+
+### Fixed 2026-09-15
+
+`data_len` turned out to be Windows' own `client_data_length`, read straight
+from the record header, so the first candidate (our reassembly truncating a
+page-spanning record) was **ruled out**. Windows simply writes records whose
+redo payload starts at or past the length it declared, and reads that payload
+from the page buffer without bounding it by the declared length.
+
+The fix reads as far as the record actually reaches instead of as far as it says
+it is: `struct lfs_record` gains `data_avail`, the read path sizes the buffer to
+`max(client_data_length, redo_off + redo_len, undo_off + undo_len)` under the
+same log-size bound the declared length already had, and the two payload checks
+bound against `data_avail` rather than `data_len`. The check is not relaxed --
+it becomes true by construction, and still refuses anything the log could not
+hold.
+
+**Result on the real journal.** The plan went from 6 operations to 8: the record
+at `0x204c8d` decodes as `UpdateResidentValue` on MFT record 44, and `0x204cae`
+as `UpdateFileNameRoot` on record 43. `--apply` then wrote 2 MFT records and 2
+clusters and rewrote the restart pages clean, and `ntfsck -n` calls the result
+clean.
+
+**Compared against Windows' replay of the same journal**, our output matches:
+
+| | ours | Windows |
+|---|---|---|
+| record 43 | seq 1, links 1, in-use **dir**, 432 bytes used | identical |
+| record 44 | seq 1, links 1, in-use **file**, 296 bytes used | identical |
+
+Record 44 is the decisive one: its `$LogFile` LSN stamp is **0x204c8d in both**,
+so we wrote the same content from the same record. The only differences are the
+two update-sequence fixup slots, which are per-write by definition, and one
+USN-ish field. Record 43 differs more because Windows mounted the volume after
+replaying and wrote the directory again -- its LSN advanced to 0x20508b and its
+USN bumped from 2 to 3, which is ordinary mount activity rather than a
+disagreement about the journal.
 
 **Do not simply delete the check.** It exists to stop a read running off the end
 of a buffer. The fix has to either recover the missing bytes (if they are in the

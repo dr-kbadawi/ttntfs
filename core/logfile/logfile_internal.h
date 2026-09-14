@@ -23,8 +23,20 @@ struct lfs_page_override {
 /* A loaded log record: header copy plus contiguous client data. */
 struct lfs_record {
 	uint8_t hdr[LR_HEADER_SIZE];
-	uint8_t *data;			/* client_data_len bytes */
-	uint32_t data_len;
+	uint8_t *data;			/* data_avail bytes are readable */
+	uint32_t data_len;		/* client_data_length, as Windows declared it */
+	/*
+	 * Bytes actually present in @data, which can exceed @data_len.
+	 *
+	 * Windows writes records whose redo or undo payload starts at or past
+	 * the client_data_length it declared: a real Windows 10 journal carries
+	 * client_data_length 40 with a 4-byte redo payload at offset 40, and
+	 * Windows replays it without complaint. The declared length is not an
+	 * upper bound on what the record references, so the read has to cover
+	 * whatever the offsets point at and the bounds checks have to be made
+	 * against what was read rather than against what was declared.
+	 */
+	uint32_t data_avail;
 	uint64_t lsn;
 };
 
