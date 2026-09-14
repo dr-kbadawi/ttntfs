@@ -462,7 +462,7 @@ int ntfs_sync_mft_mirror(struct ntfs_volume *vol, const u64 mft_no,
 {
 	u8 *kmirr;
 	struct folio *folio;
-	unsigned int folio_ofs, lcn_folio_off = 0;
+	unsigned int folio_ofs;
 	int err = 0;
 	struct bio *bio;
 
@@ -492,15 +492,25 @@ int ntfs_sync_mft_mirror(struct ntfs_volume *vol, const u64 mft_no,
 	memcpy(kmirr, m, vol->mft_record_size);
 	kunmap_local(kmirr);
 
-	if (vol->cluster_size_bits > PAGE_SHIFT) {
-		lcn_folio_off = folio->index << PAGE_SHIFT;
-		lcn_folio_off &= vol->cluster_size_mask;
-	}
-
+	/*
+	 * PORT: upstream addresses the mirror record by its offset within the
+	 * folio only -- lcn_folio_off is zero unless a cluster is larger than a
+	 * page -- so it loses folio->index entirely. That is invisible while
+	 * four records fit in one page, which is every volume with a 1024-byte
+	 * MFT record, and wrong the moment they do not: with 4096-byte records
+	 * (what mkntfs makes on a 4Kn volume) NTFS_MFT_NR_TO_POFS() is 0 for
+	 * every mft_no, so all four mirror records are written on top of slot 0
+	 * and $MFTMirr no longer matches $MFT. What the write wants is the
+	 * record's byte offset inside $MFTMirr, which is what the folio index
+	 * and the offset within it spell out together. Contiguity of the mirror
+	 * is upstream's assumption already, carried over: it uses mftmirr_lcn
+	 * as the base rather than walking a runlist.
+	 * See docs/UPSTREAM-BUGS.md finding 15.
+	 */
 	bio = bio_alloc(vol->sb->s_bdev, 1, REQ_OP_WRITE, GFP_NOIO);
 	bio->bi_iter.bi_sector =
 		NTFS_B_TO_SECTOR(vol, NTFS_CLU_TO_B(vol, vol->mftmirr_lcn) +
-				 lcn_folio_off + folio_ofs);
+				 ((u64)folio->index << PAGE_SHIFT) + folio_ofs);
 
 	if (bio_add_folio(bio, folio, vol->mft_record_size, folio_ofs))
 		err = submit_bio_wait(bio);

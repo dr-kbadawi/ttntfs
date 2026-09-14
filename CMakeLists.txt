@@ -128,8 +128,9 @@ if(NTFS_BUILD_TESTS)
   # Volume geometry: 4Kn sectors, cluster sizes on either side of the sector
   # size, and a 16 TiB sparse volume whose metadata sits past the 32-bit byte
   # mark. Builds its own images with mkntfs and checks them with ntfsck -n.
-  # Several cases pin a CORRUPTION bug: any sector size above 512 destroys the
-  # volume on the first write. See docs/UPSTREAM-BUGS.md finding 15.
+  # This is what found finding 15 (any sector size above 512 destroyed the
+  # volume on the first write) and what pins it fixed. See
+  # docs/UPSTREAM-BUGS.md.
   add_executable(test_geometry core/tests/test_geometry.c)
   target_link_libraries(test_geometry ntfscore ntfsplatform)
   target_include_directories(test_geometry PRIVATE

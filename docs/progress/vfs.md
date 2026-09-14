@@ -162,9 +162,10 @@ the claim in commits 08c6f10 and b58b5e8 is wrong.
   (`-EOPNOTSUPP`), creating one (`ntfs_create` never sets the flag, so a
   compressed file can only be inherited from a volume Windows wrote), and
   everything about encrypted files.
-- **Finding 15**, the one to fix next in this area: any logical sector size but
-  512 corrupts the volume on the first metadata write. Currently mitigated by
-  refusing a read-write mount, which costs true 4Kn disks their write access.
+- **Finding 15** is fixed (2026-09-14): any logical sector size but 512 used to
+  corrupt the volume on the first metadata write. Two upstream unit errors,
+  U8 and U9 in UPSTREAM-BUGS.md. True 4Kn disks are writable and the read-write
+  mount guard in `super_glue.c` is gone.
 
 ## Write benchmarks, 2026-09-13
 

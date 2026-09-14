@@ -23,11 +23,11 @@
  *                where it belongs, on top of live data.
  *
  * What the tests found, in short: read-only mounts work on every geometry
- * mkntfs can produce, and a 16 TiB volume survives a full read-write cycle,
- * but ANY volume whose sector size is not 512 is corrupted by the first
- * write. See test_read_write_cycle() for the detail. Those cases are pinned
- * as known-bad rather than papered over: a driver that cannot write a 4Kn
- * disk is worth keeping visible until someone fixes it.
+ * mkntfs can produce, a 16 TiB volume survives a full read-write cycle, and
+ * ANY volume whose sector size was not 512 was corrupted by the first write.
+ * That last one was finding 15 in docs/UPSTREAM-BUGS.md, fixed 2026-09-14 --
+ * two unit errors in the upstream metadata write path, both described above
+ * test_read_write_cycle(), which now runs the real cycle on every geometry.
  *
  * Every image is built here by mkntfs rather than checked in, because the
  * large one is 16 TiB of sparse file. After every mutating test the image goes
@@ -272,6 +272,10 @@ struct boot_geom {
 };
 
 static u16 rd16(const unsigned char *p) { return (u16)(p[0] | (p[1] << 8)); }
+static u32 rd32(const unsigned char *p)
+{
+	return (u32)p[0] | ((u32)p[1] << 8) | ((u32)p[2] << 16) | ((u32)p[3] << 24);
+}
 static u64 rd64(const unsigned char *p)
 {
 	u64 v = 0;
@@ -329,13 +333,73 @@ static int read_boot(const char *path, struct boot_geom *g)
 	return 0;
 }
 
+/* ---- $MFT and $MFTMirr, read straight off the image --------------------- */
+
+/* mkntfs never makes an MFT record larger than a cluster, and the largest
+ * cluster these tests build is 64 KiB. */
+#define MAX_MFT_REC (64u << 10)
+
+/*
+ * Copy $MFT records 0-5 out of @path, still mst-protected. Comparing the raw
+ * bytes is the point: the corruption this file was written to find left legal,
+ * ntfsck-clean records behind, so only the bytes say whether they are the same
+ * records as before.
+ */
+static void save_mft_head(const char *path, const struct boot_geom *g,
+			  unsigned char rec[6][MAX_MFT_REC])
+{
+	int fd = open(path, O_RDONLY);
+
+	memset(rec, 0, 6 * MAX_MFT_REC);
+	if (fd < 0)
+		return;
+	for (unsigned i = 0; i < 6; i++)
+		(void)pread(fd, rec[i], g->mft_record_size,
+			    (off_t)(g->mft_lcn * g->cluster_size +
+				    (u64)i * g->mft_record_size));
+	close(fd);
+}
+
+/*
+ * $MFTMirr holds copies of the first four $MFT records, and the copies are
+ * byte-identical: ntfs_sync_mft_mirror() writes the same mst-protected buffer
+ * that went into $MFT, so the update sequence numbers agree too. Returns 0 when
+ * they match, or 1 + the first record number that does not.
+ */
+static int mirror_matches(const char *path, const struct boot_geom *g)
+{
+	unsigned char a[MAX_MFT_REC], b[MAX_MFT_REC];
+	int fd = open(path, O_RDONLY);
+
+	if (fd < 0)
+		return -1;
+	for (unsigned i = 0; i < 4; i++) {
+		if (pread(fd, a, g->mft_record_size,
+			  (off_t)(g->mft_lcn * g->cluster_size +
+				  (u64)i * g->mft_record_size)) != (ssize_t)g->mft_record_size ||
+		    pread(fd, b, g->mft_record_size,
+			  (off_t)(g->mftmirr_lcn * g->cluster_size +
+				  (u64)i * g->mft_record_size)) != (ssize_t)g->mft_record_size) {
+			close(fd);
+			return -1;
+		}
+		if (memcmp(a, b, g->mft_record_size) != 0) {
+			close(fd);
+			return (int)i + 1;
+		}
+	}
+	close(fd);
+	return 0;
+}
+
 /* ---- the geometries ---------------------------------------------------- */
 
 /*
- * @write_clean is the current behaviour, not the desired one. Every geometry
- * whose sector size is 512 survives a read-write cycle; every geometry whose
- * sector size is not 512 does not (see test_read_write_cycle). When that bug
- * is fixed these flags flip to true and this comment goes away.
+ * @write_clean says a full read-write cycle leaves the volume ntfsck-clean.
+ * It is true for every geometry mkntfs can build; it was false for every
+ * non-512 sector size until finding 15 was fixed on 2026-09-14. It stays as a
+ * field rather than becoming an assumption because the geometries mkntfs
+ * cannot build have no answer either way.
  */
 struct geom {
 	const char *name;
@@ -348,13 +412,13 @@ struct geom {
 static const struct geom geoms[] = {
 	/* cluster == sector */
 	{ "s512-c512",	  512,	 512,	true,  true  },
-	{ "s1k-c1k",	 1024,	1024,	true,  false },
-	{ "s2k-c2k",	 2048,	2048,	true,  false },
-	{ "s4kn-c4k",	 4096,	4096,	true,  false },
+	{ "s1k-c1k",	 1024,	1024,	true,  true  },
+	{ "s2k-c2k",	 2048,	2048,	true,  true  },
+	{ "s4kn-c4k",	 4096,	4096,	true,  true  },
 	/* cluster > sector */
 	{ "s512-c4k",	  512,	4096,	true,  true  },
 	{ "s512-c64k",	  512, 65536,	true,  true  },
-	{ "s4kn-c64k",	 4096, 65536,	true,  false },
+	{ "s4kn-c64k",	 4096, 65536,	true,  true  },
 	/* cluster < sector: NTFS forbids it and mkntfs says so */
 	{ "s4kn-c2k",	 4096,	2048,	false, false },
 	/* sector above the 4096 mkntfs ceiling */
@@ -653,9 +717,9 @@ static int count_cb(const struct ntfs_dirent *ent, void *ctx)
  * Index blocks are mst-protected too, and mkntfs keeps them at 4096 bytes even
  * when the sector is 4096, so an INDX block on a 4Kn volume carries nine
  * fixups just like its MFT records. The entries are made with ntfscp rather
- * than with the driver because the driver cannot write a 4Kn volume at all
- * (test_read_write_cycle); reading them back is still a real test of the
- * fixup path.
+ * than with the driver on purpose: reading back blocks a different
+ * implementation wrote is what tests our fixup path rather than our own
+ * round trip. test_read_write_cycle() covers the driver writing them.
  */
 static void test_index_block_fixups(void)
 {
@@ -740,32 +804,23 @@ static void test_index_block_fixups(void)
 /* ---- 5. the read-write cycle, per geometry ------------------------------ */
 
 /*
- * KNOWN BAD, PINNED, NOT FIXED.
+ * This is the test that found finding 15: until 2026-09-14 the first MFT
+ * record allocation on any volume whose sector size was not 512 -- a single
+ * mkdir was enough -- overwrote $MFT records 0 to 5 with freshly formatted
+ * empty records, and ntfsck then said "Failed to load $MFT(0), recover from
+ * $MFTMirr". Two upstream defects, both in units:
  *
- * On every volume whose sector size is not 512, the first operation that
- * allocates an MFT record -- a single mkdir is enough -- overwrites $MFT
- * records 0 to 5 with freshly formatted, empty records. $MFT record 0 comes
- * back with link_count 0, flags 0 (not in use) and bytes_in_use 0x50, and
- * ntfsck then reports "Failed to load $MFT(0), recover from $MFTMirr". It
- * reproduces at sector sizes 1024, 2048 and 4096, with cluster sizes equal to
- * and larger than the sector, and it does not depend on the device's logical
- * block size: forcing the block layer to 512 on a 4Kn volume corrupts it just
- * the same, and leaving a 512-sector volume on a 4096-byte block device does
- * not. The one thing that changes is vol->sector_size, which mount feeds to
- * sb_set_blocksize() (core/ntfs/super.c:2353).
+ *   - NTFS_B_TO_SECTOR() divided by sb->s_blocksize instead of 512, so on a
+ *     4Kn volume every metadata bio landed eight times too close to the start
+ *     of the device;
+ *   - ntfs_sync_mft_mirror() addressed the mirror record by its offset within
+ *     a folio and dropped the folio index, so with 4096-byte MFT records all
+ *     four mirror records were written on top of slot 0.
  *
- * Read-only mounts of the same volumes are fine, and so is a read-write mount
- * that changes nothing.
- *
- * Since 2026-09-14 super_glue.c refuses a read-write mount of any volume whose
- * sector size is not 512, so the corruption is no longer reachable: such a
- * volume mounts read-only with NTFS_RO_UNSUPPORTED and reading stays available.
- * That is a safety net over a write path that is still wrong, not a fix.
- *
- * So for those geometries this test now asserts the PROTECTION: the read-write
- * mount is refused, and the volume is still clean afterwards. When the write
- * path is actually fixed, drop the guard in super_glue.c and flip
- * geoms[].write_clean; this test fails until both are done, which is the point.
+ * Both are fixed in core/ntfs with PORT: comments, so this now runs the real
+ * cycle on every geometry: write, sync, unmount, remount, read back, delete,
+ * and ntfsck -n. The remount matters -- a read served from the page cache
+ * proves nothing about what reached the platter.
  */
 static void test_read_write_cycle(void)
 {
@@ -775,47 +830,22 @@ static void test_read_write_cycle(void)
 
 	for (size_t i = 0; i < NGEOM; i++) {
 		static char buf[8192], rb[8192];
+		static unsigned char before[6][MAX_MFT_REC], after[6][MAX_MFT_REC];
+		struct boot_geom g;
 		struct mounted m;
 		ntfs_inode_t *root, *f, *d;
 		int err, ck;
 
-		if (!geoms[i].mkntfs_can)
+		if (!geoms[i].mkntfs_can || !geoms[i].write_clean)
 			continue;
 		img_path(path, sizeof(path), geoms[i].name);
 		if (access(path, R_OK) != 0)
 			continue;
 		any = 1;
+		read_boot(path, &g);
+		save_mft_head(path, &g, before);
 
 		m = mount_image(path, false, 0);
-		if (!geoms[i].write_clean) {
-			/*
-			 * The guard: a read-write mount of a non-512 sector
-			 * volume must be refused outright rather than allowed
-			 * to destroy the volume on the first metadata write.
-			 */
-			CHECK_MSG(m.err == -EROFS,
-				  "%s: a read-write mount of a %u-byte-sector volume "
-				  "returned %d, expected -EROFS. If the write path is "
-				  "fixed, remove the sector_size guard in super_glue.c "
-				  "and set write_clean = true here",
-				  geoms[i].name, geoms[i].sector, m.err);
-			if (!m.err)
-				unmount_image(&m);
-			/* and reading it must still work */
-			m = mount_image(path, true, 0);
-			CHECK_MSG(m.err == 0,
-				  "%s: read-only mount failed with %d; refusing writes "
-				  "must not cost read access",
-				  geoms[i].name, m.err);
-			if (!m.err)
-				unmount_image(&m);
-			ck = fsck(path);
-			CHECK_MSG(ck == 0,
-				  "%s: ntfsck -n returned %d after a refused read-write "
-				  "mount; the volume should be untouched",
-				  geoms[i].name, ck);
-			continue;
-		}
 		CHECK_MSG(m.err == 0, "%s: read-write mount failed with %d",
 			  geoms[i].name, m.err);
 		if (m.err)
@@ -870,13 +900,11 @@ static void test_read_write_cycle(void)
 		unmount_image(&m);
 
 		/*
-		 * Remount, read back, delete. Only asked of the geometries
-		 * that survive the writes above: on the others the volume is
-		 * already wrecked, and what a remount makes of the wreckage is
-		 * not a property worth freezing. Sector 1024 and 2048 give
-		 * -EINVAL, sector 4096 mounts and has lost the file.
+		 * Remount, read back, delete. The remount is the point: it
+		 * drops every cached folio, so the comparison below is against
+		 * the bytes that actually reached the image.
 		 */
-		if (geoms[i].write_clean) {
+		{
 			m = mount_image(path, false, 0);
 			CHECK_MSG(m.err == 0, "%s: remount failed with %d",
 				  geoms[i].name, m.err);
@@ -911,6 +939,48 @@ static void test_read_write_cycle(void)
 		CHECK_MSG(ck == 0,
 			  "%s: ntfsck -n returned %d after a read-write cycle",
 			  geoms[i].name, ck);
+
+		/*
+		 * ntfsck being happy is not enough on its own -- a freshly
+		 * formatted $MFT is legal NTFS. These are the six records the
+		 * bug reformatted, compared byte for byte with what they were
+		 * before the cycle. Everything the cycle created was deleted
+		 * again above, so the only records that may legitimately have
+		 * moved are the ones whose timestamps or $BITMAP the driver
+		 * touched; their identity fields may not.
+		 */
+		save_mft_head(path, &g, after);
+		for (unsigned r = 0; r < 6; r++) {
+			const unsigned char *b = before[r], *a = after[r];
+
+			CHECK_MSG(memcmp(a, "FILE", 4) == 0,
+				  "%s: $MFT record %u lost its FILE magic",
+				  geoms[i].name, r);
+			CHECK_MSG(rd16(a + 0x06) == rd16(b + 0x06),
+				  "%s: $MFT record %u usa_count %u, was %u",
+				  geoms[i].name, r, rd16(a + 0x06), rd16(b + 0x06));
+			CHECK_MSG(rd16(a + 0x12) == rd16(b + 0x12),
+				  "%s: $MFT record %u link_count %u, was %u",
+				  geoms[i].name, r, rd16(a + 0x12), rd16(b + 0x12));
+			CHECK_MSG((rd16(a + 0x16) & 1) == 1,
+				  "%s: $MFT record %u is no longer marked in use",
+				  geoms[i].name, r);
+			CHECK_MSG(rd32(a + 0x2c) == rd32(b + 0x2c),
+				  "%s: $MFT record %u says it is record %u, was %u",
+				  geoms[i].name, r, rd32(a + 0x2c), rd32(b + 0x2c));
+			CHECK_MSG(rd32(a + 0x18) >= 0x100,
+				  "%s: $MFT record %u bytes_in_use fell to %u, "
+				  "which is an empty record",
+				  geoms[i].name, r, rd32(a + 0x18));
+		}
+		/*
+		 * And the mirror: ntfs_sync_mft_mirror() used to write every
+		 * record it was given on top of slot 0 whenever an MFT record
+		 * filled a whole page.
+		 */
+		CHECK_MSG(mirror_matches(path, &g) == 0,
+			  "%s: $MFTMirr does not match $MFT after the cycle",
+			  geoms[i].name);
 	}
 	if (!any) {
 		fprintf(stderr, "SKIP test_read_write_cycle: no images\n");

@@ -52,8 +52,10 @@ tools/ci.sh --list       # what it will run
   `ntfsck`.
 * **`faults`** (141) — injected read, write and flush failures at fourteen
   points, plus a volume filled to `ENOSPC`.
-* **`geometry`** (337) — 4Kn sectors, cluster sizes either side of the sector
-  size, and a 16 TiB sparse volume.
+* **`geometry`** (672) — 4Kn sectors, cluster sizes either side of the sector
+  size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
+  and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this
+  is what found finding 15 and what pins it fixed.
 * **`logfile_unit`** (243 checks) — the replay engine against synthetic logs.
 * **`logfile_images`** — `ntfslog` over every fixture.
 * **`enable_module_script`** — the enable script's two silent-failure modes.

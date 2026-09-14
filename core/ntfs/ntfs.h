@@ -16,6 +16,10 @@
 #include <linux/module.h>
 #include <linux/compiler.h>
 #include <linux/fs.h>
+/* PORT: for SECTOR_SHIFT, which NTFS_B_TO_SECTOR() below needs. Upstream's
+ * callers all include <linux/bio.h> first; this header should not depend on
+ * that. */
+#include <linux/blkdev.h>
 #include <linux/nls.h>
 #include <linux/smp.h>
 #include <linux/pagemap.h>
@@ -71,7 +75,20 @@
 #define NTFS_CLU_TO_POFS(vol, clu) (((u64)(clu) << (vol)->cluster_size_bits) & \
 				    ~PAGE_MASK)
 
-#define NTFS_B_TO_SECTOR(vol, b) ((b) >> ((vol)->sb)->s_blocksize_bits)
+/*
+ * PORT: upstream shifts by sb->s_blocksize_bits here and in
+ * ntfs_bytes_to_sector() below. Both results are only ever assigned to
+ * bio->bi_iter.bi_sector, which the block layer defines in 512-byte units
+ * whatever the device's logical block size is, so on a volume whose sector
+ * size is not 512 -- sb_set_blocksize() in super.c raises s_blocksize to
+ * vol->sector_size -- every metadata bio lands at offset / (s_blocksize / 512).
+ * On a 4Kn volume that is eight times too close to the start of the device,
+ * which is what put freshly formatted MFT records on top of records 0-5.
+ * Upstream contradicts itself two functions later: ntfs_write_mft_block()
+ * compares bio_end_sector(bio) >> (cluster_size_bits - 9) against an LCN,
+ * which is only right in 512-byte units. See docs/UPSTREAM-BUGS.md finding 15.
+ */
+#define NTFS_B_TO_SECTOR(vol, b) ((sector_t)((b) >> SECTOR_SHIFT))
 
 enum {
 	NTFS_BLOCK_SIZE		= 512,
@@ -154,11 +171,13 @@ static inline u64 ntfs_cluster_to_poff(const struct ntfs_volume *vol,
 	return (clu << vol->cluster_size_bits) & ~PAGE_MASK;
 }
 
-/* Convert byte offset to sector (block) number. */
+/* Convert a byte offset to a bio sector number. PORT: 512-byte units, not
+ * sb->s_blocksize; see NTFS_B_TO_SECTOR above for why upstream is wrong. */
 static inline sector_t ntfs_bytes_to_sector(const struct ntfs_volume *vol,
 		u64 bytes)
 {
-	return bytes >> vol->sb->s_blocksize_bits;
+	(void)vol;
+	return bytes >> SECTOR_SHIFT;
 }
 
 /* Global variables. */

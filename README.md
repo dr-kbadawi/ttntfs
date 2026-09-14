@@ -15,12 +15,6 @@ extension.
 inspected anything this driver wrote. That is the one gate that matters and it
 needs a Windows PC; see `docs/TESTING.md`.
 
-**Known limitation:** a volume whose logical sector size is not 512 bytes mounts
-read-only. Writing to one corrupts it, so the driver refuses; reading is safe
-and stays available. This affects true 4Kn disks. Most external SSDs are 512e,
-which NTFS records as 512 and which is unaffected. See `docs/UPSTREAM-BUGS.md`
-finding 15.
-
 Journal replay is off unless you ask for it per volume, at your own risk: the
 v2.0 record layout is inferred rather than verified. A volume Windows left dirty
 or hibernated mounts read-only with the reason shown, and the app offers to fix
