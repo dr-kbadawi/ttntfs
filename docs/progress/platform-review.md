@@ -213,3 +213,23 @@ rejected as CORRUPT with no hint as to why.
 
 Still untested, and honestly so: 3,070 lines of Swift with no test target, and
 the FSKit extension's own request path, which is not reachable from `ctest`.
+
+## The sanitizer that found half of these no longer runs (2026-09-14)
+
+Findings 1-13 above lean on AddressSanitizer: finding 8 is a use-after-free
+caught by ASan, and the races in 1, 2 and 5 were found the same way. **ASan
+deadlocks in its own initialiser on macOS 26 / Apple silicon**, before `main()`,
+so an instrumented binary produces no output and never exits. Verified on every
+test target here, not just the logfile suite where it was first noticed.
+
+That safety net has therefore been unavailable on this machine for some time,
+on a project whose hardest bugs are memory-lifetime bugs in a hand-written page
+cache. Nothing detected it because the only suite that enabled sanitizers by
+default was also the only suite nothing ran.
+
+Now: UBSan is on by default for the tests (it works, and it is the right tool
+for the unaligned loads this port makes out of packed on-disk structures), ASan
+is `-DNTFS_ASAN=ON` with the hang documented at the option. Retry ASan after an
+Xcode update; until it works, a memory-lifetime bug of the kind in findings 1-13
+would have to be found by reading.
+

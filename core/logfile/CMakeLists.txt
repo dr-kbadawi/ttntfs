@@ -66,9 +66,27 @@ if(PROJECT_IS_TOP_LEVEL OR NTFS_LOGFILE_TOOLS)
 	# logfile_images behind it too. The suite itself is fine -- 243 checks,
 	# 0 failures, a few seconds -- so the default build runs it and the
 	# sanitizer build is there for whoever wants it on a toolchain where it works.
-	option(NTFS_LOGFILE_SANITIZE "Build the logfile tests with ASan/UBSan" OFF)
+	# Same policy as the top-level build: UBSan on, ASan opt-in. The replay
+	# engine reads packed on-disk structures constantly, so UBSan earns its
+	# place here more than anywhere; ASan is the one that hangs.
+	option(NTFS_LOGFILE_UBSAN "Build the logfile tests with UBSan" ON)
+	option(NTFS_LOGFILE_ASAN "Build the logfile tests with ASan (hangs on macOS 26)" OFF)
+	option(NTFS_LOGFILE_SANITIZE "Deprecated: same as both of the above ON" OFF)
 	if(NTFS_LOGFILE_SANITIZE)
-		set(NTFS_LOGFILE_SAN -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
+		set(NTFS_LOGFILE_ASAN ON)
+		set(NTFS_LOGFILE_UBSAN ON)
+	endif()
+	set(_san "")
+	if(NTFS_LOGFILE_ASAN)
+		list(APPEND _san address)
+	endif()
+	if(NTFS_LOGFILE_UBSAN)
+		list(APPEND _san undefined)
+	endif()
+	if(_san)
+		list(JOIN _san "," _sanarg)
+		set(NTFS_LOGFILE_SAN -fsanitize=${_sanarg} -fno-sanitize-recover=undefined
+		    -fno-omit-frame-pointer -g -O1)
 	else()
 		set(NTFS_LOGFILE_SAN -fno-omit-frame-pointer -g -O1)
 	endif()

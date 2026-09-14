@@ -2,7 +2,8 @@
 #
 # NTFS for macOS: user-space port of the Linux 7.1 fs/ntfs driver.
 #
-#   cmake -S . -B build [-DNTFS_SANITIZE=ON] && cmake --build build && ctest --test-dir build
+#   cmake -S . -B build && cmake --build build && ctest --test-dir build
+#   UBSan is on by default; -DNTFS_ASAN=ON adds ASan, which hangs on macOS 26.
 #
 # Targets:
 #   ntfsplatform   platform/src/*.c + platform/pagecache/pagecache.c  (static)
@@ -25,15 +26,54 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)	# -std=gnu11
 
-option(NTFS_SANITIZE "Build everything with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
+# Sanitizers, split because they are not equally usable here.
+#
+# UBSan works and is cheap, so it is ON by default for the tests: this port does
+# a lot of unaligned reads out of packed on-disk structures, and UBSan is what
+# catches that class. Turning it off is the unusual choice, not turning it on.
+#
+# ASan HANGS on macOS 26 / Apple silicon. It deadlocks inside
+# __asan::AsanInitInternal() before main() ever runs, so the process produces no
+# output and never exits -- confirmed 2026-09-14 on every test in this project,
+# not just one. One runaway sat burning a core for 23 hours before anyone
+# noticed, and because the logfile suite ran ASan by default its 243 checks had
+# silently not executed for a day. So ASan is opt-in, and anyone who turns it on
+# should expect that and check the toolchain first. It is worth retrying after a
+# Xcode update: ASan is what originally found the work-queue use-after-free and
+# the lookup-versus-invalidate race (docs/progress/platform-review.md).
+#
+#   -DNTFS_UBSAN=OFF     drop UBSan from the tests
+#   -DNTFS_ASAN=ON       add ASan (see above before you do)
+#   -DNTFS_SANITIZE=ON   both, the old spelling, kept working
+option(NTFS_SANITIZE "Deprecated: same as -DNTFS_ASAN=ON -DNTFS_UBSAN=ON" OFF)
+option(NTFS_UBSAN "Build the tests with UndefinedBehaviorSanitizer" ON)
+option(NTFS_ASAN "Build the tests with AddressSanitizer (hangs on macOS 26)" OFF)
 option(NTFS_BUILD_TESTS "Build the unit tests" ON)
 
 set(NTFS_C_FLAGS -Wall -Wextra -Wno-unused-parameter -Werror=implicit-function-declaration
     -fno-strict-aliasing -fwrapv)
 add_compile_options(${NTFS_C_FLAGS})
 if(NTFS_SANITIZE)
-  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
-  add_link_options(-fsanitize=address,undefined)
+  set(NTFS_ASAN ON)
+  set(NTFS_UBSAN ON)
+endif()
+set(NTFS_SAN_LIST "")
+if(NTFS_ASAN)
+  list(APPEND NTFS_SAN_LIST address)
+endif()
+if(NTFS_UBSAN)
+  list(APPEND NTFS_SAN_LIST undefined)
+endif()
+if(NTFS_SAN_LIST)
+  list(JOIN NTFS_SAN_LIST "," NTFS_SAN_ARG)
+  message(STATUS "sanitizers: ${NTFS_SAN_ARG}")
+  add_compile_options(-fsanitize=${NTFS_SAN_ARG} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${NTFS_SAN_ARG})
+  # Report rather than continue: an unaligned load that "works" today is still a
+  # bug, and a test that prints a warning and passes is a test nobody reads.
+  add_compile_options(-fno-sanitize-recover=undefined)
+else()
+  message(STATUS "sanitizers: none")
 endif()
 
 find_package(Threads REQUIRED)

@@ -114,8 +114,18 @@ extraction moved the comment with it and changed nothing else.
 * **A test that does not run is not coverage.** `logfile_unit` hung inside
   ASan's own initialiser on macOS 26 -- before `main()`, so its 243 checks never
   executed -- and nothing noticed for a day because that suite lived in its own
-  CMake project and `ctest --test-dir build` never touched it. Sanitizers are
-  now opt-in (`-DNTFS_LOGFILE_SANITIZE=ON`) and the suite is in the main build.
+  CMake project and `ctest --test-dir build` never touched it. The suite is in
+  the main build now, and the sanitizers are split (below).
+* **ASan does not work on macOS 26 / Apple silicon.** It deadlocks in
+  `__asan::AsanInitInternal()` before `main()`, producing no output and never
+  exiting. Confirmed on every test in this project, not just one. That matters
+  because ASan is what originally found the work-queue use-after-free and the
+  lookup-versus-invalidate race. It is `-DNTFS_ASAN=ON`, off by default, and
+  worth retrying after an Xcode update.
+  **UBSan works and is ON by default**, with `-fno-sanitize-recover=undefined`
+  so undefined behaviour fails the test rather than printing a warning nobody
+  reads. This port takes a lot of unaligned loads out of packed on-disk
+  structures, which is exactly what UBSan catches; all 8 targets pass clean.
 * **Never compare performance across sessions.** A "12% regression" chased for
   an hour was an artefact of a baseline measured hours earlier with different
   disks attached. Build both versions and measure them back to back.
