@@ -9,6 +9,11 @@ reporting upstream once reduced to kernel reproducers.
 | 2 | `ntfs_attr_rm` (`attrib.c`) | Returns the freed-cluster count instead of 0 on success, so callers treating nonzero as error fail | Result normalised at the call site |
 | 3 | `ntfs_attr_set_initialized_size` on an attribute inode | Maps a stale copy of the MFT record | Re-map after the call |
 | 4 | Attribute `pwrite` over a hole | Leaves dirty folios over the hole, later written as data | Zero/invalidate around direct spans |
+| 5 | `ntfs_compress_write` (`compress.c`) | Expands the attribute on `pos + count > allocated_size`, never on `> data_size`, so a write into the 64 KiB allocation rounding past EOF writes the block to disk and leaves `i_size` unchanged. The data is unreachable. | Condition changed to `data_size`, under `mrec_lock` as the uncompressed path does. `PORT:` comment at the divergence. |
+| 6 | same | `initialized_size` is never advanced on the compressed path, so everything past the old EOF reads back as zeroes though the data is correct on disk. | Advanced to the end of what was written, once the loop completes, so a failure still leaves a size to roll back to. |
+| 7 | `ntfs_write_cb` (`compress.c`) | The `allzeroes` shortcut returns before the punch-hole call, so writing zeroes over a block that holds data leaves the old contents. | `cb_is_allocated()` walks the run list: hole-blocks keep the fast path, allocated blocks punch. An unmappable run list counts as allocated, because a needless punch wastes a write while a skipped one loses data. |
+
+Findings 5-7 here were confirmed present verbatim in `upstream/linux-v7.1/fs/ntfs/compress.c`: the only differences between it and `core/ntfs/compress.c` are folio and bio accessors. They are Linux bugs, not porting bugs.
 
 Found 2026-09-12 by the vfs stream; verified by `tools/run-tests.sh write`.
 
@@ -33,14 +38,18 @@ and all three are pinned by tests marked `BUG:` so that fixing one fails the
 test that documents it. `ntfsck` is clean in every case: the results are legal
 NTFS, just not what the writer asked for.
 
-Together they mean **appending to a compressed file does not work at all**
-through the public ABI. That matters before FSKit exposes the path.
+Together they meant **appending to a compressed file did not work at all**
+through the public ABI. All three are fixed as of 2026-09-14 and appending is
+covered end to end by `test_compress.c: append`: 40 sequential 7000-byte writes
+at EOF, a size that is no factor of 64 KiB, so the run crosses a block boundary
+at every offset within a block -- inside the allocation rounding, exactly on it,
+and past it -- compared byte-for-byte after a remount.
 
 | # | Where | Symptom |
 |---|---|---|
-| 9 | `ntfs_compress_write`, `core/ntfs/compress.c` | Expands the attribute only when `pos + count > allocated_size`, never on `> data_size`. A compressed file's allocation is rounded up to the 64 KiB block, so a write into that rounding **returns success, re-encodes the block, writes it to disk, and leaves `i_size` unchanged**. The bytes are on the platter and permanently unreachable. Measured on a 102400-byte file with 131072 allocated: `ntfs_write(ni, buf, 8192, 102400)` returns 8192 and the file is still 102400 bytes. |
-| 10 | same | `initialized_size` is never advanced on the compressed path. When a write does pass `allocated_size`, `ntfs_attr_expand` moves `data_size` and nothing touches `initialized_size`. Confirmed on disk with `ntfsinfo`: `Data size: 201000 / Initialized size: 102400`. Everything past the old EOF reads back as zeroes, before and after a remount, though the compressed data is correctly written. |
-| 11 | `ntfs_write_cb`, same file | The `allzeroes` branch does `goto out` with `err = 0` **before** `ntfs_non_resident_attr_punch_hole`. Writing 64 KiB of zeroes over a block that holds data returns 65536 and the previous contents read back byte-for-byte after a remount. Correct and cheap when the block was already a hole; data loss when it was not. |
+| 9 **FIXED** (upstream bug 5) | `ntfs_compress_write`, `core/ntfs/compress.c` | Expands the attribute only when `pos + count > allocated_size`, never on `> data_size`. A compressed file's allocation is rounded up to the 64 KiB block, so a write into that rounding **returns success, re-encodes the block, writes it to disk, and leaves `i_size` unchanged**. The bytes are on the platter and permanently unreachable. Measured on a 102400-byte file with 131072 allocated: `ntfs_write(ni, buf, 8192, 102400)` returns 8192 and the file is still 102400 bytes. |
+| 10 **FIXED** (upstream bug 6) | same | `initialized_size` is never advanced on the compressed path. When a write does pass `allocated_size`, `ntfs_attr_expand` moves `data_size` and nothing touches `initialized_size`. Confirmed on disk with `ntfsinfo`: `Data size: 201000 / Initialized size: 102400`. Everything past the old EOF reads back as zeroes, before and after a remount, though the compressed data is correctly written. |
+| 11 **FIXED** (upstream bug 7) | `ntfs_write_cb`, same file | The `allzeroes` branch does `goto out` with `err = 0` **before** `ntfs_non_resident_attr_punch_hole`. Writing 64 KiB of zeroes over a block that holds data returns 65536 and the previous contents read back byte-for-byte after a remount. Correct and cheap when the block was already a hole; data loss when it was not. |
 
 Minor, not pinned: `ntfs_compress_write` returns `int` but assigns a `size_t`
 byte count, so a single write above 2 GiB would overflow the return.

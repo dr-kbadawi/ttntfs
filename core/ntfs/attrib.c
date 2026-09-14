@@ -2145,7 +2145,16 @@ int ntfs_attr_set_initialized_size(struct ntfs_inode *ni, loff_t new_size)
 	if (!NInoNonResident(ni))
 		return -EINVAL;
 
-	ctx = ntfs_attr_get_search_ctx(ni, NULL);
+	/*
+	 * PORT: upstream opens the search context on @ni, which is right only
+	 * because the kernel calls this for base inodes. The port also reaches
+	 * it for an attribute inode (a named stream), and mapping that would
+	 * map a second, stale copy of the base record and write the new size
+	 * into it. Search the base record; the lookup below already names the
+	 * attribute by @ni's type and name.
+	 */
+	ctx = ntfs_attr_get_search_ctx(NInoAttr(ni) ? ni->ext.base_ntfs_ino : ni,
+				       NULL);
 	if (!ctx)
 		return -ENOMEM;
 

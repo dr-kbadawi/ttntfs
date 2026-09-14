@@ -1003,30 +1003,15 @@ static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len)
 }
 
 /*
- * ntfs_attr_set_initialized_size() opens its search context on the inode
- * it is given; for an attribute inode that maps a second, stale copy of the
- * base record (the kernel only calls it for base inodes). Same body, on the
- * base inode's record.
+ * This used to be a private copy of ntfs_attr_set_initialized_size(), because
+ * the core one opened its search context on the inode it was given -- right
+ * for the base inodes the kernel calls it with, a second and stale copy of the
+ * base record for an attribute inode. The core function searches the base
+ * record itself now (upstream finding 3), so this is just a call.
  */
 static int set_initialized_size(struct ntfs_inode *ni, loff_t new_size)
 {
-	struct ntfs_attr_search_ctx *ctx;
-	int err;
-
-	if (!NInoNonResident(ni))
-		return -EINVAL;
-	ctx = ntfs_attr_get_search_ctx(base_of(ni), NULL);
-	if (!ctx)
-		return -ENOMEM;
-	err = ntfs_attr_lookup(ni->type, ni->name, ni->name_len,
-			       CASE_SENSITIVE, 0, NULL, 0, ctx);
-	if (!err) {
-		ctx->attr->data.non_resident.initialized_size = cpu_to_le64(new_size);
-		ni->initialized_size = new_size;
-		mark_mft_record_dirty(ctx->ntfs_ino);
-	}
-	ntfs_attr_put_search_ctx(ctx);
-	return err;
+	return ntfs_attr_set_initialized_size(ni, new_size);
 }
 
 static ssize_t resident_write(struct inode *vi, const void *buf, size_t count,

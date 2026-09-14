@@ -26,9 +26,14 @@
  *                        surrounding data out of the page cache, so a bad
  *                        offset silently overwrites neighbouring bytes with
  *                        zeroes rather than failing.
- *   extend               Writing past EOF. Two real bugs live here; see below.
- *   zero_block           Writing zeroes over a block that holds data. One real
- *                        bug; see below.
+ *   extend               Writing past EOF, both inside the allocation rounding
+ *                        and past it. Two data-loss bugs lived here; see below.
+ *   append               The same thing the way a caller does it: repeated
+ *                        writes at EOF in a chunk size that is no factor of the
+ *                        compression block, compared only after a remount.
+ *   zero_block           Writing zeroes over a block that holds data, and over
+ *                        one that is already a hole. One data-loss bug lived
+ *                        here; see below.
  *   size_change_refused  core/vfs/file.c refuses truncate and fallocate on a
  *                        compressed or encrypted inode. Pinned so it cannot
  *                        start half-working without anyone noticing.
@@ -41,24 +46,33 @@
  *   encrypted_refused    Every data entry point must refuse an encrypted
  *                        inode, in both directions.
  *
- * Bugs found while writing this, pinned here as the behaviour that exists
- * rather than the behaviour that is wanted. Each assertion that encodes a bug
- * says so in a comment beginning "BUG:".
+ * Three bugs were found while writing this, and between them they meant that
+ * appending to a compressed file did not work at all. All three exist verbatim
+ * in Linux 7.1's fs/ntfs/compress.c, all three reported success to the caller,
+ * and all three left the volume ntfsck-clean, so nothing noticed. They are
+ * findings 9, 10 and 11 in docs/UPSTREAM-BUGS.md; the assertions that used to
+ * pin them now assert the fixed behaviour.
  *
- *   1. ntfs_compress_write() grows the attribute only when the write passes
+ *   1. ntfs_compress_write() grew the attribute only when the write passed
  *      ni->allocated_size, not ni->data_size. A compressed file's allocation is
  *      rounded up to the compression block, so a write into that rounding gap
- *      returns success, rewrites the block, and leaves i_size alone: the bytes
- *      are on disk and unreachable.
- *   2. Nothing on the compressed write path advances initialized_size. When the
- *      write does pass allocated_size, ntfs_attr_expand() moves data_size but
- *      initialized_size stays at the old EOF, so everything written past the
- *      old end of file reads back as zeroes -- after a remount too.
- *   3. ntfs_write_cb() returns early when a block compresses to nothing but
- *      zeroes, before it punches the old block's clusters out. Zeroing a range
- *      that held data leaves the old data on disk and readable.
+ *      returned success, rewrote the block, and left i_size alone: the bytes
+ *      were on disk and unreachable. Fixed by testing data_size, which is where
+ *      EOF actually is.
+ *   2. Nothing on the compressed write path advanced initialized_size. When the
+ *      write did pass allocated_size, ntfs_attr_expand() moved data_size but
+ *      initialized_size stayed at the old EOF, so everything written past the
+ *      old end of file read back as zeroes -- after a remount too. Fixed by
+ *      advancing it once the data is on the disk, the shape core/vfs/api.c's
+ *      do_write() already used for uncompressed writes.
+ *   3. ntfs_write_cb() returned early when a block compressed to nothing but
+ *      zeroes, before it punched the old block's clusters out. Zeroing a range
+ *      that held data left the old data on disk and readable. Fixed by punching
+ *      the block when it holds clusters; the shortcut is kept for the case it
+ *      was written for, a block that is already a hole.
  *
- * All three are data loss of the quiet kind: the write reports success.
+ * All three were data loss of the quiet kind, so each is held down here from
+ * both ends: what the write reports, and what a remount reads back.
  *
  * Every write cycle is followed by ntfsck -n (ntfsprogs-plus), which is the
  * only check that sees the cluster bitmap and the mapping pairs. -n always:
@@ -486,35 +500,36 @@ static void test_extend(void)
 
 	/*
 	 * (a) 102400 rounds up to a 131072-byte allocation, so 8 KiB at EOF
-	 * still fits inside it.
-	 *
-	 * BUG: ntfs_compress_write() expands the attribute only when
-	 * pos + count > ni->allocated_size, so nothing grows i_size here. The
-	 * call reports 8192 bytes written, the block is re-encoded and written
-	 * to the disk, and the bytes are unreachable for ever after.
-	 * The right test, once this is fixed, is size == 110592 and the tail
-	 * reading back as 'Z'.
+	 * still fits inside it. ntfs_compress_write() must grow i_size even
+	 * though the write never passes allocated_size (finding 9): a write
+	 * that landed inside the compression-block rounding used to report
+	 * success, re-encode the block and leave i_size alone, which put the
+	 * bytes on the disk and out of reach for ever after.
 	 */
 	memset(patch, 'Z', 8192);
 	CHECK_EQ(ntfs_write(ni, patch, 8192, size), 8192, "write 8 KiB at EOF");
-	CHECK_EQ(data_size(ni), size, "BUG: i_size unchanged by a write past EOF "
+	CHECK_EQ(data_size(ni), size + 8192, "i_size grows for a write past EOF "
 		 "that lands inside the compression-block rounding");
-	CHECK_EQ(ntfs_read(ni, back, 8192, size), 0, "BUG: the bytes just written "
-		 "are past i_size and read back as EOF");
+	memset(back, 0, 8192);
+	CHECK_EQ(read_exact(ni, back, 8192, size), 0, "read back the extension");
+	memset(ref + size, 'Z', 8192);
+	compare("the 8 KiB written at EOF", back, ref + size, 8192);
 
-	/* What was already in the file must at least have survived. */
-	CHECK_EQ(read_exact(ni, back, size, 0), 0, "read back after lost extend");
-	compare("existing data after a lost extend", back, ref, size);
+	/* What was already in the file must have survived too. */
+	CHECK_EQ(read_exact(ni, back, size, 0), 0, "read back after the extend");
+	compare("existing data after an extend", back, ref, size);
+	size += 8192;
 
 	/*
-	 * (b) past the allocation this time, so ntfs_attr_expand() runs and
-	 * i_size does move.
+	 * (b) past the allocation this time, so ntfs_attr_expand() allocates
+	 * as well, and the gap between the old EOF and @far becomes a hole.
 	 *
-	 * BUG: nothing on this path advances initialized_size. It stays at the
-	 * old EOF, so every byte past it -- including the ones just written --
-	 * reads back as zero, before and after a remount. ntfsck is happy,
-	 * because an attribute whose initialized_size is below its data_size is
-	 * perfectly legal; it just does not mean what the writer intended.
+	 * The write must also advance initialized_size (finding 10). While it
+	 * did not, initialized_size stayed at the old EOF and every byte past
+	 * it -- the ones just written included -- read back as zero, before
+	 * and after a remount. ntfsck was happy, because an attribute whose
+	 * initialized_size is below its data_size is perfectly legal; it just
+	 * does not mean what the writer intended.
 	 */
 	memset(patch, 'Q', 4096);
 	CHECK_EQ(ntfs_write(ni, patch, 4096, far), 4096, "write past the allocation");
@@ -534,18 +549,85 @@ static void test_extend(void)
 		/* Everything below the ORIGINAL EOF is still correct... */
 		CHECK_EQ(read_exact(ni, back, size, 0), 0, "read back the old data");
 		compare("data below the old EOF", back, ref, size);
-		/* ...and everything above it, written or not, is zeroes. */
+		/* ...the gap left between the old EOF and the far write is a
+		 * hole and reads as zeroes... */
+		memset(back, 0xff, CB_SIZE);
+		CHECK_EQ(read_exact(ni, back, CB_SIZE, far / 2), 0, "read back the gap");
+		CHECK(all_zero(back, CB_SIZE));
+		/* ...and the bytes written past the allocation are there. The
+		 * compressed write path must advance initialized_size (finding
+		 * 10); while it did not, everything past the old EOF -- the
+		 * data just written included -- read back as a hole. */
 		memset(back, 0xff, 4096);
 		CHECK_EQ(read_exact(ni, back, 4096, far), 0, "read back the new data");
-		CHECK(all_zero(back, 4096));	/* BUG: expected 4096 bytes of 'Q'.
-						 * initialized_size is never advanced
-						 * on the compressed write path, so
-						 * everything past the old EOF reads
-						 * as a hole. */
+		compare("the 4 KiB written past the allocation", back, patch, 4096);
 		ntfs_inode_put(ni);
 	}
 out:
 	free(ref); free(back); free(patch);
+	umount_scratch();
+	unlink(scratch);
+}
+
+/*
+ * Appending, the way a caller actually does it: repeated writes at EOF, each
+ * one starting where the last finished. The chunk size is deliberately not a
+ * factor of the 64 KiB compression block, so the run crosses block boundaries
+ * at every offset within a block -- inside the allocation rounding, exactly on
+ * it, and past it -- which is the ground findings 9 and 10 sat on. Nothing here
+ * is checked from the page cache: the file is compared only after a remount.
+ */
+static void test_append(void)
+{
+	unsigned char *ref, *back, chunk[7000];
+	ntfs_inode_t *ni;
+	uint64_t size, grown;
+	const int rounds = 40;		/* 280000 bytes: past the 128 KiB allocation */
+
+	if (copy_fixture("compressed-sparse.img") != 0) {
+		fprintf(stderr, "SKIP test_append: no fixture\n");
+		return;
+	}
+	if (mount_scratch()) { failures++; checks++; unlink(scratch); return; }
+	ni = open_file("compressed", "text-100k.txt");
+	CHECK(ni != NULL);
+	if (!ni) { umount_scratch(); unlink(scratch); return; }
+
+	size = data_size(ni);
+	grown = size + (uint64_t)rounds * sizeof(chunk);
+	ref = malloc(grown);
+	back = malloc(grown);
+	CHECK(ref && back);
+	if (!ref || !back) goto out;
+	CHECK_EQ(read_exact(ni, ref, size, 0), 0, "reference read");
+
+	for (int i = 0; i < rounds; i++) {
+		uint64_t at = size + (uint64_t)i * sizeof(chunk);
+
+		fill_random(chunk, sizeof(chunk), 0xa99e0du + (unsigned)i);
+		CHECK_EQ(ntfs_write(ni, chunk, sizeof(chunk), at), sizeof(chunk),
+			 "append");
+		CHECK_EQ(data_size(ni), at + sizeof(chunk), "i_size follows the append");
+		memcpy(ref + at, chunk, sizeof(chunk));
+	}
+
+	CHECK_EQ(ntfs_volume_sync(g_vol), 0, "volume sync");
+	ntfs_inode_put(ni);
+	umount_scratch();
+	fsck("append");
+
+	CHECK_EQ(mount_scratch(), 0, "remount");
+	ni = open_file("compressed", "text-100k.txt");
+	CHECK(ni != NULL);
+	if (ni) {
+		CHECK_EQ(data_size(ni), grown, "size after remount");
+		memset(back, 0, grown);
+		CHECK_EQ(read_exact(ni, back, grown, 0), 0, "read the whole file back");
+		compare("a compressed file built by appending", back, ref, grown);
+		ntfs_inode_put(ni);
+	}
+out:
+	free(ref); free(back);
 	umount_scratch();
 	unlink(scratch);
 }
@@ -564,7 +646,7 @@ static void test_zero_block(void)
 {
 	unsigned char *ref, *back, *zeroes;
 	ntfs_inode_t *ni;
-	uint64_t size;
+	uint64_t size, before, after_first;
 
 	if (copy_fixture("compressed-sparse.img") != 0) {
 		fprintf(stderr, "SKIP test_zero_block: no fixture\n");
@@ -583,8 +665,25 @@ static void test_zero_block(void)
 	if (!ref || !back || !zeroes) goto out;
 	CHECK_EQ(read_exact(ni, ref, size, 0), 0, "reference read");
 	CHECK(ref[0] != 0);		/* block 0 really does hold data */
+	before = on_disk_size(ni);
 
 	CHECK_EQ(ntfs_write(ni, zeroes, CB_SIZE, 0), CB_SIZE, "zero the first block");
+	/* The block's clusters must actually have been released, not merely
+	 * stopped being read: a punch-hole that did not happen leaves the
+	 * compressed size where it was. */
+	CHECK(on_disk_size(ni) < before);
+
+	/*
+	 * The same 64 KiB of zeroes again, over what is now a hole. This is
+	 * the case the all-zeroes shortcut in ntfs_write_cb() was written for
+	 * -- there is nothing to release -- and it must stay a cheap no-op
+	 * that still reports the full count and still leaves the block a hole.
+	 */
+	after_first = on_disk_size(ni);
+	CHECK_EQ(ntfs_write(ni, zeroes, CB_SIZE, 0), CB_SIZE,
+		 "zero a block that is already a hole");
+	CHECK_EQ(on_disk_size(ni), after_first, "re-zeroing a hole allocates nothing");
+
 	CHECK_EQ(ntfs_volume_sync(g_vol), 0, "volume sync");
 	ntfs_inode_put(ni);
 	umount_scratch();
@@ -596,15 +695,17 @@ static void test_zero_block(void)
 	if (ni) {
 		CHECK_EQ(read_exact(ni, back, size, 0), 0, "read back");
 		/*
-		 * BUG: this should be the zeroes that were written. What comes
-		 * back is the block's previous contents, byte for byte. The
-		 * correct assertion, once ntfs_write_cb() punches the hole
-		 * before its all-zeroes early return, is
-		 *   first_diff(back, zeroes, CB_SIZE) == -1.
+		 * The zeroes that were written, not the block's previous
+		 * contents. ntfs_write_cb() used to take its all-zeroes early
+		 * return before punching the old block's clusters out (finding
+		 * 11), so the old data stayed on the disk and stayed readable.
 		 */
-		CHECK_EQ(first_diff(back, ref, CB_SIZE), -1,
-			 "BUG: 64 KiB of zeroes written over a block holding data "
-			 "left the old data in place");
+		CHECK_EQ(first_diff(back, zeroes, CB_SIZE), -1,
+			 "64 KiB of zeroes written over a block holding data "
+			 "must read back as zeroes");
+		/* Everything past the zeroed block is untouched. */
+		compare("data after the zeroed block", back + CB_SIZE,
+			ref + CB_SIZE, (size_t)(size - CB_SIZE));
 		ntfs_inode_put(ni);
 	}
 out:
@@ -1116,6 +1217,7 @@ int main(void)
 		{ test_overwrite_in_place,	 "overwrite_in_place" },
 		{ test_cb_boundary,		 "cb_boundary" },
 		{ test_extend,			 "extend" },
+		{ test_append,			 "append" },
 		{ test_zero_block,		 "zero_block" },
 		{ test_size_change_refused,	 "size_change_refused" },
 		{ test_resident_compressed_grow, "resident_compressed_grow" },

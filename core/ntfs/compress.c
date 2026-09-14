@@ -1271,6 +1271,44 @@ static unsigned int ntfs_compress_block(const char *inbuf, const int bufsize,
 	return xout;
 }
 
+/*
+ * cb_is_allocated - does the compression block at @cb_vcn hold any clusters?
+ *
+ * A compression block that is entirely LCN_HOLE has nothing on the disk to
+ * release, so rewriting it as a hole is a no-op that would still cost a
+ * mapping-pairs update and an mft write. Used by the all-zeroes case in
+ * ntfs_write_cb() to tell "already a hole" from "holds data".
+ */
+static bool cb_is_allocated(struct ntfs_inode *ni, s64 cb_vcn)
+{
+	s64 end_vcn = cb_vcn + ni->itype.compressed.block_clusters;
+	struct runlist_element *rl;
+	bool allocated = false;
+
+	down_write(&ni->runlist.lock);
+	if (ntfs_attr_map_whole_runlist(ni)) {
+		/*
+		 * Cannot tell, so assume there is something to release: a
+		 * needless punch-hole is a wasted write, a skipped one is the
+		 * data loss this check exists to prevent.
+		 */
+		up_write(&ni->runlist.lock);
+		return true;
+	}
+	for (rl = ni->runlist.rl; rl && rl->length; rl++) {
+		if (rl->vcn >= end_vcn)
+			break;
+		if (rl->vcn + rl->length <= cb_vcn)
+			continue;
+		if (rl->lcn >= 0) {
+			allocated = true;
+			break;
+		}
+	}
+	up_write(&ni->runlist.lock);
+	return allocated;
+}
+
 static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 		int pages_per_cb)
 {
@@ -1359,6 +1397,9 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 		}
 	}
 
+	new_vcn = ntfs_bytes_to_cluster(vol,
+			pos & ~((loff_t)ni->itype.compressed.block_size - 1));
+
 	if (!fail && !allzeroes) {
 		outbuf[compsz++] = 0;
 		outbuf[compsz++] = 0;
@@ -1367,14 +1408,29 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 		bio_size = rounded;
 		pages = pages_disk;
 	} else if (allzeroes) {
+		/*
+		 * A block of nothing but zeroes becomes a hole, so there is no
+		 * allocation to make and nothing to write.
+		 *
+		 * PORT: upstream returns here with err = 0 without reaching the
+		 * punch-hole below, which is only correct when the block is
+		 * already a hole. When it held data, its clusters stayed
+		 * allocated and still carried the old contents, so the zeroes
+		 * were reported written and the old data read back byte for
+		 * byte after a remount. Keep the shortcut for the case it was
+		 * written for and punch the block out when it holds data.
+		 */
 		err = 0;
+		if (cb_is_allocated(ni, new_vcn))
+			err = ntfs_non_resident_attr_punch_hole(ni, new_vcn,
+					ni->itype.compressed.block_clusters);
+		if (err > 0)
+			err = 0;
 		goto out;
 	} else {
 		bio_size = insz;
 	}
 
-	new_vcn = ntfs_bytes_to_cluster(vol,
-			pos & ~((loff_t)ni->itype.compressed.block_size - 1));
 	new_length = ntfs_bytes_to_cluster(vol, round_up(bio_size, vol->cluster_size));
 
 	err = ntfs_non_resident_attr_punch_hole(ni, new_vcn, ni->itype.compressed.block_clusters);
@@ -1445,14 +1501,27 @@ int ntfs_compress_write(struct ntfs_inode *ni, loff_t pos, size_t count,
 	int cb_size = ni->itype.compressed.block_size, cb_off, err = 0;
 	int i, ip;
 	size_t written = 0;
+	loff_t end = pos + count;
 	struct address_space *mapping = VFS_I(ni)->i_mapping;
 
-	if (NInoCompressed(ni) && pos + count > ni->allocated_size) {
+	/*
+	 * PORT: upstream expands only when the write passes allocated_size.
+	 * A compressed attribute's allocation is rounded up to the compression
+	 * block, so a write that starts past EOF but inside that rounding
+	 * found allocated_size large enough, expanded nothing, and left
+	 * data_size where it was: the block was re-encoded and written to the
+	 * disk with bytes that no longer had a length to reach them. Test
+	 * data_size, which is where EOF actually is; ntfs_attr_expand() still
+	 * skips the cluster allocation when the rounding already covers @end,
+	 * so this only adds the data_size update that was missing.
+	 */
+	if (NInoCompressed(ni) && end > ni->data_size) {
 		int err;
-		loff_t end = pos + count;
 
+		mutex_lock(&ni->mrec_lock);
 		err = ntfs_attr_expand(ni, end,
 				round_up(end, ni->itype.compressed.block_size));
+		mutex_unlock(&ni->mrec_lock);
 		if (err)
 			return err;
 	}
@@ -1539,6 +1608,24 @@ int ntfs_compress_write(struct ntfs_inode *ni, loff_t pos, size_t count,
 		pos += copied;
 		written += copied;
 		count = iov_iter_count(from);
+	}
+
+	/*
+	 * PORT: nothing upstream advances initialized_size on this path.
+	 * ntfs_attr_expand() above moves data_size only, so everything past
+	 * the old EOF -- the bytes just written included -- stayed above
+	 * initialized_size and read back as zeroes, on this mount and after a
+	 * remount. ntfsck is happy with that, because initialized_size below
+	 * data_size is legal; it simply does not mean what the writer meant.
+	 * Same shape as the ordinary write path in core/vfs/api.c: publish the
+	 * new end only once the data is on the disk, and only for a write that
+	 * ran to completion, so a failure leaves do_write() a size to roll back
+	 * to. @pos is the end of what was actually written.
+	 */
+	if (!err && pos > ni->initialized_size) {
+		mutex_lock(&ni->mrec_lock);
+		err = ntfs_attr_set_initialized_size(ni, pos);
+		mutex_unlock(&ni->mrec_lock);
 	}
 
 out:
