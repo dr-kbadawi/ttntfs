@@ -1,0 +1,61 @@
+name: CI
+
+# There is no remote yet. This is here so that pushing one turns the checks on
+# rather than starting a conversation about them; until then `tools/ci.sh` is
+# the same pipeline and `tools/install-hooks.sh` runs it before every push.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    # macos-26 is arm64 and generally available (it is what macos-latest points
+    # at). Pinned rather than `latest` so an image roll cannot change what the
+    # driver is built against without a commit. It must be macOS 26: the
+    # deployment target is 26.0 and Options.swift imports FSKit, so an older
+    # image cannot build the Swift tests -- and the project is arm64-only, so an
+    # -intel label would not build at all.
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools macOS does not ship
+        # autotools: ntfsprogs-plus has no generated configure in its repo.
+        # xcodegen: the Xcode project is generated from fskit/project.yml.
+        run: brew install autoconf automake libtool pkg-config xcodegen
+
+      # ntfsprogs and ntfsprogs-plus are built from pinned sources and take
+      # minutes. The key covers the build scripts and the shared env, so a
+      # version bump or a flag change rebuilds and nothing else does.
+      - name: Cache the NTFS toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            tools/.local
+            tools/.local-plus
+          key: ntfstools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/build-ntfsprogs.sh', 'tools/build-ntfsprogs-plus.sh', 'tools/env.sh') }}
+
+      - name: Run the checks
+        run: tools/ci.sh
+
+      # The fixture suite writes per-test logs; they are what makes a failure
+      # diagnosable without reproducing it locally.
+      - name: Test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            tools/build/test-logs
+            tools/build/*.log
+          if-no-files-found: ignore
+          retention-days: 14

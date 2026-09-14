@@ -37,6 +37,24 @@ Foundational shims written by the integrator, shared by everyone:
 `core/stub/` is a `-ENOSYS` implementation of `ntfscore.h` maintained by the
 integrator so `fskit/` and `tools/` link before `core/vfs/` exists.
 
+## Tests
+
+Tests are owned by the stream that owns the code under test, with two shared
+pieces that belong to nobody in particular and may be edited by anyone:
+
+| path | covers | stream |
+|---|---|---|
+| `platform/tests/` | inode table, bdev, page cache | compat / pagecache |
+| `core/tests/` | mount decisions, probe, flush count | vfs |
+| `core/logfile/tests/` | replay engine, `ntfslog` over fixtures | logfile |
+| `tools/run-tests.sh` | the differential fixture suite | tools |
+| `fskit/NTFSTests/` | the app's Swift logic | fskit |
+| `fskit/scripts/tests/` | the shell scripts | fskit |
+| `tools/ci.sh` | runs all of the above | shared |
+
+`docs/TESTING.md` is the reference: what each suite covers, what is not covered,
+and the rule that a new test must be seen to fail before it is trusted.
+
 ## Build
 
 Top-level CMake builds `platform` + `core/ntfs` + `core/vfs` + `core/logfile`

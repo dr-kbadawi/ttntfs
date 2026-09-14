@@ -186,6 +186,21 @@ The metadata phase is the opposite and is where idle time actually exists: 16%
 busy across thousands of small reads. That, not sequential throughput, is the
 place to look for the delete and mount costs.
 
+## Tests
+
+The app's logic has unit tests (`fskit/NTFSTests`, 51 of them: option parsing,
+mount-status decoding, note expiry). They are a logic bundle with no host
+application -- an ExtensionKit extension cannot host tests, and hosting in the
+app would run them against the real `mount-status.json` in the app group.
+
+```
+cd fskit && xcodegen
+xcodebuild test -project fskit/NTFS.xcodeproj -scheme NTFSTests -derivedDataPath /tmp/ttntfs-tests-dd
+```
+
+Everything that needs a real mount stays in `scripts/mount-test.sh`, which is
+manual. See `docs/TESTING.md` for what is and is not covered.
+
 ## Known issues (macOS 26.3 and 26.6.2)
 
 - The System Settings switch for File System Extensions cannot enable a

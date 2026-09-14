@@ -205,7 +205,8 @@ documentation (Russon & Fledel), and behavior observed from Windows.
 | Minimum macOS | **26**. One FSKit API generation. 15.4 support only if demand appears. |
 | Metadata write policy | **Write-back, ordered, flushed within 1 s** and on sync/unmount. Full `$LogFile` journaling (writing records, not just replay) is the later item that makes yanks safe. |
 | Filenames illegal on Windows (`: ? * < > \| "` and trailing dot/space) | **Rejected** with `EINVAL`. Everything the Mac writes must open on Windows. |
-| Test ground truth | A physical Windows PC for `format` and `chkdsk /f` round-trips on USB media; plus a Linux VM with the 7.1 kernel driver and `fsck.ntfs` for automated differential tests. |
+| Test ground truth | A physical Windows PC for `format` and `chkdsk /f` round-trips on USB media; plus ntfsprogs as a read oracle and ntfsprogs-plus's `fsck.ntfs` as a structural checker on every run. What each suite covers, and what none of them cover, is `docs/TESTING.md`. |
+| Running the tests | One entry point, `tools/ci.sh`, covering everything that needs no hardware and no signing certificate. Added 2026-09-14 after two existing suites were found to have been silently not running for a day each. A test nobody runs is not coverage. |
 | Page cache logical page | Fixed 4 KiB regardless of host page size. |
 | Languages | C core + C compat layer behind one C ABI; Swift only for the FSKit layer. |
 | Build | CMake for core/platform/`ntfscli`; Xcode links `libntfscore.a`. |

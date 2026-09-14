@@ -20,6 +20,38 @@ tools/
   build/               CMake trees and test logs                      (ignored)
 ```
 
+## Running the checks: `tools/ci.sh`
+
+One command for everything that can be checked without hardware, signing, or a
+human:
+
+```
+tools/ci.sh            # all stages
+tools/ci.sh --quick    # skip the fixture suite, the slow one
+tools/ci.sh --list     # what it will run
+```
+
+Stages: build the two NTFS toolchains, `ctest` (platform, mount decisions,
+`$LogFile`, the enable-module script), `run-tests.sh all` with
+`NTFS_REQUIRE_FSCK=1`, the app's Swift unit tests, and a Debug build of the app
+and extension. One stage failing does not stop the rest, so a run tells you
+everything that is broken rather than the first thing.
+
+Deliberately **not** run: `fskit/scripts/mount-test.sh`, which needs the FSKit
+module enabled and a real mount, and `fskit/scripts/package.sh`, which needs the
+Developer ID certificate. A release still needs a person.
+
+`.github/workflows/ci.yml` runs the same script on `macos-26` and caches the
+toolchains. There is no git remote yet, so nothing runs it automatically; until
+there is one, `tools/install-hooks.sh` installs a pre-push hook that runs
+`tools/ci.sh --quick`.
+
+Why any of this exists: until 2026-09-14 nothing ran these suites unless someone
+typed the command, and two failures sat unnoticed for a day each. `logfile_unit`
+hung inside ASan's own initialiser, so its 243 checks never executed; and a
+stale header aborted `ntfslog` on every fixture. Both were caught by tests that
+already existed. A test nobody runs is not coverage.
+
 ## Checking what we wrote: ntfsprogs-plus
 
 `tools/build-ntfsprogs-plus.sh` builds [ntfsprogs-plus](https://github.com/ntfsprogs-plus/ntfsprogs-plus)
