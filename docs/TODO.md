@@ -21,4 +21,6 @@
       metadataFlush EIO on USB (test FSSupportsKernelOffloadedIO first).
 - [ ] x86_64 build. arm64 only; nothing has ever compiled for a second arch.
 - [ ] mkfs/fsck in the app, Homebrew cask.
-- [ ] Rebuild the DMG — the current one predates tonight's replay and flush fixes.
+- [x] Rebuild the DMG. Done 2026-09-15 from a47cd6e: notarized, stapled,
+      `source=Notarized Developer ID`, installed from the DMG itself and verified
+      serving a real volume. Release notes in `RELEASE-NOTES.md`.
