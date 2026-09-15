@@ -468,11 +468,28 @@ rule before any of this runs, verified by zeroing both restart pages of a test
 image: the mount returns `-EROFS` and nothing is erased. So the fallback is for
 the narrow case of a log that passes the clean rule and still cannot be opened.
 
-**Still to verify on Windows:** that Windows agrees a marked-clean log with stale
-record pages behind it needs no replay. ntfs3 and `ntfsrecover` both write
-exactly this, but after a replay has consumed the records; doing it on a clean
-journal without replaying is related but not identical. Until that round trip is
-done this is inferred, not proven.
+**Verified on Windows 10 (19045), 2026-09-15.** A stick mounted read-write by
+this driver -- journal retired with two restart pages, files written, unmounted
+-- was taken to Windows. The file opened normally, `chkdsk /f` reported **no
+problems**, and back on the Mac a 4 MiB payload still hashed identically
+(`ea0009565cd6...`). So Windows does accept a marked-clean log with stale record
+pages behind it; this is no longer inferred.
+
+Windows rewrote the two restart pages itself on mount, differing from ours in
+**38 of 8192 bytes** -- LSN and open-count bookkeeping -- and kept them v1.1 with
+`RESTART_VOLUME_IS_CLEAN`. That is Windows adopting our format rather than
+correcting it.
+
+Two loose ends from that round trip, neither explained and neither harmful:
+
+* The volume did not appear on the **first** plug-in and did on the second. Not
+  reproduced or diagnosed; it may be ordinary USB enumeration. Worth watching on
+  future round trips, because "needs a replug after our unmount" would be a real
+  problem if it turns out to be ours.
+* `chkdsk` reported **2 reparse records processed** where an earlier run on the
+  same stick reported 0. A scan of every in-use MFT record found **no
+  `$REPARSE_POINT` attribute anywhere** on the volume, and `chkdsk` reported no
+  problems, so nothing is broken. Unexplained.
 
 ### If we replay, write the log back as 1.1 and clean
 
