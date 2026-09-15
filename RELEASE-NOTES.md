@@ -1,5 +1,31 @@
 # TT NTFS Native — release notes
 
+## Build of 2026-09-15, third (commit c8f9e94)
+
+### A volume whose journal has no restart page is now usable
+
+Some volumes carry a `$LogFile` whose two restart pages have been erased, with
+record pages still behind them. We called that corrupt and mounted the volume
+read-only, permanently, with no way forward except Windows.
+
+**Windows does not agree, and it is right.** Given such a volume -- a Windows
+Recovery partition in this state since 2022 -- Windows wrote two fresh restart
+pages, left every record page alone, and mounted it read-write. It did not erase
+the journal and did not repair anything.
+
+This build does the same: **two writes, and the volume mounts**. The restart
+pages we produce match Windows' own in version, state and geometry.
+
+Worth stating what this is not. It does not repair a volume. The recovery
+partition had a real structural inconsistency, and Windows did not fix that
+either -- `chkdsk` is still the tool for that, and a journal cannot substitute.
+What changed is only that a missing journal header is no longer mistaken for a
+damaged volume.
+
+A journal that genuinely says "replay me" is still refused read-write, as before.
+
+---
+
 ## Build of 2026-09-15, second (commit 60710f0)
 
 One change over the earlier build today, and it is worth having.
