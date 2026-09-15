@@ -427,6 +427,30 @@ and `EPERM` overrides the default `recover`. **ntfs-3g never mounts a Windows 8+
 dirty volume read-write at all.** We match its stated rule while being more
 permissive than its behaviour. That is a deliberate choice and should stay one.
 
+### Wiping the log is the riskiest way to clean it, and we have the incident to prove it
+
+`ntfs_empty_logfile()` (inherited from upstream, and what ntfs-3g's `recover`
+does too) starts at VCN 0 and walks forward writing `0xff` over **every** page.
+On a 64 MiB journal that is 16,384 pages, and the **first** two it destroys are
+the restart pages -- the only structures that make the log replayable.
+
+On 2026-09-13 our extension crashed part-way through exactly that loop. The
+volume was left with restart pages erased, 152 pages torn to `BAAD`, and 16,220
+intact `RCRD` pages: a journal full of recoverable work and no way to reach it.
+Mounting it, our own driver then correctly refused to write, and the user's disk
+sat read-only for a day. (Memory note `incident-2026-09-13-journal-damage`.)
+
+**Replay-then-mark-clean has a far smaller exposure window.** ntfs3 and
+`ntfsrecover` both replay and then rewrite the two restart pages as version 1.1
+with `RESTART_VOLUME_IS_CLEAN` -- two pages, written **last**. Same end state for
+a clean volume, 8,000x fewer writes, and if it is interrupted the log is still
+parseable, so the next attempt or Windows can finish the job.
+
+`ntfs_logfile_mark_clean()` already does the two-page version. The wipe remains
+on the mount path because it is upstream's behaviour and it is what a log with no
+usable restart page needs, but it should be the fallback rather than the default,
+and it should not be reached for a log we could have replayed.
+
 ### If we replay, write the log back as 1.1 and clean
 
 ntfs3 and `ntfsrecover` converged independently on this: set `major_ver = 1`,
