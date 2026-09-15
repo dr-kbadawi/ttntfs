@@ -348,6 +348,11 @@ int ntfs_logfile_replay_device(struct ntfs_bdev *dev, struct ntfs_logfile_analys
  * case the caller must fall back to the full erase. */
 int ntfs_logfile_mark_clean_device(struct ntfs_bdev *dev);
 
+/* Our own module's verdict on a device's journal, as an enum ntfs_log_state.
+ * The vendored ntfs_check_logfile() cannot distinguish "no restart page" from
+ * "a v2.0 header I do not understand"; this can. */
+int ntfs_logfile_state_device(struct ntfs_bdev *dev, int *state_out);
+
 /* Diagnostics */
 typedef void (*ntfs_log_fn)(int level, const char *msg, void *ctx);
 void ntfs_set_logger(ntfs_log_fn fn, void *ctx);

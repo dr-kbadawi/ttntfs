@@ -190,6 +190,106 @@ static struct mount_outcome mount_it(const char *path)
 
 /* ---- 1. the clean rule, and the two implementations agreeing ---------- */
 
+/*
+ * A journal with no usable restart page is regenerable, not dirty -- but a v2.0
+ * header the vendored checker cannot read is NOT the same thing.
+ *
+ * Both make ntfs_check_logfile() return false, and treating them alike mounted a
+ * genuinely dirty v2.0 volume read-write during development on 2026-09-15.
+ * Measured on a real Windows Recovery volume: attaching it to Windows wrote two
+ * fresh v1.1 restart pages and mounted it read-write, leaving all 1113 record
+ * pages alone. A missing header is a two-page fix; a header that says dirty is
+ * not. This pins both.
+ */
+/* Erase both restart pages, leaving the record pages behind: the shape a real
+ * Windows Recovery volume was found in, and what our crash left on 2026-09-13. */
+static int erase_restart_pages(const char *img_path)
+{
+	struct ntfs_image img;
+	uint8_t page[PS];
+	uint64_t off;
+	int fd, err, i;
+
+	err = ntfs_image_open(&img, img_path, true, 0, 0);
+	if (err)
+		return err;
+	fd = open(img_path, O_WRONLY);
+	if (fd < 0) { ntfs_image_close(&img); return -errno; }
+	memset(page, 0xff, PS);
+	for (i = 0; i < 2; i++) {
+		off = ntfs_image_map(img.log_runs, img.n_log_runs, img.cluster_size,
+				     (uint64_t)i * PS);
+		if (off == UINT64_MAX) { close(fd); ntfs_image_close(&img); return -EIO; }
+		if (pwrite(fd, page, PS, (off_t)off) != (ssize_t)PS) {
+			close(fd); ntfs_image_close(&img); return -EIO;
+		}
+	}
+	/*
+	 * Record pages behind the erased header, or this proves nothing: an
+	 * all-0xff log is EMPTY, which ntfs_glue_logfile_clean() answers at its
+	 * first line without ever reaching the branch under test. The first
+	 * version of this helper omitted them and the test passed with the fix
+	 * reverted -- caught only because a revert that produces no failures is
+	 * treated here as suspicious rather than reassuring.
+	 */
+	for (i = 4; i < 8; i++) {
+		memset(page, 0, PS);
+		put32(page + RP_MAGIC, LFS_MAGIC_RCRD);
+		put16(page + RP_USA_OFS, RP_HEADER_SIZE);
+		put16(page + RP_USA_COUNT, PS / 512 + 1);
+		off = ntfs_image_map(img.log_runs, img.n_log_runs, img.cluster_size,
+				     (uint64_t)i * PS);
+		if (off == UINT64_MAX) { close(fd); ntfs_image_close(&img); return -EIO; }
+		if (pwrite(fd, page, PS, (off_t)off) != (ssize_t)PS) {
+			close(fd); ntfs_image_close(&img); return -EIO;
+		}
+	}
+	close(fd);
+	ntfs_image_close(&img);
+	return 0;
+}
+
+static void test_headerless_is_not_dirty(void)
+{
+	struct mount_outcome m;
+
+	printf("test_headerless_is_not_dirty\n");
+
+	/* (a) header erased, records behind it: regenerable, must go read-write. */
+	if (copy_fixture("basic-4k.img") != 0) {
+		fprintf(stderr, "SKIP test_headerless_is_not_dirty: no fixture\n");
+		return;
+	}
+	if (write_restart_pages(scratch, true, RESTART_VOLUME_IS_CLEAN) == 0 &&
+	    erase_restart_pages(scratch) == 0) {
+		m = mount_it(scratch);
+		checks++;
+		if (m.err) {
+			failures++;
+			fprintf(stderr, "FAIL headerless: mount returned %d\n", m.err);
+		} else if (m.read_only) {
+			failures++;
+			fprintf(stderr, "FAIL headerless: mounted READ-ONLY (reason %d); a missing "
+					"restart page is regenerable, not dirty\n", m.ro_reason);
+		}
+	}
+	unlink(scratch);
+
+	/* (b) a header that says dirty must still be refused. */
+	if (copy_fixture("basic-4k.img") != 0)
+		return;
+	if (write_restart_pages(scratch, false, 0) == 0) {
+		m = mount_it(scratch);
+		checks++;
+		if (!m.err && (!m.read_only || m.ro_reason != NTFS_RO_LOGFILE)) {
+			failures++;
+			fprintf(stderr, "FAIL dirty: expected read-only for an unclean journal, "
+					"got ro=%d reason=%d\n", (int)m.read_only, m.ro_reason);
+		}
+	}
+	unlink(scratch);
+}
+
 static void test_journal_clean_rule(void)
 {
 	static const struct {
@@ -432,6 +532,7 @@ static void test_one_flush_per_sync(void)
 int main(void)
 {
 	test_journal_clean_rule();
+	test_headerless_is_not_dirty();
 	test_nonempty_journal_rw();
 	test_probe_light_matches();
 	test_one_flush_per_sync();

@@ -1591,7 +1591,25 @@ get_ctx_vol_failed:
 			sb->s_flags |= SB_RDONLY;
 			ntfs_error(sb, "Failed to load LogFile. Mounting read-only.");
 		}
-		NVolSetErrors(vol);
+		/*
+		 * PORT: upstream also does NVolSetErrors(vol) here. We do not.
+		 *
+		 * ntfs_check_logfile() fails on two things this port can handle
+		 * and upstream could not: a journal with no usable restart page,
+		 * which Windows regenerates in two pages (measured 2026-09-15 on a
+		 * real Windows Recovery volume), and any v2.0 header, which this
+		 * port parses and upstream rejects outright. Setting the volume's
+		 * error flag for either makes an ordinary state look like damage
+		 * and, worse, is indistinguishable afterwards from a real I/O
+		 * failure elsewhere in the mount.
+		 *
+		 * The mount is still read-only here. core/vfs/super_glue.c decides
+		 * whether to go read-write, using a parser that understands v2.0,
+		 * and names the reason when it refuses. Nothing is lost by leaving
+		 * the flag alone; clearing it afterwards instead was tried and
+		 * swallowed a genuine $MFTMirr read failure, which test_faults
+		 * caught.
+		 */
 	}
 
 	kvfree(rp);

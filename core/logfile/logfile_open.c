@@ -588,7 +588,20 @@ int ntfs_logfile_mark_clean(ntfs_logfile_t *log)
 
 	if (!log->io.write)
 		return -ENOTSUP;
-	if (log->state == NTFS_LOG_CORRUPT || log->state == NTFS_LOG_UNSUPPORTED)
+	/*
+	 * CORRUPT here means "no usable restart page", and regenerating the two
+	 * restart pages is exactly the right response to that -- it is what
+	 * Windows does. Measured on a real Windows Recovery volume whose restart
+	 * pages had been 0xff since 2022: attaching it to Windows wrote two fresh
+	 * v1.1 restart pages, left all 1113 record pages in place, and mounted it
+	 * read-write. It did not erase the log and did not repair the volume (a
+	 * pre-existing $FILE_NAME/$DATA size mismatch on inode 41 survived
+	 * untouched, which is a separate problem needing chkdsk, not a journal).
+	 *
+	 * UNSUPPORTED still refuses: that is a version we do not understand, and
+	 * writing a v1.1 header over it would be a guess.
+	 */
+	if (log->state == NTFS_LOG_UNSUPPORTED)
 		return -EINVAL;
 	ps = log->page_size ? log->page_size : LFS_DEFAULT_PAGE_SIZE;
 	page = calloc(1, ps);
@@ -617,7 +630,11 @@ int ntfs_logfile_mark_clean(ntfs_logfile_t *log)
 		lf_put16(ra + RA_LOG_PAGE_DATA_OFFSET, (uint16_t)log->data_off);
 		lf_put32(ra + RA_RESTART_LOG_OPEN_COUNT, log->open_log_count + 1);
 	} else {
-		uint32_t bits = 0, v = ps * (LFS_MIN_RECORD_PAGES + 2);
+		/* Prefer the log's real size; fall back to a minimal one only when
+		 * it is unknown. A file_size smaller than the attribute would make
+		 * every later reader wrap early. */
+		uint32_t bits = 0, v = log->orig_size >= ps * (LFS_MIN_RECORD_PAGES + 2)
+					? log->orig_size : ps * (LFS_MIN_RECORD_PAGES + 2);
 		for (uint32_t t = v; t; t >>= 1)
 			bits++;
 		lf_put32(ra + RA_SEQ_NUMBER_BITS, 67 - bits);

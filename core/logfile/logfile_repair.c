@@ -78,6 +78,46 @@ static bool version_allowed(const struct ntfs_logfile_info *info)
 }
 
 /*
+ * What does OUR module make of this device's journal?
+ *
+ * The vendored ntfs_check_logfile() fails for several different reasons and
+ * reports none of them: a genuinely missing restart page, and a perfectly good
+ * v2.0 header it simply does not understand, both come back as plain false.
+ * Treating those alike mounted a dirty v2.0 volume read-write during
+ * development on 2026-09-15. Callers that need to tell them apart must ask a
+ * parser that knows v2.0, which is this one.
+ */
+int ntfs_logfile_state_device(struct ntfs_bdev *dev, int *state_out)
+{
+	struct ntfs_image_io io = { .ctx = dev, .pread = bdev_pread,
+				    .pwrite = bdev_pwrite, .sync = bdev_sync };
+	struct ntfs_logfile_info info;
+	struct ntfs_log_geometry geom;
+	struct ntfs_image img;
+	struct ntfs_log_io log_io;
+	ntfs_logfile_t *log = NULL;
+	int err;
+
+	if (!dev || !state_out)
+		return -EINVAL;
+	err = ntfs_image_open_io(&img, &io, dev->size_bytes, false);
+	if (err)
+		return err;
+	ntfs_image_log_io(&img, &log_io);
+	ntfs_image_geometry(&img, &geom);
+	err = ntfs_logfile_open(&log_io, &geom, &log);
+	if (err) {
+		ntfs_image_close(&img);
+		return err;
+	}
+	ntfs_logfile_get_info(log, &info);
+	*state_out = (int)info.state;
+	ntfs_logfile_close(log);
+	ntfs_image_close(&img);
+	return 0;
+}
+
+/*
  * Mark a clean journal clean, instead of erasing all of it.
  *
  * ntfs_empty_logfile() -- upstream's, and what ntfs-3g's "recover" does -- walks

@@ -197,8 +197,49 @@ static bool ntfs_glue_logfile_clean(struct ntfs_volume *vol)
 		return false;
 	if (NVolLogFileEmpty(vol))
 		return true;
-	if (!ntfs_check_logfile(vol->logfile_ino, &rp))
-		return false;
+	if (!ntfs_check_logfile(vol->logfile_ino, &rp)) {
+		/*
+		 * No usable restart page. That is NOT the same as a dirty volume,
+		 * and treating it as one was wrong.
+		 *
+		 * Measured 2026-09-15 on a Windows Recovery volume whose restart
+		 * pages had been 0xff since 2022, with 1113 record pages behind
+		 * them. We refused it read-write. Attaching the same disk to
+		 * Windows -- no drive letter, no Explorer, just plugged in --
+		 * produced two fresh v1.1 restart pages, left every record page
+		 * alone, and mounted it read-write. Windows regenerates the header
+		 * and carries on.
+		 *
+		 * So a missing header is a two-page fix, not damage. The genuine
+		 * "something is wrong" signals are the volume's own dirty and
+		 * error flags, and ntfs_glue_make_rw() already refuses on those
+		 * before it writes anything. Note Windows did not repair the
+		 * volume either: a $FILE_NAME/$DATA size mismatch on inode 41
+		 * survived the round trip untouched. Journal state and structural
+		 * consistency are different questions and should not be conflated,
+		 * which is the mistake this branch used to make.
+		 */
+		int lstate = 0;
+
+		if (vol->vol_flags & (VOLUME_IS_DIRTY | VOLUME_MODIFIED_BY_CHKDSK |
+				      VOLUME_MUST_MOUNT_RO_MASK))
+			return false;
+		/*
+		 * ntfs_check_logfile() failing is not evidence of a missing
+		 * header. It also fails on a perfectly good v2.0 restart page it
+		 * does not understand, and such a log is very often DIRTY -- every
+		 * dirty volume from a modern Windows is v2.0. Asking a parser that
+		 * knows v2.0 is the only way to tell the two apart, and not asking
+		 * mounted a dirty v2.0 volume read-write while this was being
+		 * written.
+		 */
+		if (ntfs_logfile_state_device(vol->sb->s_bdev, &lstate) != 0)
+			return false;
+		if (lstate != NTFS_LOG_CORRUPT)
+			return lstate == NTFS_LOG_CLEAN || lstate == NTFS_LOG_EMPTY;
+		ntfs_debug("no usable restart page; the header will be regenerated");
+		return true;
+	}
 	if (!rp)
 		return NVolLogFileEmpty(vol);
 	ra = (struct restart_area *)((u8 *)rp + le16_to_cpu(rp->restart_area_offset));

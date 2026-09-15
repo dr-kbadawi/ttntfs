@@ -346,6 +346,46 @@ in the LSN field, the 1.1 convention) sitting beside v2.0 pages. That stick has
 lived as both versions, which is direct evidence of Windows' documented
 downgrade-to-1.1-on-clean-dismount and upgrade-on-mount cycle.
 
+### A journal with no restart page is regenerable, not dirty (2026-09-15)
+
+A Windows Recovery volume arrived with its two restart pages `0xff` since 2022
+and 1113 record pages behind them. We called it CORRUPT and mounted read-only.
+
+**Windows disagrees, and it was right.** Attaching the same disk to Windows --
+no drive letter, no Explorer, just plugged in -- produced two fresh **v1.1**
+restart pages, left every record page in place, and mounted read-write. It did
+not erase the log, did not replay it, and did not repair the volume: a
+pre-existing `$FILE_NAME`/`$DATA` size mismatch on inode 41
+(`ses-usb-installer.log`) survived the round trip untouched, and `ntfsck`
+reports it identically before and after.
+
+That separates two things we had conflated. **Journal state and structural
+consistency are different questions.** A missing header is a two-page fix.
+A structural inconsistency needs `chkdsk`, and neither Windows nor we detect it
+from the journal.
+
+So `ntfs_glue_logfile_clean()` now treats "no usable restart page" as clean, and
+`ntfs_logfile_mark_clean()` regenerates the header. On the real volume: **2
+writes, 8 KiB**, producing restart pages byte-comparable to Windows' own (v1.1,
+CLEAN, same geometry), with the volume then mounting read-write.
+
+**The trap, which caught us twice:**
+
+* `ntfs_check_logfile()` returns plain `false` for a missing header **and** for a
+  perfectly good v2.0 header it does not understand. Treating those alike mounted
+  a genuinely dirty v2.0 volume read-write during development. The decision now
+  asks `ntfs_logfile_state_device()`, a parser that knows v2.0, and only
+  `NTFS_LOG_CORRUPT` is treated as regenerable.
+* Clearing `NV_Errors` afterwards to undo upstream's flag swallowed a real
+  `$MFTMirr` read failure, which `test_faults` caught. The fix is instead not to
+  set the flag for a logfile failure at all (`PORT:` comment in
+  `core/ntfs/super.c`); the mount is still read-only there, and the glue --
+  which can tell the cases apart -- makes the read-write decision.
+
+`test_mount.c: test_headerless_is_not_dirty` pins both directions. Note it needs
+**record pages behind the erased header**: the first version omitted them, the
+log read as EMPTY, and the test passed with the fix reverted.
+
 ### Cross-checked against ntfsrecover (2026-09-15)
 
 `ntfsrecover` is the only other userspace v2.0 replay engine, so it was run as
