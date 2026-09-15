@@ -1,6 +1,39 @@
 # TT NTFS Native — release notes
 
-## Build of 2026-09-15 (commit a47cd6e)
+## Build of 2026-09-15, second (commit 60710f0)
+
+One change over the earlier build today, and it is worth having.
+
+### Mounting a disk read-write no longer rewrites its whole journal
+
+Every read-write mount of a volume Windows has used rewrote the entire
+`$LogFile`. Measured at the device on a real Windows volume: **1,420 writes,
+5.5 MiB**, for a mount that changed nothing else. Your 500 GB disk carries a
+64 MiB journal, so the same mount was about **16,384 writes**.
+
+Worse than the cost was the order: the erase destroyed the two restart pages
+*first* and then spent thousands of writes on the rest, so a crash anywhere in
+that window left a journal full of recoverable work with nothing left to reach
+it by. That is exactly what this driver did to a disk on 2026-09-13.
+
+It now writes **two restart pages, last** -- the same thing Windows leaves on a
+clean dismount, and what the Linux `ntfs3` driver and `ntfsrecover` both write
+after replaying. The full erase remains as a fallback for a journal too damaged
+to rewrite.
+
+**Measured: 1,420 writes -> 2. Verified across two Windows round trips:**
+`chkdsk /f` reported no problems both times, files opened normally on Windows,
+and payloads hashed identically on return. Windows rewrote the two restart pages
+itself on mount, changing 38 of 8,192 bytes of bookkeeping and keeping our
+format rather than correcting it.
+
+A journal that is genuinely corrupt is still refused a read-write mount before
+any of this runs, so that case is untouched -- and no longer erased, which is
+safer than before.
+
+---
+
+## Build of 2026-09-15, first (commit a47cd6e)
 
 53 commits since the previous build. Read the first two sections before
 installing over an older copy; the rest is detail.
