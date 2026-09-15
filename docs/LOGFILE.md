@@ -482,10 +482,15 @@ correcting it.
 
 Two loose ends from that round trip, neither explained and neither harmful:
 
-* The volume did not appear on the **first** plug-in and did on the second. Not
-  reproduced or diagnosed; it may be ordinary USB enumeration. Worth watching on
-  future round trips, because "needs a replug after our unmount" would be a real
-  problem if it turns out to be ours.
+* The volume did not appear on the **first** plug-in and did on the second.
+  **Repeated under identical conditions and it did not recur** -- same driver,
+  same two-page retirement, same clean unmount, and the drive appeared first
+  time. So it is not a deterministic consequence of how we leave a volume, which
+  is what would have made it ours. One non-reproduction is not proof of absence,
+  though: it is 1 failure in 2 trials, and the honest reading is "intermittent,
+  cause unknown, most likely USB enumeration". The same stick shows the same
+  class of flakiness on the Mac side, where a mount sometimes needs two attempts
+  or is grabbed by Apple's driver first. Worth noting again if it recurs.
 * `chkdsk` reported **2 reparse records processed** where an earlier run on the
   same stick reported 0. A scan of every in-use MFT record found **no
   `$REPARSE_POINT` attribute anywhere** on the volume, and `chkdsk` reported no
