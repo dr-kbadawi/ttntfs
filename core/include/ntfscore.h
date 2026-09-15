@@ -343,6 +343,11 @@ int ntfs_logfile_analyse(struct ntfs_bdev *dev, struct ntfs_logfile_analysis *ou
  */
 int ntfs_logfile_replay_device(struct ntfs_bdev *dev, struct ntfs_logfile_analysis *out);
 
+/* Mark a parseable journal clean by rewriting its two restart pages, instead of
+ * erasing the whole log. Returns -ENOTSUP if the log cannot be parsed, in which
+ * case the caller must fall back to the full erase. */
+int ntfs_logfile_mark_clean_device(struct ntfs_bdev *dev);
+
 /* Diagnostics */
 typedef void (*ntfs_log_fn)(int level, const char *msg, void *ctx);
 void ntfs_set_logger(ntfs_log_fn fn, void *ctx);

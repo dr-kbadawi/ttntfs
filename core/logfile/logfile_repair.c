@@ -77,6 +77,64 @@ static bool version_allowed(const struct ntfs_logfile_info *info)
 	return info->major_ver == 2 && info->minor_ver == 0;
 }
 
+/*
+ * Mark a clean journal clean, instead of erasing all of it.
+ *
+ * ntfs_empty_logfile() -- upstream's, and what ntfs-3g's "recover" does -- walks
+ * the whole $LogFile from VCN 0 writing 0xff. Measured on a real Windows volume,
+ * a read-write mount that changes nothing else costs 1420 writes and 5.5 MiB on
+ * a 1.7 GB stick; a 500 GB disk carries a 64 MiB journal, so 16384 pages. And
+ * the FIRST thing it destroys is the pair of restart pages, which are the only
+ * structures that make the log replayable.
+ *
+ * That is not theoretical. On 2026-09-13 this driver crashed part-way through
+ * that loop on a user's disk and left restart pages erased, 152 pages torn, and
+ * 16220 intact record pages: a journal full of recoverable work with no way to
+ * reach it. See the incident note and docs/LOGFILE.md.
+ *
+ * Writing two clean restart pages achieves the same thing for the case that
+ * matters -- Windows must not replay stale records over what we write -- because
+ * a closed, RESTART_VOLUME_IS_CLEAN log with current_lsn at the end of the log
+ * is exactly what Windows itself leaves on a clean dismount. ntfs3 and
+ * ntfsrecover both write precisely this after replaying. Two pages, written
+ * last, instead of thousands written first.
+ *
+ * Returns -ENOTSUP when the log cannot be parsed well enough to rewrite its
+ * restart pages; the caller must fall back to the full erase in that case,
+ * which is the one situation the erase is genuinely for.
+ */
+int ntfs_logfile_mark_clean_device(struct ntfs_bdev *dev)
+{
+	struct ntfs_image_io io = { .ctx = dev, .pread = bdev_pread,
+				    .pwrite = bdev_pwrite, .sync = bdev_sync };
+	struct ntfs_log_geometry geom;
+	struct ntfs_image img;
+	struct ntfs_log_io log_io;
+	ntfs_logfile_t *log = NULL;
+	int err;
+
+	if (!dev)
+		return -EINVAL;
+	if (dev->read_only)
+		return -EROFS;
+	err = ntfs_image_open_io(&img, &io, dev->size_bytes, true);
+	if (err)
+		return err;
+	ntfs_image_log_io(&img, &log_io);
+	ntfs_image_geometry(&img, &geom);
+	err = ntfs_logfile_open(&log_io, &geom, &log);
+	if (err) {
+		ntfs_image_close(&img);
+		return -ENOTSUP;		/* unparseable: caller erases */
+	}
+	err = ntfs_logfile_mark_clean(log);
+	ntfs_logfile_close(log);
+	if (!err && dev->ops && dev->ops->flush)
+		(void)dev->ops->flush(dev);	/* best effort; see fskit_flush */
+	ntfs_image_close(&img);
+	return err;
+}
+
 int ntfs_logfile_replay_device(struct ntfs_bdev *dev, struct ntfs_logfile_analysis *out)
 {
 	struct ntfs_image_io io = { .ctx = dev, .pread = bdev_pread,

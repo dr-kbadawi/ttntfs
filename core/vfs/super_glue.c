@@ -271,10 +271,33 @@ static int ntfs_glue_make_rw(struct ntfs_volume *vol)
 			     sb->s_id, (unsigned)le16_to_cpu(vol->vol_flags));
 		return -EROFS;
 	}
-	if (vol->logfile_ino && !ntfs_empty_logfile(vol->logfile_ino)) {
-		ntfs_error(sb, "Failed to empty journal LogFile.  Staying read-only.");
-		NVolSetErrors(vol);
-		return -EROFS;
+	/*
+	 * Retire the journal so Windows cannot replay stale records over what we
+	 * are about to write.
+	 *
+	 * Two restart pages first, the whole-log erase only as a fallback. The
+	 * erase is upstream's behaviour and it walks every page from VCN 0,
+	 * destroying the restart pages before anything else: measured at 1420
+	 * writes / 5.5 MiB on a small stick and 16384 pages on a 64 MiB journal,
+	 * for a mount that changes nothing else. A crash inside that loop leaves
+	 * a log full of recoverable work with nothing left to reach it by, which
+	 * is exactly what happened to a user's disk on 2026-09-13.
+	 *
+	 * ntfs_logfile_mark_clean_device() writes two pages, last, and leaves the
+	 * same thing Windows leaves on a clean dismount. It refuses with -ENOTSUP
+	 * on a log it cannot parse, and that is the one case the erase is really
+	 * for, so the fallback stays.
+	 */
+	if (vol->logfile_ino) {
+		int lerr = ntfs_logfile_mark_clean_device(sb->s_bdev);
+
+		if (lerr && !ntfs_empty_logfile(vol->logfile_ino)) {
+			ntfs_error(sb, "Failed to retire journal LogFile.  Staying read-only.");
+			NVolSetErrors(vol);
+			return -EROFS;
+		}
+		if (lerr)
+			ntfs_debug("marking the journal clean failed (%d); erased it instead", lerr);
 	}
 	sb->s_flags &= ~SB_RDONLY;
 	return 0;

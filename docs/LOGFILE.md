@@ -446,10 +446,33 @@ with `RESTART_VOLUME_IS_CLEAN` -- two pages, written **last**. Same end state fo
 a clean volume, 8,000x fewer writes, and if it is interrupted the log is still
 parseable, so the next attempt or Windows can finish the job.
 
-`ntfs_logfile_mark_clean()` already does the two-page version. The wipe remains
-on the mount path because it is upstream's behaviour and it is what a log with no
-usable restart page needs, but it should be the fallback rather than the default,
-and it should not be reached for a log we could have replayed.
+**Changed 2026-09-15.** `ntfs_glue_make_rw()` now calls
+`ntfs_logfile_mark_clean_device()` first and falls back to the erase only when
+that returns `-ENOTSUP`, i.e. on a log too damaged to rewrite its restart pages.
+
+Measured on a real Windows volume, mounting read-write and changing nothing
+else:
+
+| | writes | bytes |
+|---|---|---|
+| before (erase every page) | 1420 | 5680 KiB |
+| after (two restart pages) | **2** | **8 KiB** |
+
+That stick carries a 5.5 MiB journal; a 500 GB disk carries 64 MiB, so the same
+mount was 16384 writes. Afterwards `ntfslog` reports `State: CLEAN`,
+`oldest_lsn == current_lsn`, `restart_lsn 0`, "nothing to replay", and `ntfsck`
+calls the volume clean.
+
+A journal that is genuinely corrupt is refused a read-write mount by the clean
+rule before any of this runs, verified by zeroing both restart pages of a test
+image: the mount returns `-EROFS` and nothing is erased. So the fallback is for
+the narrow case of a log that passes the clean rule and still cannot be opened.
+
+**Still to verify on Windows:** that Windows agrees a marked-clean log with stale
+record pages behind it needs no replay. ntfs3 and `ntfsrecover` both write
+exactly this, but after a replay has consumed the records; doing it on a clean
+journal without replaying is related but not identical. Until that round trip is
+done this is inferred, not proven.
 
 ### If we replay, write the log back as 1.1 and clean
 
