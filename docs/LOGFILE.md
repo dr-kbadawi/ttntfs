@@ -491,10 +491,24 @@ Two loose ends from that round trip, neither explained and neither harmful:
   cause unknown, most likely USB enumeration". The same stick shows the same
   class of flakiness on the Mac side, where a mount sometimes needs two attempts
   or is grabbed by Apple's driver first. Worth noting again if it recurs.
-* `chkdsk` reported **2 reparse records processed** where an earlier run on the
-  same stick reported 0. A scan of every in-use MFT record found **no
-  `$REPARSE_POINT` attribute anywhere** on the volume, and `chkdsk` reported no
-  problems, so nothing is broken. Unexplained.
+* `chkdsk` reported a climbing count of "reparse records processed" -- 0, then 2,
+  then 3 across three runs on the same stick. **Explained, and not ours.** That
+  stage is named *"Reparse point and Object ID verification"* and counts both.
+  On this volume `$Extend\$Reparse` holds **0** entries and `$Extend\$ObjId`
+  holds exactly **3**, matching the reported number; a scan of all 256 in-use MFT
+  records found no `$REPARSE_POINT` attribute anywhere.
+
+  Windows assigns object IDs lazily when it touches a file, which is why the
+  count rose after each Windows visit rather than after each of our write
+  sessions. Our create path never writes one. Our delete path does call
+  `ntfs_delete_object_id_index()`, which is the half that matters: if Windows
+  assigns an object ID and we later delete that file, the index entry is
+  cleaned up.
+
+  Recorded because three chkdsk logs with a climbing "reparse" count look
+  alarming and are not. If you need to check this again: `$ObjId` is MFT record
+  25 and `$Reparse` is record 26; both keep their index in `$INDEX_ROOT` while
+  small, so the entry count can be read straight out of the MFT.
 
 ### If we replay, write the log back as 1.1 and clean
 

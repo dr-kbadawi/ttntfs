@@ -203,6 +203,10 @@ extraction moved the comment with it and changed nothing else.
   failed only after a remount: a truncated symlink target served from
   `ni->target`, and a compressed extension served from the page cache. Every
   assertion about what reached the disk must remount first.
+* **Read the tool's stage name before believing its counter.** `chkdsk`'s
+  "N reparse records processed" is printed by a stage called *"Reparse point and
+  Object ID verification"* and counts both. A climbing count on a volume with
+  zero reparse points cost an investigation; it was Windows assigning object IDs.
 * **Structural correctness is not correct data, and this one nearly shipped.**
   A journal-replay fix passed every check available: the pending directory
   appeared, the MFT records matched Windows on sequence, link count, flags and
