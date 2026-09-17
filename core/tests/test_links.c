@@ -591,6 +591,107 @@ static uint32_t disk_reparse_tag(const char *name)
  * had already put S_IFDIR in i_mode, and OR-ing S_IFLNK on top produced a type
  * that was neither; and readlink must report the length on -ERANGE.
  */
+/*
+ * A symlink to an existing directory is written as a directory record --
+ * Windows' <SYMLINKD> -- and everything else as a file record.
+ *
+ * Windows has two kinds of symlink and demands the choice at creation; POSIX
+ * has one. A file-type link to a directory is followed on Windows but lists as
+ * <SYMLINK> and cannot be `cd`ed through. So, as WSL's DrvFs does, the target
+ * is resolved at symlink(2) time and a directory record is written when it is
+ * an existing directory here, reached by a relative path that crosses no other
+ * link. The read side must present that record as a link, and deleting it must
+ * remove the link and nothing else.
+ *
+ * The record type is read from the image, not through the driver, because the
+ * driver presents both kinds identically and could hide a wrong choice.
+ */
+static void test_symlink_to_directory_is_a_directory_record(void)
+{
+	static const struct { const char *dir, *name, *target; bool want_dir; } cases[] = {
+		{ NULL,  "to-dir",     "realdir",    true  },	/* existing dir */
+		{ "sub", "to-dir-up",  "../realdir", true  },	/* via .. */
+		{ NULL,  "to-file",    "afile.txt",  false },	/* a file */
+		{ NULL,  "to-missing", "nothere",    false },	/* dangling */
+		{ NULL,  "to-dir-abs", "/realdir",   false },	/* absolute: refused */
+		{ NULL,  "via-link",   "to-dir/",    false },	/* crosses a link */
+	};
+	const size_t N = sizeof(cases) / sizeof(cases[0]);
+	const char *info = getenv("NTFS_NTFSINFO");
+	struct vol v;
+	ntfs_inode_t *x = NULL, *sub = NULL, *l = NULL;
+	size_t i;
+
+	printf("test_symlink_to_directory_is_a_directory_record\n");
+	if (copy_fixture("dirlink") != 0) { fprintf(stderr, "SKIP: no fixture\n"); return; }
+	if (vol_up(&v, 022, 022, 501, 20)) { unlink(scratch); return; }
+
+	CHECK(ntfs_mkdir(v.root, "realdir", 0755, &x) == 0);
+	if (x) { ntfs_inode_t *f; if (ntfs_create(x, "inside.txt", 0100644, &f) == 0) ntfs_inode_put(f); ntfs_inode_put(x); x = NULL; }
+	CHECK(ntfs_mkdir(v.root, "sub", 0755, &sub) == 0);
+	CHECK(ntfs_create(v.root, "afile.txt", 0100644, &x) == 0);
+	if (x) { ntfs_inode_put(x); x = NULL; }
+	for (i = 0; i < N; i++) {
+		ntfs_inode_t *d = cases[i].dir ? sub : v.root;
+
+		CHECK_MSG(ntfs_symlink(d, cases[i].name, cases[i].target, &l) == 0, "symlink(%s)", cases[i].name);
+		if (l) { ntfs_inode_put(l); l = NULL; }
+	}
+	if (sub) { ntfs_inode_put(sub); sub = NULL; }
+	vol_down(&v);
+
+	/* The record type, from the image. */
+	if (info && *info && access(info, X_OK) == 0) {
+		for (i = 0; i < N; i++) {
+			char cmd[PATH_MAX + 300], line[256];
+			FILE *p;
+			bool is_dir = false, seen = false;
+
+			snprintf(cmd, sizeof(cmd), "%s -F /%s%s%s %s 2>/dev/null | grep -m1 'Flags:'",
+				 info, cases[i].dir ? cases[i].dir : "", cases[i].dir ? "/" : "",
+				 cases[i].name, scratch);
+			p = popen(cmd, "r");
+			if (p && fgets(line, sizeof(line), p)) { seen = true; is_dir = strstr(line, "DIRECTORY") != NULL; }
+			if (p) pclose(p);
+			if (!seen) { fprintf(stderr, "SKIP record type(%s): ntfsinfo gave nothing\n", cases[i].name); continue; }
+			CHECK_MSG(is_dir == cases[i].want_dir,
+				  "%s -> '%s': written as a %s record, expected %s",
+				  cases[i].name, cases[i].target, is_dir ? "DIRECTORY" : "FILE",
+				  cases[i].want_dir ? "DIRECTORY" : "FILE");
+		}
+	}
+
+	/* Read back after remount: all links, right targets, right sizes. */
+	if (vol_up(&v, 022, 022, 501, 20)) { failures++; checks++; unlink(scratch); return; }
+	for (i = 0; i < N; i++) {
+		struct ntfs_attr at;
+		char buf[128];
+		size_t n = 0;
+		ntfs_inode_t *d = v.root;
+
+		if (cases[i].dir) { CHECK(ntfs_lookup(v.root, cases[i].dir, &sub) == 0); d = sub; }
+		CHECK_MSG(ntfs_lookup(d, cases[i].name, &l) == 0, "lookup(%s)", cases[i].name);
+		if (l) {
+			CHECK(ntfs_getattr(l, &at) == 0);
+			CHECK_MSG((at.mode & S_IFMT) == S_IFLNK, "%s: not a link after remount (mode %o)", cases[i].name, at.mode);
+			CHECK(ntfs_readlink(l, buf, sizeof(buf), &n) == 0);
+			CHECK_MSG(n == strlen(cases[i].target) && !memcmp(buf, cases[i].target, n),
+				  "%s: readlink '%.*s', expected '%s'", cases[i].name, (int)n, buf, cases[i].target);
+			CHECK(at.size == (int64_t)n);
+			ntfs_inode_put(l); l = NULL;
+		}
+		if (sub) { ntfs_inode_put(sub); sub = NULL; }
+	}
+	/* Deleting the directory-record link removes the link, never the target. */
+	CHECK(ntfs_rmdir(v.root, "to-dir") == -ENOTDIR);
+	CHECK(ntfs_unlink(v.root, "to-dir") == 0);
+	CHECK_MSG(ntfs_lookup(v.root, "realdir", &x) == 0, "the target must survive");
+	if (x) { ntfs_inode_t *f; CHECK_MSG(ntfs_lookup(x, "inside.txt", &f) == 0, "the target's contents must survive"); if (f) ntfs_inode_put(f); ntfs_inode_put(x); x = NULL; }
+	vol_down(&v);
+	fsck_clean("symlink to directory");
+	unlink(scratch);
+}
+
 static void test_windows_dir_links(void)
 {
 	static const struct {
@@ -1411,6 +1512,7 @@ int main(void)
 	test_symlinks();
 	test_symlink_tag_choice();
 	test_windows_dir_links();
+	test_symlink_to_directory_is_a_directory_record();
 	test_time_conversion();
 	test_timestamps();
 	test_permissions();

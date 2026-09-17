@@ -235,7 +235,8 @@ static int ntfs_sd_add_everyone(struct ntfs_inode *ni)
 
 static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		__le16 *name, u8 name_len, mode_t mode, dev_t dev,
-		__le16 *target, int target_len)
+		__le16 *target, int target_len,
+		bool dir_link)
 {
 	struct ntfs_inode *dir_ni = NTFS_I(dir);
 	struct ntfs_volume *vol = dir_ni->vol;
@@ -265,8 +266,17 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 	 * Set the appropriate mode, attribute type, and name.  For
 	 * directories, also setup the index values to the defaults.
 	 */
-	if (S_ISDIR(mode)) {
-		mode &= ~vol->dmask;
+	/*
+	 * PORT: @dir_link asks for a DIRECTORY record carrying a symlink -- what
+	 * Windows makes with mklink /D. The record is shaped as a directory
+	 * everywhere below (MFT flag, $INDEX_ROOT, no $DATA, the index-present
+	 * bit in every $FILE_NAME) while @mode stays S_IFLNK for the VFS inode
+	 * and the $LXMOD EA. The read side (core/vfs/inode.c) already presents
+	 * such a record as S_IFLNK, so what we write here we can read back.
+	 */
+	if (S_ISDIR(mode) || dir_link) {
+		if (S_ISDIR(mode))
+			mode &= ~vol->dmask;
 
 		NInoSetMstProtected(ni);
 		ni->itype.index.block_size = 4096;
@@ -316,7 +326,7 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 	inode_set_ctime_to_ts(dir, ni->i_crtime);
 	mark_inode_dirty(dir);
 
-	err = ntfs_mft_record_alloc(dir_ni->vol, mode, &ni, NULL,
+	err = ntfs_mft_record_alloc(dir_ni->vol, dir_link ? (mode & ~S_IFMT) | S_IFDIR : mode, &ni, NULL,
 				    &ni_mrec);
 	if (err) {
 		iput(vi);
@@ -402,7 +412,7 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 		goto err_out;
 	rollback_sd = true;
 
-	if (S_ISDIR(mode)) {
+	if (S_ISDIR(mode) || dir_link) {
 		struct index_root *ir = NULL;
 		struct index_entry *ie;
 		int ir_len, index_len;
@@ -443,6 +453,16 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 		err = ntfs_attr_open(ni, AT_INDEX_ROOT, I30, 4);
 		if (err)
 			goto err_out;
+
+		if (dir_link) {
+			/* Native tag only: the resolver already required a target
+			 * Windows can express, and a WSL-tagged directory record is
+			 * a shape nothing else writes. */
+			err = ntfs_reparse_set_win_symlink(ni, target, target_len);
+			if (err)
+				goto err_out;
+			rollback_reparse = true;
+		}
 	} else {
 		/* Add DATA attribute to inode. */
 		err = ntfs_attr_add(ni, AT_DATA, AT_UNNAMED, 0, NULL, 0);
@@ -503,7 +523,7 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 	fn->file_name_length = name_len;
 	fn->file_name_type = FILE_NAME_POSIX;
 	fn->type.ea.packed_ea_size = ea_size;
-	if (S_ISDIR(mode)) {
+	if (S_ISDIR(mode) || dir_link) {
 		fn->file_attributes = FILE_ATTR_DUP_FILE_NAME_INDEX_PRESENT;
 		fn->allocated_size = fn->data_size = 0;
 	} else {
@@ -1014,6 +1034,81 @@ static void ntfs_vfs_set_dirty(struct ntfs_volume *vol)
 }
 
 /*
+ * Does @target, resolved from @dir the way a POSIX caller means it, name an
+ * existing directory on this volume?
+ *
+ * PORT: decides whether a symlink is written as a DIRECTORY record. Windows has
+ * two kinds of symlink and demands the choice at creation (mklink vs mklink
+ * /D); POSIX has one and the target's type is incidental. A file-type link
+ * whose target is a directory works on Windows -- it is followed -- but lists
+ * as <SYMLINK> rather than <SYMLINKD>, and `cd` through it from cmd fails. So,
+ * as WSL's DrvFs does (release notes, build 17046: "the link target must be
+ * relative, must not cross any mount points or symlinks, and must exist"),
+ * resolve the target now and, if it is a directory here, write the record
+ * Windows would have written.
+ *
+ * Deliberately conservative: relative targets only, no component may itself
+ * be a link, and anything unresolvable means "file-type", which is what every
+ * open implementation writes today. A link created before its target (tar,
+ * git checkout, cp -R ordering) will therefore be file-type, and a later
+ * rename of the target is not tracked -- Windows does not track it either.
+ */
+static bool symlink_target_is_dir_here(struct inode *dir, const char *target)
+{
+	struct inode *cur, *next;
+	const char *p = target, *e;
+	bool result;
+	int hops = 0;
+
+	if (!target || !*target || *target == '/')
+		return false;
+	cur = igrab(dir);
+	if (!cur)
+		return false;
+	while (*p && hops++ < 256) {
+		int clen;
+
+		while (*p == '/')
+			p++;
+		if (!*p)
+			break;
+		e = strchr(p, '/');
+		clen = e ? (int)(e - p) : (int)strlen(p);
+		if (clen == 1 && p[0] == '.') {
+			p += clen;
+			continue;
+		}
+		if (clen == 2 && p[0] == '.' && p[1] == '.') {
+			u64 pino = ntfs_vfs_parent_ino(cur);
+
+			next = NULL;
+			if (pino != (u64)-1 && pino != cur->i_ino) {
+				next = ntfs_iget(cur->i_sb, pino);
+				if (IS_ERR(next))
+					next = NULL;
+			}
+		} else {
+			next = ntfs_vfs_lookup(cur, p, clen);
+			if (IS_ERR(next))
+				next = NULL;
+		}
+		iput(cur);
+		if (!next)
+			return false;
+		/* a link along the way: WSL's "must not cross any symlinks" */
+		if (S_ISLNK(next->i_mode)) {
+			iput(next);
+			return false;
+		}
+		cur = next;
+		p += clen;
+	}
+	result = S_ISDIR(cur->i_mode);
+	iput(cur);
+	return result;
+}
+
+/*
  * ntfs_vfs_create - create a file, directory or symlink
  * @dir:	parent directory inode
  * @name/@len:	name (UTF-8)
@@ -1025,6 +1120,7 @@ static void ntfs_vfs_set_dirty(struct ntfs_volume *vol)
 struct inode *ntfs_vfs_create(struct inode *dir, const char *name, int len,
 		umode_t mode, const char *target)
 {
+	bool dir_link = false;
 	struct ntfs_volume *vol = NTFS_SB(dir->i_sb);
 	struct ntfs_inode *ni;
 	struct inode *vi;
@@ -1051,8 +1147,17 @@ struct inode *ntfs_vfs_create(struct inode *dir, const char *name, int len,
 
 	ntfs_vfs_set_dirty(vol);
 
+	/*
+	 * A symlink whose target is an existing directory on this volume, and
+	 * which will get the native tag anyway, is written as a directory
+	 * record -- Windows' <SYMLINKD>. See symlink_target_is_dir_here().
+	 */
+	dir_link = S_ISLNK(mode) && !NVolWslSymlinks(vol) &&
+		   ntfs_symlink_target_is_windows_safe(utarget, utarget_len) &&
+		   symlink_target_is_dir_here(dir, target);
+
 	ni = __ntfs_create(NULL, dir, uname, uname_len, mode, 0, utarget,
-			   utarget_len);
+			   utarget_len, dir_link);
 	kmem_cache_free(ntfs_name_cache, uname);
 	kvfree(utarget);
 	if (IS_ERR(ni))
