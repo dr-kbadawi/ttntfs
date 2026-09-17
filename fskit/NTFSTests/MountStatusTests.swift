@@ -197,6 +197,33 @@ final class MountStatusTests: XCTestCase {
         _ = MountStatus.readAll()
     }
 
+    /*
+     * journalPendingOps decides whether the user sees "Close Journal" with a
+     * reassurance or "Replay Journal" with a data-loss warning. Wrong in one
+     * direction shows a frightening warning for a harmless Fast Startup
+     * shutdown; wrong in the other hides a real risk. Both are pinned.
+     */
+    func testJournalPendingOpsDecidesTheWarning() throws {
+        let head = """
+        {"disk9s1":{"bsdName":"disk9s1","label":"NTFS","readOnly":true,"roReason":5,
+        "roReasonText":"x","dirty":false,"hibernated":false,"logfileClean":false,
+        "coreVersion":"t","mountedAt":"2026-09-17T10:00:00Z"
+        """
+
+        // absent (a status file predating the field) -> unknown, treated as risky
+        let older = try write(head + "}}")
+        XCTAssertEqual(MountStatus.readAll(from: older)["disk9s1"]?.journalPendingOps, -1,
+                       "a file without the field must read as unknown, never as zero")
+
+        // zero -> the Fast Startup case: nothing to replay, safe wording
+        let zero = try write(head + ",\"journalPendingOps\":0}}")
+        XCTAssertEqual(MountStatus.readAll(from: zero)["disk9s1"]?.journalPendingOps, 0)
+
+        // positive -> genuine pending work, keep the warning
+        let some = try write(head + ",\"journalPendingOps\":161}}")
+        XCTAssertEqual(MountStatus.readAll(from: some)["disk9s1"]?.journalPendingOps, 161)
+    }
+
     // MARK: helpers
 
     private var scratch: [URL] = []

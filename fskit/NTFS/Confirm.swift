@@ -30,4 +30,18 @@ enum Confirm {
         }
         return alert.runModal() == .alertSecondButtonReturn
     }
+
+    /// For an action that is safe but still worth confirming. The proceed button
+    /// is the default here, because declining is not the cautious choice when
+    /// nothing is at risk -- it just leaves the volume read-only for no reason.
+    static func standard(title: String, message: String, proceed: String) -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: proceed)            // first button: the default
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
 }

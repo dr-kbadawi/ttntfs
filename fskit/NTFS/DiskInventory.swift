@@ -44,6 +44,8 @@ struct Partition: Identifiable, Equatable {
     var hibernated: Bool = false
     /// What replaying the journal would do, when that is why it is read-only.
     var journalSummary: String = ""
+    /* Work a replay would actually do; -1 unknown. See MountStatus. */
+    var journalPendingOps: Int = -1
     var servedByOurDriver: Bool = false
 
     var id: String { bsdName }
@@ -183,6 +185,7 @@ final class DiskInventory: ObservableObject {
                 }
                 found[index].hibernated = s.hibernated
                 found[index].journalSummary = s.journalSummary
+                found[index].journalPendingOps = s.journalPendingOps
             }
             found[index].servedByOurDriver = ModuleEnabler.deviceIsServedByModule(found[index].device)
         }

@@ -28,6 +28,19 @@ struct MountStatus: Codable, Equatable {
     /// because its journal is unclean. Read-only analysis; nothing was written.
     /// Empty when the journal is clean or the analysis did not run.
     var journalSummary: String = ""
+    /*
+     * How much work a replay would actually do. -1 means unknown (an older
+     * status file, or a clean journal).
+     *
+     * Zero is the common case and it is not the dangerous one. Fast Startup is
+     * on by default in Windows, and a hybrid shutdown does not dismount a
+     * removable volume: the log is left open with VOLUME_IS_CLEAN clear, which
+     * reads as dirty, while the transaction table is empty and there is nothing
+     * to replay. Measured 2026-09-17, scenario B2. The UI needs to tell that
+     * apart from a journal carrying genuine pending transactions, because the
+     * warning that fits the second is wrong and frightening for the first.
+     */
+    var journalPendingOps: Int = -1
 
     /*
      * Decoded by hand because Swift's synthesized decoder ignores property
@@ -55,17 +68,20 @@ struct MountStatus: Codable, Equatable {
         coreVersion   = try c.decode(String.self, forKey: .coreVersion)
         mountedAt     = try c.decode(Date.self,   forKey: .mountedAt)
         journalSummary = try c.decodeIfPresent(String.self, forKey: .journalSummary) ?? ""
+        journalPendingOps = try c.decodeIfPresent(Int.self, forKey: .journalPendingOps) ?? -1
     }
 
     /// The memberwise initialiser, which the custom `init(from:)` suppresses.
     init(bsdName: String, label: String, readOnly: Bool, roReason: Int,
          roReasonText: String, dirty: Bool, hibernated: Bool, logfileClean: Bool,
-         coreVersion: String, mountedAt: Date, journalSummary: String = "") {
+         coreVersion: String, mountedAt: Date, journalSummary: String = "",
+                journalPendingOps: Int = -1) {
         self.bsdName = bsdName; self.label = label; self.readOnly = readOnly
         self.roReason = roReason; self.roReasonText = roReasonText
         self.dirty = dirty; self.hibernated = hibernated
         self.logfileClean = logfileClean; self.coreVersion = coreVersion
         self.mountedAt = mountedAt; self.journalSummary = journalSummary
+        self.journalPendingOps = journalPendingOps
     }
 
     /// Human text for ntfs_ro_reason (kept here so the app does not need the C header).

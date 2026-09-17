@@ -84,16 +84,49 @@ struct MenuView: View {
         }
     }
 
+    /*
+     * Two situations wear the same "journal is not clean" label, and only one of
+     * them is dangerous.
+     *
+     * Windows leaves the log OPEN whenever it does not dismount a volume, and a
+     * Fast Startup shutdown -- the default -- does not dismount a removable one.
+     * The result reads as dirty while the transaction table is empty and there
+     * is nothing whatever to replay: measured 2026-09-17, scenario B2, where the
+     * file written before the shutdown was present and intact. Showing that user
+     * a warning about possible file system damage is simply wrong.
+     *
+     * The dangerous case is a journal carrying real pending work, where we apply
+     * a record format reverse-engineered rather than documented.
+     *
+     * journalPendingOps tells them apart: redo + undo + transactions to roll
+     * back. -1 means an older status file that predates the field, and is
+     * treated as the dangerous case.
+     */
     private func confirmReplay(_ partition: Partition) {
-        guard Confirm.destructive(
-            title: "Replay the journal on \(partition.displayName)?",
-            message: "This finishes the writes Windows left unfinished, using a journal format "
-                   + "this driver has worked out rather than one it has verified against Windows. "
-                   + "If that reading is wrong it can damage the file system, and the damage may "
-                   + "not be obvious straight away.\n\n"
-                   + "Back up anything you cannot lose first. The safe alternative is to plug the "
-                   + "disk into Windows and eject it properly.",
-            proceed: "Replay and Mount Read/Write") else { return }
+        let pending = partition.journalPendingOps
+
+        if pending == 0 {
+            guard Confirm.standard(
+                title: "Finish the shutdown Windows didn't complete on \(partition.displayName)?",
+                message: "Windows left this volume's journal open instead of closing it, which "
+                       + "happens on a normal shutdown when Fast Startup is on. Nothing is wrong "
+                       + "with the disk and there are no unfinished writes to apply.\n\n"
+                       + "This closes the journal so the volume can be written to. It changes two "
+                       + "pages of bookkeeping and touches none of your files.",
+                proceed: "Close the Journal and Mount Read/Write") else { return }
+        } else {
+            let count = pending > 0 ? "\(pending) unfinished operation\(pending == 1 ? "" : "s")"
+                                    : "unfinished writes"
+            guard Confirm.destructive(
+                title: "Replay the journal on \(partition.displayName)?",
+                message: "Windows left \(count) in this volume's journal. Applying them uses a "
+                       + "journal format this driver has worked out rather than one documented by "
+                       + "Microsoft. If that reading is wrong it can damage the file system, and "
+                       + "the damage may not be obvious straight away.\n\n"
+                       + "Back up anything you cannot lose first. The safe alternative is to plug "
+                       + "the disk into Windows and eject it properly.",
+                proceed: "Replay and Mount Read/Write") else { return }
+        }
         Task { await inventory.replayJournal(partition); monitor.refresh() }
     }
 
@@ -217,6 +250,18 @@ struct DiskHeader: View {
 
 struct PartitionRow: View {
     let partition: Partition
+
+    /*
+     * "Replay" is the wrong word for the common case. Windows leaves the log
+     * open on any shutdown that does not dismount the volume -- which is what
+     * Fast Startup does, by default, to a removable disk -- and then there is
+     * nothing to replay at all, only a journal to close. Calling that "Replay
+     * Journal" invites the user to expect a repair and to fear a risk, and
+     * neither is true. See confirmReplay().
+     */
+    private var replayButtonTitle: String {
+        partition.journalPendingOps == 0 ? "Close Journal…" : "Replay Journal…"
+    }
     /// Why it is read-only, from the extension's own status file, when it knows.
     let reason: String
     let mount: () -> Void
@@ -280,7 +325,7 @@ struct PartitionRow: View {
         } else if partition.mountedReadOnly && partition.servedByOurDriver
                     && partition.journalBlocked {
             VStack(alignment: .trailing, spacing: 4) {
-                Button("Replay Journal…", action: replayJournal).controlSize(.small)
+                Button(replayButtonTitle, action: replayJournal).controlSize(.small)
                 Button("Eject", action: eject).controlSize(.small)
             }
         } else if partition.hibernated && partition.mountedReadOnly {

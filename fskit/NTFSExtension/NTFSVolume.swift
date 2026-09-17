@@ -108,10 +108,10 @@ final class NTFSVolume: FSVolume {
     /// honestly offer for this case -- replay itself stays refused because the
     /// log layout it depends on has never been checked against a journal
     /// Windows wrote (docs/LOGFILE.md).
-    private func journalSummary(_ info: ntfs_volume_info) -> String {
-        guard !info.logfile_clean else { return "" }
+    private func journalSummary(_ info: ntfs_volume_info) -> (text: String, pending: Int) {
+        guard !info.logfile_clean else { return ("", -1) }
         var analysis = ntfs_logfile_analysis()
-        guard ntfs_logfile_analyse(device, &analysis) >= 0 else { return "" }
+        guard ntfs_logfile_analyse(device, &analysis) >= 0 else { return ("", -1) }
         func text(_ field: inout some Any) -> String {
             withUnsafeBytes(of: &field) { raw in
                 String(cString: raw.baseAddress!.assumingMemoryBound(to: CChar.self))
@@ -119,10 +119,15 @@ final class NTFSVolume: FSVolume {
         }
         let state = text(&analysis.state), message = text(&analysis.message)
         log.notice("\(self.bsdName, privacy: .public): journal \(state, privacy: .public) v\(analysis.log_version_major).\(analysis.log_version_minor) clean=\(analysis.clean) supported=\(analysis.supported) chkdsk=\(analysis.needs_chkdsk) records=\(analysis.records_analyzed) redo=\(analysis.records_redone) undo=\(analysis.records_undone)")
-        return "Journal: \(state), version \(analysis.log_version_major).\(analysis.log_version_minor). \(message)"
+        /* Redo plus undo is the work a replay would do. Rolling back an
+         * unfinished transaction counts too: it writes. */
+        let pending = Int(analysis.records_redone) + Int(analysis.records_undone)
+                    + Int(analysis.transactions_active)
+        return ("Journal: \(state), version \(analysis.log_version_major).\(analysis.log_version_minor). \(message)", pending)
     }
 
     private func publishStatus(_ info: ntfs_volume_info) {
+        let summary = journalSummary(info)
         let label = withUnsafePointer(to: info.label) { p in
             p.withMemoryRebound(to: CChar.self, capacity: 256) { String(cString: $0) }
         }
@@ -132,7 +137,7 @@ final class NTFSVolume: FSVolume {
             roReasonText: isReadOnly ? MountStatus.reasonText(Int(roReason)) : "",
             dirty: info.dirty, hibernated: info.hibernated, logfileClean: info.logfile_clean,
             coreVersion: String(cString: ntfs_core_version()), mountedAt: Date(),
-            journalSummary: journalSummary(info)))
+            journalSummary: summary.text, journalPendingOps: summary.pending))
     }
 }
 
