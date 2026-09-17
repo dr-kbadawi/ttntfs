@@ -25,16 +25,17 @@ replay remains the unproven part -- see below -- so keep a backup of anything
 you cannot replace.
 
 Journal replay stays off unless you ask for it per volume, at your own risk --
-but it is no longer unverified. On 2026-09-15 it was run against a real Windows
-10 dirty v2.0 journal and **reproduced Windows' own replay**: the pending
-directory and file were recovered, the file's contents matched byte for byte,
-and the MFT record differed from Windows' in exactly the two update-sequence
-fixup slots, which differ on every write by definition. `ntfsck` calls the
-result clean. That is one journal and one scenario out of five, so the gate is
-not closed, but the engine is demonstrably correct rather than merely plausible.
-See `docs/LOGFILE.md` and finding 18 in `docs/UPSTREAM-BUGS.md`. A volume Windows left dirty
-or hibernated mounts read-only with the reason shown, and the app offers to fix
-either with the cost spelled out.
+but it is verified rather than inferred. Four phase 4 scenarios have been run
+against real Windows 10 crash captures, replaying each journal both here and on
+Windows and comparing the results: file creation, directory index recovery (448
+records, 50 index operations), file extension (1113 records, 276 runlist
+updates), and `chkdsk` on a volume only our replay recovered. All four match.
+See `docs/LOGFILE.md`.
+
+A volume whose journal Windows left open -- which is what a normal Fast Startup
+shutdown does to an attached disk -- mounts read-only and the menu bar offers
+**Close Journal**, which writes two pages and touches no files. A journal with
+genuine unfinished work says **Replay Journal** instead and warns accordingly.
 
 Performance, against Apple's own FSKit exFAT module on matched images: ahead on
 streaming writes, level on overwrite and append, within the "2x of exFAT" bar on
