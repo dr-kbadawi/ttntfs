@@ -387,6 +387,48 @@ cached size lazily. Windows leaves it stale too.
 `ntfsrecover` refuses by default as dangerous, because part of the state never
 reaches the disk at all.
 
+### B2: Fast Startup leaves removable volumes dirty (2026-09-17)
+
+**This is the most user-facing result in phase 4.** Fast Startup is enabled by
+default on Windows, so what it does to an attached USB stick affects ordinary
+users, not just crash cases.
+
+Procedure: write one file to the stick, then `shutdown /s /hybrid /t 0`, and pull
+the stick once the PC is off. The result:
+
+    State: DIRTY (replay required)
+    restart area: current_lsn 0x1f04943  in_use 0  flags 0x0000
+    Checkpoint tables: 0 transaction(s), 0 dirty page(s), 3 open attribute(s)
+    Tables after analysis: 0 transaction(s), 4 dirty page(s), 3 open attribute(s)
+    Replay would redo 0 and undo 0 of 15 records, rolling back 0 transactions
+
+So a hybrid shutdown **does not dismount removable volumes**. The log is left
+open (`client_in_use = 0`) with `RESTART_VOLUME_IS_CLEAN` clear, which is dirty
+by the rule we and ntfs-3g both apply, so we mount read-only.
+
+**And yet there is nothing to replay.** The file written before the shutdown is
+present and readable, the transaction table is empty, and the analysis finds zero
+redo and zero undo operations across all 15 records. The volume is intact; only
+the log's bookkeeping was left open.
+
+Consequences worth being explicit about:
+
+* **Any Windows user who shuts down with a stick attached gets this.** Not a
+  crash, not an unsafe removal -- the default shutdown path. Our read-only mount
+  is correct by the rule and unhelpful in effect.
+* It explains the very first capture in this project, where a stick that had been
+  "safely removed" came back with an open v2.0 log. The removal policy was never
+  the cause; leaving the log open is simply what Windows does when it does not
+  dismount.
+* **The existing Replay Journal button already handles it**: replaying zero
+  records and then marking the log clean is exactly the right operation, and it
+  is the same two-page write we now perform on every read-write mount.
+
+What is *not* established: whether mounting read-write automatically in this case
+would be safe. The analysis reporting "nothing to replay" is a claim by our own
+code, and scenario C showed that claim can be wrong in ways only real hardware
+reveals. ntfs3 does use an empty transaction table as its signal; we do not, yet.
+
 ### E1: what a clean Windows dismount writes, compared with ours (2026-09-17)
 
 Files created on Windows and the stick **safely removed** -- no crash. The
