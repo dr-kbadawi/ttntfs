@@ -1,6 +1,34 @@
 # TT NTFS Native — release notes
 
-## Build of 2026-09-18 (commit 166b6ed)
+## Build of 2026-09-18, second (commit d3a19a0)
+
+### A compressed folder no longer takes the whole disk read-only
+
+Creating a file inside a folder Windows had marked compressed made the volume
+read-only -- sometimes on the first file, sometimes on the third -- and it
+stayed that way until the disk was unplugged and replugged. Everything else on
+the disk became unwritable, not just the compressed folder.
+
+The cause was a flag with two meanings in the Linux source this driver is
+ported from. On a folder it means "compress the files created here"; two
+other places read it as "this is compressed data" and, faced with the folder's
+own index, either refused outright or wrote a file-size where the folder's
+index geometry lives. Either way the driver concluded the folder was corrupt
+and did the safe thing: it stopped writing. Nothing on disk was ever wrong.
+Both places now know the difference.
+
+Verified against a folder Windows compressed: twelve files written from the
+Mac, Windows' own compressed file appended to and overwritten in place,
+`chkdsk /f` clean, and Windows reads every byte back as written -- the
+modified compressed file included, and still compressed.
+
+**One gap, not a fault:** files created from the Mac inside a compressed folder
+are valid but not themselves compressed. Windows would compress them. They
+take full space until Windows or `compact` gets to them.
+
+---
+
+## Build of 2026-09-18, first (commit 166b6ed)
 
 ### Symlinks survive `chkdsk`
 
