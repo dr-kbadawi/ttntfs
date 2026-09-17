@@ -603,6 +603,24 @@ in) rewrites directories made by our driver into the exact bytes Windows leaves.
 delete and hard-link edges. Restoring the directory-first check fails 26
 assertions with "mode 40755 is not S_IFLNK".
 
+**Verified against real Windows-made links, 2026-09-18.** The fixture above was
+built from the spec and from reading other implementations; this is the same
+read path against what Windows 10 actually wrote on the stick:
+
+| Windows made | Mac sees | resolves |
+|---|---|---|
+| `mklink /J j-dir dir1` | link -> `../rt2/dir1` | yes |
+| `mklink /D s-dir dir1` | link -> `dir1` | yes |
+| `mklink /D s-abs F:\rt2\dir1` | link -> `../rt2/dir1` | yes |
+| `mklink s-file target.txt` | link -> `target.txt` | yes |
+
+The two absolute ones exercise the drive-letter drop and the `../`-per-level
+prefix on real bytes. `cd` through the junction lands in `/rt2/dir1`; `find
+-type l` lists all of them, so `stat` and `readdir` agree; `st_size` equals the
+`readlink` length. `rm` on the real junction and the real absolute directory
+symlink removed the link and left `dir1/file.txt` intact; `rmdir` refused with
+ENOTDIR. All through the FSKit mount.
+
 ## Finding 22 **FIXED**: a symlink to a directory was written as a file-type link
 
 Windows has two kinds of symbolic link and demands the choice at creation
