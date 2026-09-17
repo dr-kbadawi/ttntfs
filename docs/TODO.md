@@ -1,8 +1,13 @@
 # TT NTFS Native — open work, 2026-09-15
 
 ## Needs the Windows machine
-- [ ] Phase 4 scenarios B, C, D, E (docs/LOGFILE.md §7.4). A is done and passed.
-      C (index updates) and D (large file extension) exercise op types A did not.
+- [x] Phase 4 scenarios A, C, D and E3 -- all reproduce Windows. E3 is the
+      strongest: chkdsk found no problems on a volume only our replay recovered.
+- [ ] Phase 4 scenario B (hibernation / Fast Startup) and E1 (a real Windows-written
+      v1.1 restart page to compare mark_clean against). B is the case ntfsrecover
+      refuses by default as dangerous; refusing may be the correct answer.
+- [ ] Scenario D on a 512-byte-cluster stick, for multi-cluster records
+      (lcns_to_follow > 1), a path none of the three captures exercised.
 - [ ] Quick-removal policy test: is a normally-removed Win10 stick clean?
       Two minutes. Decides whether ordinary users hit our read-only path.
 - [ ] Does Windows *open* what we wrote? (255-char/CJK names, our symlinks,

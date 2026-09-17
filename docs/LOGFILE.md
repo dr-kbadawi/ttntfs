@@ -387,6 +387,30 @@ cached size lazily. Windows leaves it stale too.
 `ntfsrecover` refuses by default as dangerous, because part of the state never
 reaches the disk at all.
 
+### E3: chkdsk judges a volume only we recovered (2026-09-17)
+
+Every other comparison had Windows replay the journal alongside us, which leaves
+open the possibility that Windows quietly corrected something as it went. E3
+removes that: scenario C's dirty image was replayed **by us**, written back to
+the stick, and handed to Windows with the journal already clean. Windows never
+saw the journal.
+
+    Stage 2: Examining file name linkage ...
+      288 index entries processed.
+    Index verification completed.
+      0 unindexed files scanned.
+      0 unindexed files recovered to lost and found.
+    Windows has scanned the file system and found no problems.
+    No further action is required.
+
+No orphans, no bad file records, no repairs -- on a directory index that only
+our code rebuilt, from 50 pending operations across a block that had never been
+written to disk. Windows' own accounting (`13400 KB in 99 files`) matches what
+our replay produced, counted independently of our tools.
+
+This is the strongest single result in phase 4: not "we agree with Windows", but
+"Windows accepts what we produced on its own terms".
+
 ### A journal with no restart page is regenerable, not dirty (2026-09-15)
 
 A Windows Recovery volume arrived with its two restart pages `0xff` since 2022
