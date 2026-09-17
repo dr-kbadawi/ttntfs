@@ -413,3 +413,46 @@ Until this is understood, replay of a crash that caught a directory index
 mid-update will refuse rather than half-apply. That is the right failure, and it
 is why replay stays opt-in.
 
+## Finding 20: our symlinks are correct, and Windows cannot follow them
+
+Measured on Windows 10, 2026-09-17, against the phase 2 test tree.
+
+**Hard links are fine.** `fsutil hardlink list` returns all four paths for a file
+this driver hard-linked three times. Nothing to do.
+
+**Symlinks are structurally correct and practically unusable on Windows:**
+
+    fsutil reparsepoint query symlink-relative
+    Reparse Tag Value : 0xa000001d
+    Reparse Data: 02 00 00 00 "link-target.txt"
+
+`0xA000001D` is `IO_REPARSE_TAG_LX_SYMLINK` -- the **WSL** symlink tag, version 2,
+target stored as UTF-8. The record is well formed and `chkdsk` accepts it. But:
+
+* `type symlink-relative` fails with "The file cannot be accessed by the system".
+  Native Windows does not follow WSL symlinks; only WSL does.
+* plain `dir` does not list them at all. `dir /a` does. That is ours:
+  `core/vfs/namei.c` sets `FILE_ATTR_SYSTEM` on every non-regular, non-directory
+  inode, and `dir` hides system files by default.
+
+**Two separable questions, and neither should be changed casually.**
+
+*The tag.* Writing `IO_REPARSE_TAG_SYMLINK` (`0xA000000C`) instead would make
+native Windows follow them. Against that: the WSL tag is what Linux's ntfs3 and
+ntfs-3g write, it is what the vendored driver expects to read back, and it
+preserves POSIX semantics when a volume returns to Linux or macOS. Switching
+would trade round-trip fidelity for Windows usability, and would also change what
+*we* read. A per-volume mount option is the obvious compromise; doing it silently
+is not.
+
+*The SYSTEM attribute.* Making symlinks invisible to `dir` is a smaller and more
+clearly unhelpful side effect. Upstream sets it for device nodes and FIFOs, where
+hiding them is reasonable; a symlink is an ordinary thing a user expects to see.
+Dropping `FILE_ATTR_SYSTEM` for `S_ISLNK` specifically would cost nothing and is
+worth doing on its own.
+
+**User-visible today:** copy a tree containing symlinks from macOS to an NTFS
+disk, open it on Windows, and the symlinks are invisible in Explorer and
+unopenable from the command line. The data they point at is fine; the links are
+not usable.
+

@@ -21,12 +21,16 @@
       and an open v2.0 log is what a shutdown that does not dismount leaves (B2).
       The removal policy was never the cause. Ordinary users DO hit the read-only
       path, via Fast Startup, which is why the Close Journal wording exists.
-- [x] Confirmed 2026-09-17: Windows opens what this driver wrote without issues.
-      That covers the gap chkdsk left -- it validated structure but never opened a
-      file. Not separately reported, so still strictly unconfirmed: whether our
-      WSL-style symlinks *resolve* on Windows (chkdsk counted them, counting is not
-      following), whether xattrs show under `dir /r` as alternate data streams, and
-      whether the hard-linked file reports link count 4.
+- [x] Confirmed 2026-09-17: Windows opens what this driver wrote, hard links report
+      all four paths, and our symlinks are structurally valid. But Windows cannot
+      follow them (WSL tag) and plain `dir` hides them (we set FILE_ATTR_SYSTEM).
+      Recorded as finding 20.
+- [ ] Drop FILE_ATTR_SYSTEM for S_ISLNK so symlinks are visible to `dir` on Windows.
+      Small, clearly right, and independent of the tag question.
+- [ ] Decide whether to offer native Windows symlinks (IO_REPARSE_TAG_SYMLINK) as a
+      mount option. Trades Linux/macOS round-trip fidelity for Windows usability;
+      see finding 20. Not to be changed silently.
+- [ ] Still unchecked: whether xattrs appear under `dir /r` as alternate data streams.
 - [ ] Compressed round trip: Windows makes a compressed folder, we write into it,
       chkdsk. Closes phase 2's one hole; we cannot create compressed files.
 
