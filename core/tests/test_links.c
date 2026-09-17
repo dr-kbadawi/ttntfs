@@ -820,6 +820,56 @@ static void test_windows_dir_links(void)
 	unlink(scratch);
 }
 
+/*
+ * The two on-disk copies of a symlink's $FILE_NAME must agree on the reparse
+ * tag.
+ *
+ * $FILE_NAME carries a four-byte union: packed EA size for an ordinary file,
+ * the reparse tag for a reparse point. Upstream wrote the EA size into it
+ * unconditionally, so the MFT-resident copy of every symlink claimed a tag of
+ * 0x2d while the index copy, corrected later by the inode sync, held the real
+ * one. chkdsk never complained, but after a Windows round trip on 2026-09-17
+ * the symlinks on a test stick came back listing as zero-byte plain files: the
+ * disagreement had been resolved in favour of the wrong copy. Windows reads the
+ * tag from the directory index; anything that reconciles the two copies from
+ * the MFT side destroys it.
+ *
+ * The MFT copy is read with ntfsinfo -- which prints exactly that field -- so
+ * this checks the bytes, not the driver's opinion of them.
+ */
+static void test_symlink_filename_union_is_the_tag(void)
+{
+	const char *info = getenv("NTFS_NTFSINFO");
+	struct vol v;
+	ntfs_inode_t *l = NULL;
+	char cmd[PATH_MAX + 200], line[256];
+	FILE *p;
+	unsigned long got = 0;
+
+	printf("test_symlink_filename_union_is_the_tag\n");
+	if (!info || !*info || access(info, X_OK) != 0) {
+		fprintf(stderr, "SKIP test_symlink_filename_union_is_the_tag: NTFS_NTFSINFO not set\n");
+		return;
+	}
+	if (copy_fixture("fnunion") != 0) { fprintf(stderr, "SKIP: no fixture\n"); return; }
+	if (vol_up(&v, 022, 022, 501, 20)) { unlink(scratch); return; }
+	CHECK(ntfs_symlink(v.root, "lnk", "t.txt", &l) == 0);
+	if (l) { ntfs_inode_put(l); l = NULL; }
+	vol_down(&v);
+
+	snprintf(cmd, sizeof(cmd), "%s -F /lnk %s 2>/dev/null | grep -m1 'Reparse point tag' | grep -oE '0x[0-9a-fA-F]+'",
+		 info, scratch);
+	p = popen(cmd, "r");
+	if (p && fgets(line, sizeof(line), p))
+		got = strtoul(line, NULL, 16);
+	if (p) pclose(p);
+	CHECK_MSG(got == 0xA000000Cul,
+		  "MFT-resident $FILE_NAME union reads 0x%08lx; must be the reparse tag 0xa000000c, "
+		  "not the packed EA size (0x2d). The index copy is right; this one gets it "
+		  "clobbered on a Windows round trip.", got);
+	unlink(scratch);
+}
+
 static void test_symlink_tag_choice(void)
 {
 	static const struct {
@@ -1510,6 +1560,7 @@ int main(void)
 	test_hard_link_refusals();
 	test_many_links();
 	test_symlinks();
+	test_symlink_filename_union_is_the_tag();
 	test_symlink_tag_choice();
 	test_windows_dir_links();
 	test_symlink_to_directory_is_a_directory_record();

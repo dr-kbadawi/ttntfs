@@ -522,7 +522,24 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 	fn->parent_directory = parent_mft_ref;
 	fn->file_name_length = name_len;
 	fn->file_name_type = FILE_NAME_POSIX;
-	fn->type.ea.packed_ea_size = ea_size;
+	/*
+	 * PORT: this four-byte slot is a union -- packed EA size for an
+	 * ordinary file, the reparse tag for a reparse point ([MS-FSCC]
+	 * 2.4.44 / layout.h). Upstream wrote the EA size unconditionally, so
+	 * every symlink's MFT-resident $FILE_NAME claimed a "reparse tag" of
+	 * 0x2d (45, the packed size of $LXUID/$LXGID/$LXMOD). The index copy
+	 * was corrected later by ntfs_inode_sync_filename(), which reads the
+	 * real tag from the attribute, so the two copies of the same name
+	 * disagreed on disk. chkdsk did not complain, but a volume that went
+	 * through a Windows round trip came back with its symlinks listing as
+	 * plain zero-byte files (2026-09-17): the disagreement had been
+	 * resolved in favour of the wrong copy. Write the tag here so the two
+	 * copies agree from the start.
+	 */
+	if (rollback_reparse)
+		fn->type.rp.reparse_point_tag = NTFS_I(vi)->reparse_tag;
+	else
+		fn->type.ea.packed_ea_size = ea_size;
 	if (S_ISDIR(mode) || dir_link) {
 		fn->file_attributes = FILE_ATTR_DUP_FILE_NAME_INDEX_PRESENT;
 		fn->allocated_size = fn->data_size = 0;

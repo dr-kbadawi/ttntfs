@@ -593,6 +593,7 @@ static int ntfs_set_ntfs_reparse_data(struct ntfs_inode *ni, char *value, size_t
 			goto out;
 		}
 		ni->flags |= FILE_ATTR_REPARSE_POINT;
+		ni->reparse_tag = ((const struct reparse_point *)value)->reparse_tag;
 		NInoSetFileNameDirty(ni);
 		mark_mft_record_dirty(ni);
 	}
