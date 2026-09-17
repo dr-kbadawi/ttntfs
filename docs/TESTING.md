@@ -113,6 +113,20 @@ Being explicit about this is the point of the document.
 * **Everything in the app that touches the system**: IOKit and Disk Arbitration
   enumeration, `SMAppService`, the uninstaller, the packager, and the SwiftUI
   views. `fskit/NTFSTests` covers the logic that could be separated from them.
+* **Two journal-replay fixes have no unit test**, only verification against real
+  Windows crash captures. Finding 19 (an index block written into a fresh
+  cluster must still get its update sequence array) and the two-page journal
+  retirement were both proved by replaying a real capture and diffing the result
+  against what Windows produced from the same journal -- stronger evidence than
+  a synthetic test, but it does not run in CI, and the captures are 3.2 GB of
+  gitignored images.
+
+  Writing the synthetic equivalent was attempted on 2026-09-17 and abandoned:
+  `core/logfile/tests/test_logfile.c` builds its volume from a handful of
+  hand-made MFT records, and a record carrying a real `$INDEX_ALLOCATION` whose
+  runlist the replay engine will resolve turned out to need more fixture than the
+  harness currently offers. Worth doing; not worth faking. Until then a
+  regression in either would be caught only by re-running a capture by hand.
 * **x86_64.** arm64 only, so nothing has ever been compiled for a second
   architecture.
 * **Specific gaps the new suites named**, each because the code is unreachable
