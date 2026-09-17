@@ -1305,9 +1305,11 @@ static int do_action(struct replay *r, uint32_t target_attr, const struct action
 		ib = buf + roff;
 		if (oa->type == ATTR_TYPE_INDEX_ALLOCATION && lf_get32(ib) == LFS_MAGIC_INDX) {
 			bool torn = false;
+
 			if (lfs_fixup_post_read(ib, bytes - roff, LFS_SECTOR_SIZE, &torn) || torn) {
 				free(buf);
-				return INCOHERENT(r, "lsn 0x%llx: index block torn", (unsigned long long)a->lsn);
+				return INCOHERENT(r, "lsn 0x%llx: index block torn",
+						  (unsigned long long)a->lsn);
 			}
 			deprotected = true;
 		}
@@ -1319,7 +1321,24 @@ static int do_action(struct replay *r, uint32_t target_attr, const struct action
 				return INCOHERENT(r, "UpdateNonresidentValue: overflow");
 			}
 			memcpy(buf + roff, data, dlen);
-			if (deprotected && lfs_fixup_pre_write(ib, bytes - roff, LFS_SECTOR_SIZE)) {
+			/*
+			 * Protect whenever the RESULT is an index block, not only
+			 * when one arrived from disk.
+			 *
+			 * A record can be the first thing ever written into a
+			 * freshly allocated cluster: measured 2026-09-17 on a real
+			 * Windows 10 crash capture, the block at attr 0x68 vcn 8
+			 * was all zeros on disk and an UpdateNonresidentValue of
+			 * 2000 bytes laid down its INDX header. Because it did not
+			 * arrive as INDX, `deprotected` stayed false, so no update
+			 * sequence array was applied on the way out -- and the next
+			 * record, reading it back, deprotected a block that had
+			 * never been protected. That reported "index block torn"
+			 * and refused the replay, where Windows completed all 50
+			 * operations.
+			 */
+			if ((deprotected || lf_get32(ib) == LFS_MAGIC_INDX) &&
+			    lfs_fixup_pre_write(ib, bytes - roff, LFS_SECTOR_SIZE)) {
 				free(buf);
 				return INCOHERENT(r, "UpdateNonresidentValue: cannot re-protect index block");
 			}

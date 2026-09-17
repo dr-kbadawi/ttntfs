@@ -344,7 +344,7 @@ reports **which** of its six checks failed. It previously said only "malformed
 client record", which was the sum total of the evidence for a rejection that
 turned out to be wrong.
 
-## Finding 19: replay cannot recover a torn index block — **OPEN**
+## Finding 19 **FIXED**: replay refused an index block it had written itself
 
 Phase 4 scenario C, 2026-09-17. The first capture to exercise directory index
 recovery, and it found a real limit.
@@ -372,7 +372,37 @@ the failed fixup and applying the insert anyway was tried: it produces **79
 entries where Windows produces 80** -- one `zz-new-entry` missing. A silently
 incomplete directory is worse than a loud refusal, so the check stays.
 
-**What this means.** Our replay is not yet correct for index-heavy crash
+### Fixed 2026-09-17
+
+**The block was not torn.** On disk, `attr 0x68 vcn 8` (lcn 190055) is **all
+zeros** -- a cluster Windows had allocated and never written. The record at that
+page's own `oldest_lsn`, `UpdateNonresidentValue`/2000, lays down its `INDX`
+header. The *next* record reads the block back out of the replay's overlay, sees
+`INDX`, checks the update sequence array, and finds no USNs -- because nothing
+ever wrote them.
+
+The cause is one line of asymmetry. `deprotected` was set only when a block
+**arrived** as `INDX` from disk, and the outgoing `lfs_fixup_pre_write()` was
+gated on it. A record that is the first thing ever written into a fresh cluster
+therefore produced an `INDX` block with no update sequence array, and every
+later read of it failed.
+
+The fix protects on the **result** rather than the origin: if what we are about
+to store is an index block, it gets its update sequence array, whatever was
+there before.
+
+**Two wrong turns on the way, both recorded because they were instructive.**
+Tolerating the failed check gave 79 entries of 80 with one filename truncated.
+Skipping the *inbound* deprotection for blocks already dirty in the overlay was
+worse still -- names came back as `a-deliberately-long-fie-name` and
+`...-to-fill-"ndex-blocks-78.txt`, which is USN bytes left sitting in the data.
+Both confirmed that the asymmetry, not the check, was the fault.
+
+**Result: byte-identical to Windows.** 80 entries, 25 of them new, `ntfsck`
+clean, from the same journal Windows replayed. Scenario A still reproduces
+Windows exactly, so the fix is not a trade.
+
+**What this used to mean.** Our replay was not correct for index-heavy crash
 recovery. The likely gap is dirty-page handling: a torn page has to be rebuilt by
 replaying every update to it from its own `oldest_lsn` in the dirty page table,
 rather than by patching whatever is on disk. We start from a single global
