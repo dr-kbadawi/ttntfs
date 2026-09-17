@@ -4802,7 +4802,20 @@ int ntfs_attr_truncate_i(struct ntfs_inode *ni, const s64 newsize, unsigned int 
 		return -EACCES;
 	}
 
-	if (NInoCompressed(ni)) {
+	/*
+	 * PORT: on a DIRECTORY this flag does not mean what this check thinks.
+	 * Inode load sets NInoCompressed on a directory whose $INDEX_ROOT
+	 * carries the compression flag, and documents it as "newly created
+	 * files in that directory should be created compressed" -- an
+	 * inheritance marker. The directory's own attributes are never
+	 * compressed data: $INDEX_ROOT is resident and plain. Upstream refused
+	 * here regardless, so ntfs_ir_truncate() failed on the first create
+	 * in any compressed folder, reported it through ntfs_error(), and the
+	 * errors=remount-ro policy took the whole volume read-only. Measured
+	 * on a Windows-compressed folder on 2026-09-18: one `echo > file`,
+	 * volume read-only. The refusal stands for real compressed data.
+	 */
+	if (NInoCompressed(ni) && !S_ISDIR(VFS_I(ni)->i_mode)) {
 		pr_err("Failed to truncate compressed attribute\n");
 		return -EOPNOTSUPP;
 	}

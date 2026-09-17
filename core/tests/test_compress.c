@@ -314,6 +314,71 @@ static void compare(const char *what, const unsigned char *got,
  * re-encodes the whole 64 KiB block, frees its clusters and allocates a new,
  * differently sized run. Nothing outside the written range may move.
  */
+/*
+ * Creating files in a Windows-compressed DIRECTORY must work, and must not take
+ * the volume read-only.
+ *
+ * Inode load sets NInoCompressed on a directory whose $INDEX_ROOT carries the
+ * compression flag, and documents it as an inheritance marker: children should
+ * be created compressed. ntfs_attr_truncate() read the same flag as "this
+ * attribute is compressed data" and refused with EOPNOTSUPP. So the first
+ * create that had to grow the directory's $INDEX_ROOT failed inside
+ * ntfs_ir_truncate(), which reported it through ntfs_error(), and the
+ * errors=remount-ro policy took the whole volume read-only. One `echo > file`
+ * in a folder Windows had marked compressed: volume read-only. Measured on
+ * 2026-09-18; the directory's own attributes are never compressed data.
+ *
+ * Enough files with long names that the index root has to grow. The
+ * read-only check is the one that matters: a refused create is an
+ * inconvenience, a volume that silently goes read-only is not.
+ */
+static void test_create_in_compressed_directory(void)
+{
+	ntfs_inode_t *root = NULL, *comp = NULL, *dir = NULL, *f = NULL;
+	struct ntfs_volume_info info;
+	int i, rc = 0;
+
+	printf("test_create_in_compressed_directory\n");
+	if (copy_fixture("compressed-sparse.img") != 0) {
+		fprintf(stderr, "SKIP test_create_in_compressed_directory: no fixture\n");
+		return;
+	}
+	if (mount_scratch()) { failures++; checks++; unlink(scratch); return; }
+	if (ntfs_volume_root(g_vol, &root) || ntfs_lookup(root, "compressed", &comp) ||
+	    ntfs_lookup(comp, "inherit", &dir)) {
+		fprintf(stderr, "SKIP: /compressed/inherit not in fixture\n");
+		goto out;
+	}
+	for (i = 0; i < 12 && !rc; i++) {
+		char name[96];
+
+		snprintf(name, sizeof(name),
+			 "a-deliberately-long-file-name-to-fill-the-index-root-%02d.txt", i);
+		rc = ntfs_create(dir, name, 0100644, &f);
+		if (!rc) {
+			CHECK_EQ(ntfs_write(f, "x", 1, 0), 1, "write into a file in a compressed dir");
+			ntfs_inode_put(f); f = NULL;
+		}
+	}
+	CHECK_EQ(rc, 0, "create in a compressed directory (was EOPNOTSUPP from "
+			"ntfs_attr_truncate on the directory's own $INDEX_ROOT)");
+	ntfs_volume_get_info(g_vol, &info);
+	checks++;
+	if (info.read_only) {
+		failures++;
+		fprintf(stderr, "FAIL: the volume went READ-ONLY after creating a file in a "
+				"compressed directory. That is the errors=remount-ro policy firing "
+				"on a code bug, and it is what a user would see.\n");
+	}
+out:
+	if (dir) ntfs_inode_put(dir);
+	if (comp) ntfs_inode_put(comp);
+	if (root) ntfs_inode_put(root);
+	umount_scratch();
+	fsck("create in compressed directory");
+	unlink(scratch);
+}
+
 static void test_overwrite_in_place(void)
 {
 	static const char *files[] = {
@@ -1214,6 +1279,7 @@ static void test_encrypted_refused(void)
 int main(void)
 {
 	static const struct { void (*fn)(void); const char *name; } groups[] = {
+		{ test_create_in_compressed_directory, "create_in_compressed_directory" },
 		{ test_overwrite_in_place,	 "overwrite_in_place" },
 		{ test_cb_boundary,		 "cb_boundary" },
 		{ test_extend,			 "extend" },
