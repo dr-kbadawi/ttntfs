@@ -6,12 +6,20 @@
 - [x] E1 done: a clean Windows safe-removal leaves v1.1 CLEAN, confirming the
       documented downgrade, and every structural field of its restart area matches
       what mark_clean writes. Only current_lsn differs, which is a position.
-- [ ] Phase 4 scenario B (hibernation / Fast Startup). The case ntfsrecover refuses
-      by default as dangerous; refusing may be the correct answer.
+- [x] B2 (Fast Startup) done 2026-09-17, and it is the most user-facing result of
+      the lot: a hybrid shutdown does NOT dismount a removable volume, so the log
+      is left open and reads dirty with nothing at all to replay. The app now
+      distinguishes that from real pending work (Close Journal vs Replay Journal).
+- [ ] B1 (hibernate mid-copy) -- the only phase 4 scenario left. Start a large copy,
+      hibernate within a second, pull the stick. This is the case ntfsrecover refuses
+      by default as dangerous, because part of the state is in the hibernation image
+      and never reached the disk; refusing may well be the correct answer for us too.
 - [ ] Scenario D on a 512-byte-cluster stick, for multi-cluster records
       (lcns_to_follow > 1), a path none of the three captures exercised.
-- [ ] Quick-removal policy test: is a normally-removed Win10 stick clean?
-      Two minutes. Decides whether ordinary users hit our read-only path.
+- [x] Answered by B2 and E1: a *safely removed* stick comes back v1.1 CLEAN (E1),
+      and an open v2.0 log is what a shutdown that does not dismount leaves (B2).
+      The removal policy was never the cause. Ordinary users DO hit the read-only
+      path, via Fast Startup, which is why the Close Journal wording exists.
 - [ ] Does Windows *open* what we wrote? (255-char/CJK names, our symlinks,
       xattrs as ADS, hard-link count.) chkdsk validated structure, never opened a file.
 - [ ] Compressed round trip: Windows makes a compressed folder, we write into it,
@@ -22,6 +30,9 @@
 - [ ] Author email on 29 commits. Safest now, no remote. Needs a fresh backup branch.
 
 ## Unblocked, not started
+- [ ] Give core/logfile/tests a volume fixture with a real $INDEX_ALLOCATION, so
+      finding 19 and the two-page retirement can have unit tests instead of only
+      capture evidence. Attempted 2026-09-17 and abandoned; see docs/TESTING.md.
 - [ ] Port ntfsprogs-plus's v2.0 acceptance into core/ntfs/logfile.c so the log
       stops saying "LogFile version 2.0 is not supported" on every mount.
 - [ ] Apple Feedback: System Settings toggle, 5 s mount gap, and possibly
