@@ -441,13 +441,49 @@ target stored as UTF-8. The record is well formed and `chkdsk` accepts it. But:
 
 **Two separable questions, and neither should be changed casually.**
 
-*The tag.* Writing `IO_REPARSE_TAG_SYMLINK` (`0xA000000C`) instead would make
-native Windows follow them. Against that: the WSL tag is what Linux's ntfs3 and
-ntfs-3g write, it is what the vendored driver expects to read back, and it
-preserves POSIX semantics when a volume returns to Linux or macOS. Switching
-would trade round-trip fidelity for Windows usability, and would also change what
-*we* read. A per-volume mount option is the obvious compromise; doing it silently
-is not.
+*The tag.* **The first version of this paragraph was wrong, and the error was
+load-bearing.** It said the WSL tag "is what Linux's ntfs3 and ntfs-3g write",
+and used that to argue for keeping it as round-trip fidelity. Read from source
+on 2026-09-17, neither half is true:
+
+* **Linux ntfs3 writes the native tag**, `IO_REPARSE_TAG_SYMLINK` (0xA000000C),
+  always, with no option (`fs/ntfs3/inode.c:1336`). Its `readlink` has **no
+  case for the WSL tag** -- it falls to "Unknown Microsoft Tag" (`inode.c:2220`)
+  and returns `-EINVAL`. So on an ntfs3 mount our symlinks stat as symlinks and
+  cannot be read. That is a broken link, not fidelity.
+* **ntfs-3g writes no reparse point at all by default.** It writes an *Interix*
+  file: `FILE_ATTR_SYSTEM` plus a `$DATA` stream holding the magic `IntxLNK\1`
+  and a UTF-16 target. It writes the WSL tag only under `-o special_files=wsl`,
+  and its own man page says of both modes: *"Neither mode are interoperable with
+  Windows."* Our driver cannot read Interix links at all -- a separate gap.
+* ntfsprogs-plus 1.0.0 (local, `libntfs/reparse.c:1354`) and the vendored
+  ntfsplus (`upstream/.../reparse.c:519`) do write the WSL tag. That is where we
+  inherited it, and it is the minority position.
+
+The corrected matrix: **`IO_REPARSE_TAG_SYMLINK` is followed by every reader
+that exists** -- Windows, WSL, ntfs3, ntfs-3g, and our own native-read branch in
+`core/vfs/api.c` (exercised for the first time during this research; it works).
+`IO_REPARSE_TAG_LX_SYMLINK` is followed by WSL, ntfs-3g and us, refused by
+Windows, and broken on ntfs3.
+
+So the argument for the current tag does not survive contact with the source.
+The real cost of switching is narrower than "fidelity": POSIX targets containing
+`: * ? " < > |` cannot be expressed natively, and a Unix-absolute target like
+`/usr/bin/foo` would be written the way ntfs3 writes it (`\usr\bin\foo`,
+RELATIVE), which Windows resolves against the drive root -- wrong target, but a
+well-formed link that was unopenable before.
+
+**Microsoft itself chooses per link.** WSL's DrvFs writes a native symlink when
+the target is relative and exists, and the WSL tag otherwise (documented, WSL
+release notes build 17046). That is the strongest precedent for a per-link rule.
+
+Three things must be measured on Windows before any switch, none of them in the
+spec: whether Windows follows a native symlink whose file also carries the WSL
+`$EA` we write; whether `chkdsk` accepts our `$Reparse` index layout under the new
+tag; and what Explorer does with a `\`-rooted RELATIVE target. Also required
+first: our `getattr` reports **size 0** for native symlinks after a remount,
+because `ni->target` is only populated for the WSL tag. That must be fixed
+before we write any, or every link we make will stat at zero bytes.
 
 *The SYSTEM attribute.* Making symlinks invisible to `dir` is a smaller and more
 clearly unhelpful side effect. Upstream sets it for device nodes and FIFOs, where

@@ -27,9 +27,18 @@
       Recorded as finding 20.
 - [ ] Drop FILE_ATTR_SYSTEM for S_ISLNK so symlinks are visible to `dir` on Windows.
       Small, clearly right, and independent of the tag question.
-- [ ] Decide whether to offer native Windows symlinks (IO_REPARSE_TAG_SYMLINK) as a
-      mount option. Trades Linux/macOS round-trip fidelity for Windows usability;
-      see finding 20. Not to be changed silently.
+- [ ] Symlink tag decision (finding 20, corrected). The "keep WSL for Linux fidelity"
+      argument was false: ntfs3 writes the native tag and cannot read ours. The
+      native tag is the one every reader follows. Recommended: native by default,
+      per link, with a WSL fallback for targets Windows cannot express -- which is
+      what Microsoft's own DrvFs does. Needs three Windows measurements first (EA
+      coexistence, chkdsk on the new tag, \-rooted RELATIVE targets) and a fix to
+      getattr, which reports size 0 for native links after remount.
+- [ ] Our driver cannot read ntfs-3g's default Interix symlinks (IntxLNK $DATA files).
+      Stock ntfs-3g is the most deployed third-party NTFS driver; its symlinks show
+      to us as 1-cluster system files with binary contents.
+- [ ] Directory symlinks and junctions (mklink /D, /J) appear to us as empty
+      directories: inode.c takes the directory branch before ntfs_make_symlink.
 - [x] Xattrs confirmed 2026-09-17: `dir /r` shows them as ordinary alternate data
       streams on Windows. Not separately checked: the 8 KB `user.big` xattr in
       F-xattr, which exceeds the inline limit and takes a different storage path.
