@@ -710,3 +710,58 @@ attribute survives, so they still work on the Mac; only Windows' listing is
 affected. A repair pass that strips `$EA` from existing symlinks would fix
 them; not written.
 
+## Finding 24 **FIXED**: a compressed folder took the volume read-only on first use
+
+Two upstream defects, one cause. Inode load sets `NInoCompressed` on a directory
+whose `$INDEX_ROOT` carries the compression flag and documents it as an
+inheritance marker -- "newly created files in that directory should be created
+compressed". Two other places read the same flag as "this inode holds compressed
+data":
+
+* `ntfs_attr_truncate()` refused with `EOPNOTSUPP`. The first create in a
+  compressed folder that had to grow the directory's `$INDEX_ROOT` failed inside
+  `ntfs_ir_truncate()`, which reported through `ntfs_error()`, and
+  `errors=remount-ro` took the volume read-only. One `echo > file`. `126042f`.
+* `ntfs_resident_attr_resize()` stored the new index-root size through the
+  compressed side of the `itype` union -- straight over `itype.index.block_size`.
+  The next lookup compared an INDX block's 4096 against 480, called the directory
+  corrupt, read-only again. Third file. On disk nothing was wrong. `a2a5eec`.
+
+A directory's own attributes are never compressed data. Both sites now skip
+`S_ISDIR`. Measured on a folder Windows had marked compressed, 2026-09-18,
+reproduced against the fixture's `/compressed/inherit`.
+
+**Test trap, recorded because two versions passed with the bug present:** the
+second defect needs real-sized children AND short names. One-byte files never
+grow the index root; long names overflow it into an INDX block at once, after
+which inserts stop resizing the root. Short names grow it in several resident
+resizes first. `test_create_in_compressed_directory` does that.
+
+## Finding 25 (gap, not fixed): files we create in a compressed folder are not compressed
+
+`compact` on the round-trip folder: `1 are compressed and 12 are not`. The one is
+Windows'. Ours carry attributes `0x00000000` where Windows and ntfs-3g inherit
+`COMPRESSED` from the parent. The files are valid and `chkdsk` is clean; the
+space saving the folder promises is simply not delivered for anything written
+from the Mac. Feature gap. Implementing it means setting the flag and the
+compression unit at create and routing the first write through the compressed
+path, which exists and is now verified (below).
+
+## Phase 2 compressed round trip: CLOSED (2026-09-18)
+
+The last hole in phase 2. Three data-loss bugs had been fixed in the
+compressed-write path this week, all upstream's, all verified only by our own
+tools -- circular for a format we might misunderstand the same way twice.
+
+Windows' verdict on a folder it had compressed, after twelve files written from
+the Mac and its own compressed file modified in place and extended:
+
+    chkdsk /f     -> no problems
+    compact       -> win-made.bin  1048592 : 1033728  C   (still compressed)
+    certutil      -> win-made.bin, c3-random.bin, c11-overwritten.bin: all match
+
+`win-made.bin` is the row that matters: a Windows-compressed file that our
+compressed-write code appended to and overwrote mid-stream, read back by
+Windows byte for byte and still compressed. First independent confirmation of
+that code path.
+

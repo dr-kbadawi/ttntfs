@@ -23,6 +23,11 @@ and scripts are in `tools/phase2-gate/`.
 Windows also opens those files normally, which `chkdsk` alone does not
 establish -- it validates structure without ever opening anything.
 
+Compressed folders are covered too: Windows reads back our modifications to a
+file it compressed itself, byte for byte, and `chkdsk` finds nothing. Files we
+*create* in such a folder are valid but not themselves compressed -- a gap,
+recorded.
+
 That is one Windows build, one disk, one pass; it is not a warranty. Journal
 replay remains the unproven part -- see below -- so keep a backup of anything
 you cannot replace.

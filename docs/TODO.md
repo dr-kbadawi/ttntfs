@@ -47,8 +47,11 @@
 - [x] Xattrs confirmed 2026-09-17: `dir /r` shows them as ordinary alternate data
       streams on Windows. Not separately checked: the 8 KB `user.big` xattr in
       F-xattr, which exceeds the inline limit and takes a different storage path.
-- [ ] Compressed round trip: Windows makes a compressed folder, we write into it,
-      chkdsk. Closes phase 2's one hole; we cannot create compressed files.
+- [x] Compressed round trip done 2026-09-18: chkdsk clean, Windows reads our
+      modifications to its own compressed file byte for byte. Phase 2 closed. Found
+      and fixed two volume-goes-read-only defects on the way (finding 24).
+- [ ] Inherit compression on create in a compressed folder (finding 25). Files we
+      make there are valid but uncompressed; Windows and ntfs-3g compress them.
 
 ## Blocked on a decision
 - [ ] Git remote. CI exists (tools/ci.sh, 6 stages) and runs only when typed.
