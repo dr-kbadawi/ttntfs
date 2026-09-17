@@ -505,10 +505,30 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 			goto err_out;
 	}
 
-	err = ntfs_ea_set_wsl_inode(vi, dev, &ea_size,
-			NTFS_EA_UID | NTFS_EA_GID | NTFS_EA_MODE);
-	if (err)
-		goto err_out;
+	/*
+	 * PORT: no $EA on a symlink. Upstream writes $LXUID/$LXGID/$LXMOD on
+	 * every inode; Linux ntfs3 skips them for S_ISLNK, and now so do we.
+	 *
+	 * [MS-FSA] states that reparse points and extended attributes are
+	 * mutually exclusive, and chkdsk enforces it in a way nothing else
+	 * catches: it recomputes each directory index entry's duplicated
+	 * $FILE_NAME from the MFT record, sees $EA_INFORMATION, and writes
+	 * the EA form of the union -- packed size 0x2d, reserved 0x0f, read
+	 * from a stick on 2026-09-18 -- over the reparse tag. It reports no
+	 * problems, because by its rules the file cannot be a reparse point.
+	 * Windows then lists every one of our symlinks as a zero-byte file.
+	 * The MFT copies were untouched; only the index copy Windows reads
+	 * for dir was rewritten. Three round trips to isolate.
+	 *
+	 * Nothing is lost by omitting them: a symlink's mode is 0777 by
+	 * definition, and uid/gid are mount-wide under noowners.
+	 */
+	if (!S_ISLNK(mode)) {
+		err = ntfs_ea_set_wsl_inode(vi, dev, &ea_size,
+				NTFS_EA_UID | NTFS_EA_GID | NTFS_EA_MODE);
+		if (err)
+			goto err_out;
+	}
 
 	/* Create FILE_NAME attribute. */
 	fn_len = sizeof(struct file_name_attr) + name_len * sizeof(__le16);

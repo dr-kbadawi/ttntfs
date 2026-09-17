@@ -867,6 +867,24 @@ static void test_symlink_filename_union_is_the_tag(void)
 		  "MFT-resident $FILE_NAME union reads 0x%08lx; must be the reparse tag 0xa000000c, "
 		  "not the packed EA size (0x2d). The index copy is right; this one gets it "
 		  "clobbered on a Windows round trip.", got);
+
+	/*
+	 * And no $EA on the link at all. [MS-FSA]: reparse points and extended
+	 * attributes are mutually exclusive. chkdsk enforces that by rewriting
+	 * the index entry's union to the EA form whenever $EA_INFORMATION is
+	 * present, which turned every symlink on a test stick into a zero-byte
+	 * file after a round trip (2026-09-18). ntfs3 skips EAs on symlinks for
+	 * the same reason.
+	 */
+	snprintf(cmd, sizeof(cmd), "%s -F /lnk %s 2>/dev/null | grep -c 'EA_INFORMATION'", info, scratch);
+	p = popen(cmd, "r");
+	got = 99;
+	if (p && fgets(line, sizeof(line), p))
+		got = strtoul(line, NULL, 10);
+	if (p) pclose(p);
+	CHECK_MSG(got == 0,
+		  "a symlink carries $EA_INFORMATION; chkdsk will rewrite its index entry as "
+		  "an EA file and Windows will stop listing it as a link");
 	unlink(scratch);
 }
 
