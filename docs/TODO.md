@@ -3,9 +3,11 @@
 ## Needs the Windows machine
 - [x] Phase 4 scenarios A, C, D and E3 -- all reproduce Windows. E3 is the
       strongest: chkdsk found no problems on a volume only our replay recovered.
-- [ ] Phase 4 scenario B (hibernation / Fast Startup) and E1 (a real Windows-written
-      v1.1 restart page to compare mark_clean against). B is the case ntfsrecover
-      refuses by default as dangerous; refusing may be the correct answer.
+- [x] E1 done: a clean Windows safe-removal leaves v1.1 CLEAN, confirming the
+      documented downgrade, and every structural field of its restart area matches
+      what mark_clean writes. Only current_lsn differs, which is a position.
+- [ ] Phase 4 scenario B (hibernation / Fast Startup). The case ntfsrecover refuses
+      by default as dangerous; refusing may be the correct answer.
 - [ ] Scenario D on a 512-byte-cluster stick, for multi-cluster records
       (lcns_to_follow > 1), a path none of the three captures exercised.
 - [ ] Quick-removal policy test: is a normally-removed Win10 stick clean?

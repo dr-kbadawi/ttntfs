@@ -387,6 +387,46 @@ cached size lazily. Windows leaves it stale too.
 `ntfsrecover` refuses by default as dangerous, because part of the state never
 reaches the disk at all.
 
+### E1: what a clean Windows dismount writes, compared with ours (2026-09-17)
+
+Files created on Windows and the stick **safely removed** -- no crash. The
+journal comes back:
+
+    Restart page 0: RSTR v1.1 ... [current]
+    Restart page 1: RSTR v1.1
+    State: CLEAN
+
+So Windows does downgrade the log to **v1.1 on a clean dismount**, which this
+project had asserted from Suhanov's write-up without ever observing it. Every
+clean journal we had seen before got that way through `chkdsk` or our own
+`mark_clean`; this is the first from a plain safe removal.
+
+**And it validates what we now write on every read-write mount.** Comparing
+Windows' restart area with the one `ntfs_logfile_mark_clean()` produces:
+
+| field | Windows | ours |
+|---|---|---|
+| `log_clients` | 1 | 1 |
+| `client_free` / `client_in_use` | 0 / 0xffff | 0 / 0xffff |
+| `flags` | 2 (`VOLUME_IS_CLEAN`) | 2 |
+| `seq_number_bits` | 44 | 44 |
+| `restart_area_length` | 224 | 224 |
+| `client_array_offset` | 64 | 64 |
+| `file_size` | 5816320 | 5816320 |
+| `last_lsn_data_len` | 0 | 0 |
+| `record_header_length` | 48 | 48 |
+| `log_page_data_offset` | 64 | 64 |
+| client record: `oldest_lsn`, `client_restart_lsn` | 0, 0 | 0, 0 |
+| client record: prev/next, seq, name | 0xffff/0xffff, 1, "NTFS" | identical |
+
+**Every structural field matches.** The only difference is `current_lsn`
+(30426133 vs 25194731), which records where in the log the write happened and
+cannot match between two independent writers.
+
+That matters because this driver now writes these restart pages on every
+read-write mount of a real volume. They are byte-for-byte what Windows writes,
+apart from the one field that is a position rather than a property.
+
 ### E3: chkdsk judges a volume only we recovered (2026-09-17)
 
 Every other comparison had Windows replay the journal alongside us, which leaves
