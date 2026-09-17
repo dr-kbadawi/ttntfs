@@ -429,6 +429,33 @@ would be safe. The analysis reporting "nothing to replay" is a claim by our own
 code, and scenario C showed that claim can be wrong in ways only real hardware
 reveals. ntfs3 does use an empty transaction table as its signal; we do not, yet.
 
+### B1: hibernation leaves the log open, same as Fast Startup (2026-09-17)
+
+A 300 MB copy started and `shutdown /h` issued a second later. The copy won:
+`B1.bin` is the full 314,572,800 bytes on the stick, so the write had completed
+before the machine hibernated and **the intended test -- writes stranded in the
+hibernation image -- did not happen.**
+
+What it does show, and it is consistent with B2: hibernation leaves the journal
+**open and v2.0**, with essentially nothing in it. Three records, all
+bookkeeping (`OpenAttributeTableDump`, `AttributeNamesDump`, `ForgetTransaction`),
+zero redo, zero undo, zero dirty pages, and **one transaction to roll back**.
+
+So both non-dismounting shutdown paths -- hybrid (B2) and hibernate (B1) -- leave
+a removable volume looking dirty while being intact. B1 differs only in carrying
+one open transaction, which is why `journalPendingOps` is 1 rather than 0: the
+app offers **Replay Journal** with its warning rather than **Close Journal**.
+That is the right call, because rolling back a transaction is a write, however
+small.
+
+**Still unmeasured:** a hibernation that genuinely catches a write in flight.
+Landing it needs the hibernate to interrupt a copy rather than follow it -- a
+larger file, a slower device, or issuing `shutdown /h` first and starting the
+copy into it. Worth one more attempt if the opportunity arises; not a blocker,
+since the research is clear that part of that state lives in Windows' RAM and is
+recoverable only by the same Windows, which is why `ntfsrecover` refuses the case
+outright.
+
 ### E1: what a clean Windows dismount writes, compared with ours (2026-09-17)
 
 Files created on Windows and the stick **safely removed** -- no crash. The
