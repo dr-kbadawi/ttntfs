@@ -31,14 +31,16 @@
       per link, WSL fallback for targets Windows cannot name; wsl_symlinks mount
       flag forces the old behaviour. Windows follows them, chkdsk is clean, and the
       EA coexistence turned out not to matter. Finding 20.
-- [ ] File-type symlink to a directory lists as <SYMLINK> not <SYMLINKD> on Windows;
-      `dir n-dir` shows the link, not the contents. We do not distinguish the two at
-      creation. Harmless for reading; matters only if `cd` through such a link does.
+- [x] Fixed 2026-09-17 (finding 22): a symlink to an existing directory is written
+      as a directory record. Windows shows <SYMLINKD> and cd works.
 - [ ] Our driver cannot read ntfs-3g's default Interix symlinks (IntxLNK $DATA files).
       Stock ntfs-3g is the most deployed third-party NTFS driver; its symlinks show
       to us as 1-cluster system files with binary contents.
-- [ ] Directory symlinks and junctions (mklink /D, /J) appear to us as empty
-      directories: inode.c takes the directory branch before ntfs_make_symlink.
+- [x] Fixed 2026-09-17 (finding 21): Windows directory symlinks and junctions read
+      as links and resolve, deleting one leaves the target alone.
+- [ ] Confirm on Windows that links written by the d95d728 build survive the round
+      trip that broke the old ones: chkdsk /f, a Mac write session, then Windows.
+      Closes finding 23's one unproven step.
 - [x] Xattrs confirmed 2026-09-17: `dir /r` shows them as ordinary alternate data
       streams on Windows. Not separately checked: the 8 KB `user.big` xattr in
       F-xattr, which exceeds the inline limit and takes a different storage path.

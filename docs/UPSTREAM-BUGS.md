@@ -549,3 +549,112 @@ disk, open it on Windows, and the symlinks are invisible in Explorer and
 unopenable from the command line. The data they point at is fine; the links are
 not usable.
 
+## Finding 21 **FIXED**: Windows directory symlinks and junctions read as empty folders
+
+Inherited from upstream. `core/vfs/inode.c` decided an inode's type by
+`MFT_RECORD_IS_DIRECTORY` before looking at the reparse point, and looked at the
+reparse point only for file records. A `mklink /D` symlink or a `mklink /J`
+junction is a directory record *with* a reparse point, so every one of them
+loaded as an empty directory -- including the junctions Windows plants on every
+system disk (`Documents and Settings` -> `Users`, `Application Data`, and so on).
+`ntfs_reparse_tag_mode()` also had no case for `IO_REPARSE_TAG_MOUNT_POINT`, so
+even a reparse-first check would have called a junction "unknown".
+
+ntfs3, ntfs-3g and WSL all present them as symlinks. ntfsplus fixed the same bug
+out of tree in June 2026 (commit 5e47664782 and two follow-ups); mainline v7.1
+still has it.
+
+**The trap the research found by trying it.** The obvious fix -- move the reparse
+check ahead of the directory check -- makes every junction *unreadable*: a
+junction tag mapped to mode 0, mode 0 falls into the file branch, the file
+branch demands an unnamed `$DATA`, and the whole inode load fails on "$DATA
+attribute is missing". The `$INDEX_ROOT` branch must stay keyed on the record
+flag; only the *mode* decision moves. Done that way in `e1200b9`.
+
+**Also fixed in the same change**, because the decoder had to be rewritten:
+
+* An absolute native symlink (`\??\C:\target`) was returned as `/target` -- a
+  host-absolute path against the Mac's root -- by the decoder written that
+  morning. A volume-absolute target now drops its meaningless drive letter, and
+  `readlink` prefixes one `../` per level between the link and the volume root,
+  computed on demand from `$FILE_NAME` parent references. A junction one level
+  deep to `\??\C:\sub` reads as `../sub`. `Volume{GUID}` and UNC targets are
+  returned verbatim with slashes flipped: honest and dangling.
+* The decoder read the PrintName; Windows reparses with the SubstituteName, and
+  a `mountvol` mount point has an *empty* PrintName. SubstituteName first now.
+* `readdir` typed a directory-record link as `DT_DIR` while `stat` said
+  `S_IFLNK`. Reparse-first now, taking the tag from the index entry (which is
+  what Windows' own `FindFirstFile` serves) and opening the inode only when that
+  reads zero.
+* `ntfs_vfs_link` refused hard links on `S_ISDIR` alone; a junction presented as
+  `S_IFLNK` would have slipped past, and NTFS forbids hard-linking a directory
+  record. A new `NI_DirRecord` inode flag, set at load, guards it.
+
+**The sharp edge is safe.** `unlink` on a junction removes only the junction: the
+emptiness check keys on the record flag, not the presented mode, so the target
+and its contents survive. `rmdir` gets `ENOTDIR` from the kernel. Verified on a
+byte-patched image with `ntfsck` clean afterwards.
+
+**Test.** Nothing on macOS can create a junction, so
+`tools/mkfixtures/patch_reparse.py` (the research agent's byte-patcher, checked
+in) rewrites directories made by our driver into the exact bytes Windows leaves.
+`test_windows_dir_links` covers both tags, relative and absolute, a
+`Volume{GUID}`, a junction one level deep, and a cross-volume one, plus the
+delete and hard-link edges. Restoring the directory-first check fails 26
+assertions with "mode 40755 is not S_IFLNK".
+
+## Finding 22 **FIXED**: a symlink to a directory was written as a file-type link
+
+Windows has two kinds of symbolic link and demands the choice at creation
+(`mklink` vs `mklink /D`); POSIX has one. We always wrote file-type. Windows
+followed those to a directory, but listed them as `<SYMLINK>` rather than
+`<SYMLINKD>`, and `cd` through one from cmd failed (measured 2026-09-17).
+
+Now, as WSL's DrvFs does (release notes, build 17046: the target "must be
+relative, must not cross any mount points or symlinks, and must exist"), the
+target is resolved at `symlink(2)` time and a directory record is written --
+`MFT_RECORD_IS_DIRECTORY`, empty `$I30`, no unnamed `$DATA`, the index-present
+bit in every `$FILE_NAME` -- when it names an existing directory here by a
+relative path through no other link. Everything else stays file-type, which is
+what every open implementation writes. Verified on Windows 10: `<SYMLINKD>`,
+`dir d-link` lists the target's contents, `cd d-link` works, `chkdsk /f` clean.
+
+Limits stated up front: a link created before its target (tar, git checkout,
+cp -R ordering) is file-type, and a later rename of the target is not tracked.
+Windows does not track it either. `88afa50`.
+
+## Finding 23 **FIXED**: `$FILE_NAME`'s union held the EA size where the reparse tag belongs
+
+`$FILE_NAME` has a four-byte union: packed EA size for an ordinary file, the
+reparse tag for a reparse point. Upstream wrote the EA size unconditionally, so
+the MFT-resident copy of every symlink we created claimed a reparse tag of
+`0x2d` (45, the packed size of `$LXUID`/`$LXGID`/`$LXMOD`). The index copy was
+corrected later by `ntfs_inode_sync_filename()`, which reads the real tag from
+the attribute. So the two on-disk copies of one name disagreed. `ntfsinfo`
+prints the MFT copy as `Reparse point tag: 0x0000002d`; `chkdsk` never counted
+it as a problem.
+
+**How it surfaced.** After a Windows round trip on 2026-09-17 -- `chkdsk /f`,
+then a read-write session on the Mac -- symlinks on the test stick that had
+listed as `<SYMLINK> [target.txt]` listed as zero-byte plain files, while links
+created minutes earlier by the new build listed correctly. Windows reads the tag
+from the directory index; the disagreement had been resolved in favour of the
+wrong copy. Not data loss -- the reparse attribute was intact -- but Explorer and
+`dir` stopped recognising every link on the volume.
+
+**What is proven and what is not.** The MFT copy being wrong is measured. The
+index copy could *not* be made to degrade through our own API: stat, readlink,
+create, unlink, mkdir, a second symlink and setxattr all leave it correct. That
+points at the Windows side of the trip reconciling from the MFT, most likely
+`chkdsk`; the exact step is unproven and stays so. The root defect is not in
+doubt, and writing the tag at create time removes the inconsistency that
+anything could resolve the wrong way.
+
+`test_symlink_filename_union_is_the_tag` reads the MFT copy back with `ntfsinfo`;
+restoring the unconditional EA-size write fails it with "reads 0x0000002d".
+`d95d728`.
+
+Still to confirm on the Windows box: the same round trip that broke the old
+links -- `chkdsk /f`, a Mac write session, Windows again -- leaves links written
+by this build listing as `<SYMLINK>`.
+
