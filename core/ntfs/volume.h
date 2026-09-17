@@ -195,6 +195,7 @@ enum {
 	NV_SysImmutable,
 	NV_ShowHiddenFiles,
 	NV_HideDotFiles,
+	NV_WslSymlinks,		/* write WSL-tagged symlinks unconditionally */
 	NV_CheckWindowsNames,
 	NV_Discard,
 	NV_DisableSparse,
@@ -232,6 +233,7 @@ DEFINE_NVOL_BIT_OPS(Shutdown)
 DEFINE_NVOL_BIT_OPS(SysImmutable)
 DEFINE_NVOL_BIT_OPS(ShowHiddenFiles)
 DEFINE_NVOL_BIT_OPS(HideDotFiles)
+DEFINE_NVOL_BIT_OPS(WslSymlinks)
 DEFINE_NVOL_BIT_OPS(CheckWindowsNames)
 DEFINE_NVOL_BIT_OPS(Discard)
 DEFINE_NVOL_BIT_OPS(DisableSparse)

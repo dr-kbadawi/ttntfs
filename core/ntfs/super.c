@@ -63,6 +63,7 @@ enum {
 	Opt_sys_immutable,
 	Opt_nohidden,
 	Opt_hide_dot_files,
+	Opt_wsl_symlinks,
 	Opt_check_windows_names,
 	Opt_acl,
 	Opt_discard,
@@ -87,6 +88,7 @@ static const struct fs_parameter_spec ntfs_parameters[] = {
 	fsparam_flag("sys_immutable",		Opt_sys_immutable),
 	fsparam_flag("nohidden",		Opt_nohidden),
 	fsparam_flag("hide_dot_files",		Opt_hide_dot_files),
+	fsparam_flag("wsl_symlinks",		Opt_wsl_symlinks),
 	fsparam_flag("windows_names",		Opt_check_windows_names),
 	fsparam_flag("acl",			Opt_acl),
 	fsparam_flag("discard",			Opt_discard),
@@ -187,6 +189,13 @@ static int ntfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 			NVolSetHideDotFiles(vol);
 		else
 			NVolClearHideDotFiles(vol);
+		break;
+	case Opt_wsl_symlinks:
+		/* PORT: not an upstream option. See NTFS_MOUNT_WSL_SYMLINKS. */
+		if (result.boolean)
+			NVolSetWslSymlinks(vol);
+		else
+			NVolClearWslSymlinks(vol);
 		break;
 	case Opt_check_windows_names:
 		if (result.boolean)

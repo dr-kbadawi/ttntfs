@@ -17,6 +17,7 @@
 #include "mft.h"
 #include "index.h"
 #include "lcnalloc.h"
+#include <ctype.h>
 #include "reparse.h"
 
 struct wsl_link_reparse_data {
@@ -158,6 +159,61 @@ unsigned int ntfs_make_symlink(struct ntfs_inode *ni)
 				}
 			}
 			break;
+		case IO_REPARSE_TAG_SYMLINK: {
+			/*
+			 * PORT: upstream decodes only its own WSL tag here, so a
+			 * native Windows symlink never got ni->target and stat()
+			 * reported size 0 after a remount (the readlink slow path
+			 * in core/vfs/api.c still worked, which hid it). Decoding
+			 * it here serves getattr and readlink alike, for links
+			 * written by Windows, ntfs3, or -- now -- us.
+			 *
+			 * PrintName is preferred: it is what Windows shows and
+			 * what ntfs3 reads. SubstituteName is the fallback when
+			 * PrintName is empty, which ntfs-3g and old mklink do.
+			 * "\??\" is the NT object-namespace prefix and "X:" a
+			 * Windows drive; neither has a meaning to a POSIX caller.
+			 */
+			const struct ntfs_win_symlink *sl;
+			unsigned int dlen, off, nlen;
+			unsigned char *s = NULL;
+			int slen;
+
+			dlen = le16_to_cpu(reparse_attr->reparse_data_length);
+			if (dlen < sizeof(*sl))
+				break;		/* header does not fit: not a link */
+			sl = (const struct ntfs_win_symlink *)reparse_attr->reparse_data;
+			off = le16_to_cpu(sl->print_name_offset);
+			nlen = le16_to_cpu(sl->print_name_length);
+			if (!nlen) {
+				off = le16_to_cpu(sl->subst_name_offset);
+				nlen = le16_to_cpu(sl->subst_name_length);
+			}
+			if ((off | nlen) & 1 || sizeof(*sl) + off + nlen > dlen)
+				break;
+			slen = ntfs_ucstonls(ni->vol,
+					(const __le16 *)((const u8 *)sl->path_buffer + off),
+					nlen / 2, &s, 0);
+			if (slen > 0) {
+				unsigned char *p = s, *q;
+
+				if (slen >= 4 && !memcmp(p, "\\??\\", 4))
+					p += 4;
+				if (isalpha(p[0]) && p[1] == ':')
+					p += 2;
+				for (q = p; *q; q++)
+					if (*q == '\\')
+						*q = '/';
+				lth = strlen((char *)p);
+				ni->target = kvzalloc(lth + 1, GFP_NOFS);
+				if (ni->target) {
+					memcpy(ni->target, p, lth + 1);
+					mode = ntfs_reparse_tag_mode(reparse_attr);
+				}
+			}
+			kfree(s);
+			break;
+		}
 		default:
 			mode = ntfs_reparse_tag_mode(reparse_attr);
 		}
@@ -495,6 +551,113 @@ out:
 /*
  * Set reparse data for a WSL type symlink
  */
+/*
+ * Can @target be written as a native Windows symlink and still mean the same
+ * thing everywhere?
+ *
+ * Windows forbids : * ? " < > | in a path component, and reads a leading "X:"
+ * as a drive. A POSIX target containing any of those cannot be expressed in
+ * IO_REPARSE_TAG_SYMLINK without changing its meaning, so it takes the WSL tag
+ * instead -- which is exactly the per-link rule Microsoft's own DrvFs applies
+ * (WSL release notes, build 17046). Everything else, which is every symlink an
+ * ordinary copied tree contains, goes native and is followed by Windows, WSL,
+ * ntfs3, ntfs-3g and us.
+ */
+bool ntfs_symlink_target_is_windows_safe(const __le16 *target, int len)
+{
+	int i;
+
+	if (len <= 0)
+		return false;
+	for (i = 0; i < len; i++) {
+		u16 c = le16_to_cpu(target[i]);
+
+		switch (c) {
+		case ':': case '*': case '?': case '"':
+		case '<': case '>': case '|':
+			return false;
+		case '\\':
+			/*
+			 * A literal backslash is a legal POSIX filename character
+			 * with no native representation: the native form stores
+			 * '/' as '\\', so on the way back every '\\' becomes '/'
+			 * and the target "a\\b" would read as "a/b". The WSL tag
+			 * keeps the byte. Caught by test_links, which has carried
+			 * exactly this case since before the native writer existed.
+			 */
+			return false;
+		}
+		if (c < 0x20)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Write a native Windows symlink, IO_REPARSE_TAG_SYMLINK, [MS-FSCC] 2.1.2.4.
+ *
+ * PORT: upstream writes only the WSL tag. That tag is refused by Windows and
+ * unreadable by Linux ntfs3, which writes this one. Both the substitute and the
+ * print name carry the target with '/' turned into '\', unterminated, and the
+ * link is flagged RELATIVE -- the same bytes ntfs3 produces
+ * (fs/ntfs3/inode.c, ntfs_create_reparse_buffer). A Unix-absolute target such as
+ * /usr/bin/foo therefore becomes \usr\bin\foo with the RELATIVE flag, which is
+ * ntfs3's convention too; Windows resolves that against the drive root, which is
+ * wrong for it but leaves a well-formed link where there was an unopenable one.
+ *
+ * ni->target is filled with the POSIX form so that getattr reports the right
+ * size and readlink takes the fast path, matching the WSL setter.
+ */
+int ntfs_reparse_set_win_symlink(struct ntfs_inode *ni,
+		const __le16 *target, int target_len)
+{
+	struct reparse_point *reparse;
+	struct ntfs_win_symlink *sl;
+	unsigned char *utarget = NULL;
+	__le16 *p;
+	int i, ulen, path_bytes, data_len, reparse_len, err;
+
+	if (target_len <= 0 || target_len > 4096)
+		return -EINVAL;
+	ulen = ntfs_ucstonls(ni->vol, target, target_len, &utarget, 0);
+	if (ulen <= 0)
+		return -EINVAL;
+
+	path_bytes = target_len * 2;
+	data_len = sizeof(*sl) + 2 * path_bytes;	/* subst + print */
+	reparse_len = sizeof(*reparse) + data_len;
+	reparse = kvzalloc(reparse_len, GFP_NOFS);
+	if (!reparse) {
+		kfree(utarget);
+		return -ENOMEM;
+	}
+	reparse->reparse_tag = IO_REPARSE_TAG_SYMLINK;
+	reparse->reparse_data_length = cpu_to_le16(data_len);
+	reparse->reserved = 0;
+	sl = (struct ntfs_win_symlink *)reparse->reparse_data;
+	sl->subst_name_offset = cpu_to_le16(0);
+	sl->subst_name_length = cpu_to_le16(path_bytes);
+	sl->print_name_offset = cpu_to_le16(path_bytes);
+	sl->print_name_length = cpu_to_le16(path_bytes);
+	sl->flags = SYMLINK_FLAG_RELATIVE;
+	p = sl->path_buffer;
+	for (i = 0; i < target_len; i++) {
+		__le16 c = target[i];
+
+		if (c == cpu_to_le16('/'))
+			c = cpu_to_le16('\\');
+		p[i] = c;
+		p[target_len + i] = c;
+	}
+	err = ntfs_set_ntfs_reparse_data(ni, (char *)reparse, reparse_len);
+	kvfree(reparse);
+	if (!err)
+		ni->target = utarget;
+	else
+		kfree(utarget);
+	return err;
+}
+
 int ntfs_reparse_set_wsl_symlink(struct ntfs_inode *ni,
 		const __le16 *target, int target_len)
 {

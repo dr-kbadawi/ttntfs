@@ -160,6 +160,9 @@ static int ntfs_glue_apply_options(struct fs_context *fc,
 	if ((opts->flags & NTFS_MOUNT_DISCARD) &&
 	    (err = ntfs_glue_param(fc, "discard", NULL)))
 		return err;
+	if ((opts->flags & NTFS_MOUNT_WSL_SYMLINKS) &&
+	    (err = ntfs_glue_param(fc, "wsl_symlinks", NULL)))
+		return err;
 	/*
 	 * No pre-allocation slack: writes allocate exactly what they need, so
 	 * allocated_size never exceeds data_size rounded up to a cluster and

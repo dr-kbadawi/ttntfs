@@ -146,10 +146,19 @@ struct vol {
 	ntfs_inode_t *root;
 };
 
+static int vol_up_flags(struct vol *v, uint32_t flags, uint16_t fmask, uint16_t dmask,
+			uid_t uid, gid_t gid);
+
 static int vol_up(struct vol *v, uint16_t fmask, uint16_t dmask,
 		  uid_t uid, gid_t gid)
 {
-	struct ntfs_mount_options o = { .flags = 0, .uid = uid, .gid = gid,
+	return vol_up_flags(v, 0, fmask, dmask, uid, gid);
+}
+
+static int vol_up_flags(struct vol *v, uint32_t flags, uint16_t fmask, uint16_t dmask,
+			uid_t uid, gid_t gid)
+{
+	struct ntfs_mount_options o = { .flags = flags, .uid = uid, .gid = gid,
 					.fmask = fmask, .dmask = dmask };
 	int err;
 
@@ -519,6 +528,142 @@ static void check_target(ntfs_inode_t *l, const char *want, const char *what)
  * to reconstruct it, so a readlink that truncates or mangles it destroys the
  * link with no other symptom.
  */
+
+/* The reparse tag actually on disk for @name in the root, or 0. Read from the
+ * image, not through the driver, so it tests what was written rather than what
+ * the driver believes it wrote. */
+static uint32_t disk_reparse_tag(const char *name)
+{
+	const char *info = getenv("NTFS_NTFSINFO");
+	char cmd[PATH_MAX + 300], line[256];
+	uint32_t tag = 0;
+	FILE *p;
+
+	if (!info || !*info || access(info, X_OK) != 0)
+		return 0;
+	snprintf(cmd, sizeof(cmd),
+		 "%s -F /%s -v %s 2>/dev/null | grep -A40 'REPARSE_POINT (0xc0)' | "
+		 "grep -m1 'Reparse tag:' | grep -oE '0x[0-9a-fA-F]+'",
+		 info, name, scratch);
+	p = popen(cmd, "r");
+	if (!p)
+		return 0;
+	if (fgets(line, sizeof(line), p))
+		tag = (uint32_t)strtoul(line, NULL, 16);
+	pclose(p);
+	return tag;
+}
+
+/*
+ * Which reparse tag a symlink gets, and that it survives a remount either way.
+ *
+ * Finding 20. Upstream writes only IO_REPARSE_TAG_LX_SYMLINK, which Windows
+ * refuses to follow and Linux ntfs3 cannot read. IO_REPARSE_TAG_SYMLINK is
+ * followed by every reader there is, so it is the default whenever the target
+ * can be expressed in it. Targets Windows cannot name -- : * ? " < > | -- and a
+ * literal backslash, which the native form cannot tell from a separator, keep
+ * the WSL tag. That is the per-link rule Microsoft's own DrvFs applies. The
+ * wsl_symlinks mount flag forces the old behaviour for every link.
+ *
+ * Two things this pins that the first version of the writer got wrong or
+ * nearly wrong: a literal backslash must NOT go native (it came back as '/'),
+ * and getattr must report the target length after a remount for BOTH tags,
+ * because ni->target used to be filled only for the WSL tag and native links
+ * stat()ed at 0 bytes.
+ */
+static void test_symlink_tag_choice(void)
+{
+	static const struct {
+		const char *name, *target;
+		uint32_t want_tag;		/* with default flags */
+	} cases[] = {
+		{ "n-rel",     "target.txt",       0xA000000Cu },	/* native */
+		{ "n-deep",    "dir/sub/f.txt",    0xA000000Cu },
+		{ "n-up",      "../sib/y.txt",     0xA000000Cu },
+		{ "n-unixabs", "/usr/bin/foo",     0xA000000Cu },	/* ntfs3 convention */
+		{ "n-utf8",    "caf\xc3\xa9/\xe6\x97\xa5.txt", 0xA000000Cu },
+		{ "w-colon",   "a:b",              0xA000001Du },	/* WSL fallback */
+		{ "w-star",    "x*y",              0xA000001Du },
+		{ "w-quote",   "say\"hi\"",        0xA000001Du },
+		{ "w-bslash",  "a\\b",             0xA000001Du },	/* the near miss */
+	};
+	const size_t N = sizeof(cases) / sizeof(cases[0]);
+	int pass;
+
+	printf("test_symlink_tag_choice\n");
+
+	/* pass 0: default flags, per-link choice. pass 1: wsl_symlinks forced. */
+	for (pass = 0; pass < 2; pass++) {
+		uint32_t flags = pass ? NTFS_MOUNT_WSL_SYMLINKS : 0;
+		struct vol v;
+		ntfs_inode_t *l = NULL;
+		size_t i;
+
+		if (copy_fixture(pass ? "tagchoice-wsl" : "tagchoice") != 0) {
+			fprintf(stderr, "SKIP test_symlink_tag_choice: no fixture\n");
+			return;
+		}
+		if (vol_up_flags(&v, flags, 022, 022, 501, 20)) {
+			fprintf(stderr, "SKIP test_symlink_tag_choice: mount failed\n");
+			unlink(scratch);
+			return;
+		}
+		for (i = 0; i < N; i++) {
+			CHECK_MSG(ntfs_symlink(v.root, cases[i].name, cases[i].target, &l) == 0,
+				  "symlink(%s) failed", cases[i].name);
+			if (l) { ntfs_inode_put(l); l = NULL; }
+		}
+		vol_down(&v);
+
+		/* What is on disk, read independently of the driver. */
+		for (i = 0; i < N; i++) {
+			uint32_t want = pass ? 0xA000001Du : cases[i].want_tag;
+			uint32_t got = disk_reparse_tag(cases[i].name);
+
+			if (!got) {
+				fprintf(stderr, "SKIP tag(%s): ntfsinfo unavailable\n", cases[i].name);
+				continue;
+			}
+			CHECK_MSG(got == want, "%s%s: on-disk tag 0x%08x, expected 0x%08x",
+				  cases[i].name, pass ? " (wsl_symlinks)" : "", got, want);
+		}
+
+		/* Remount: a cached read proves nothing. Target and size must both
+		 * survive, for both tags. */
+		if (vol_up_flags(&v, flags, 022, 022, 501, 20)) {
+			fprintf(stderr, "FAIL test_symlink_tag_choice: remount failed\n");
+			failures++; checks++;
+			unlink(scratch);
+			return;
+		}
+		for (i = 0; i < N; i++) {
+			struct ntfs_attr at;
+			char buf[256];
+			size_t n = 0;
+
+			CHECK_MSG(ntfs_lookup(v.root, cases[i].name, &l) == 0,
+				  "lookup(%s) after remount", cases[i].name);
+			if (!l)
+				continue;
+			CHECK(ntfs_getattr(l, &at) == 0);
+			CHECK_MSG((at.mode & S_IFMT) == S_IFLNK, "%s is not a symlink after remount",
+				  cases[i].name);
+			CHECK_MSG(ntfs_readlink(l, buf, sizeof(buf), &n) == 0, "readlink(%s)", cases[i].name);
+			CHECK_MSG(n == strlen(cases[i].target) && !memcmp(buf, cases[i].target, n),
+				  "readlink(%s): got '%.*s', expected '%s'", cases[i].name, (int)n, buf,
+				  cases[i].target);
+			CHECK_MSG(at.size == (int64_t)strlen(cases[i].target),
+				  "%s: size %lld after remount, expected %zu (finding 20: native links "
+				  "used to stat at 0)", cases[i].name, (long long)at.size,
+				  strlen(cases[i].target));
+			ntfs_inode_put(l); l = NULL;
+		}
+		vol_down(&v);
+		fsck_clean("symlink tag choice");
+		unlink(scratch);
+	}
+}
+
 static void test_symlinks(void)
 {
 	struct vol v;
@@ -1116,6 +1261,7 @@ int main(void)
 	test_hard_link_refusals();
 	test_many_links();
 	test_symlinks();
+	test_symlink_tag_choice();
 	test_time_conversion();
 	test_timestamps();
 	test_permissions();

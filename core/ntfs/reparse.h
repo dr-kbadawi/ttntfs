@@ -10,6 +10,31 @@
 extern __le16 reparse_index_name[];
 
 unsigned int ntfs_make_symlink(struct ntfs_inode *ni);
+
+/*
+ * Windows symbolic link reparse data, [MS-FSCC] 2.1.2.4. Offsets are from byte
+ * 0 of path_buffer, lengths are bytes and exclude any terminator, strings are
+ * UTF-16LE. Both names may appear in either order in path_buffer.
+ */
+struct ntfs_win_symlink {
+	__le16 subst_name_offset;
+	__le16 subst_name_length;
+	__le16 print_name_offset;
+	__le16 print_name_length;
+	__le32 flags;
+	__le16 path_buffer[];
+} __packed;
+
+#define SYMLINK_FLAG_RELATIVE	cpu_to_le32(0x00000001)
+
+int ntfs_reparse_set_win_symlink(struct ntfs_inode *ni,
+		const __le16 *target, int target_len);
+
+/* True when @target (UTF-16, @len units) can be written as a native Windows
+ * symlink and read back unchanged; false when it needs the WSL tag to survive.
+ * Refuses the characters Windows forbids in a name, and a literal backslash,
+ * which the native form cannot distinguish from a separator. */
+bool ntfs_symlink_target_is_windows_safe(const __le16 *target, int len);
 unsigned int ntfs_reparse_tag_dt_types(struct ntfs_volume *vol, unsigned long mref);
 int ntfs_reparse_set_wsl_symlink(struct ntfs_inode *ni,
 			const __le16 *target, int target_len);

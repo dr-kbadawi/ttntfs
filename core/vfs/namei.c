@@ -457,7 +457,20 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 			goto err_out;
 
 		if (S_ISLNK(mode)) {
-			err = ntfs_reparse_set_wsl_symlink(ni, target, target_len);
+			/*
+			 * PORT: upstream always writes the WSL tag. Windows refuses
+			 * to follow it and Linux ntfs3 cannot read it (finding 20).
+			 * The native tag is followed by every reader there is, so it
+			 * is the default whenever the target can be expressed in it;
+			 * a target Windows could not name anyway keeps the WSL tag,
+			 * which is the per-link rule Microsoft's DrvFs applies. The
+			 * wsl_symlinks mount option forces the old behaviour.
+			 */
+			if (!NVolWslSymlinks(vol) &&
+			    ntfs_symlink_target_is_windows_safe(target, target_len))
+				err = ntfs_reparse_set_win_symlink(ni, target, target_len);
+			else
+				err = ntfs_reparse_set_wsl_symlink(ni, target, target_len);
 			if (!err)
 				rollback_reparse = true;
 		} else if (S_ISBLK(mode) || S_ISCHR(mode) || S_ISSOCK(mode) ||

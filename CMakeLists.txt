@@ -152,7 +152,7 @@ if(NTFS_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
   add_test(NAME faults COMMAND test_faults)
   set_tests_properties(faults PROPERTIES
-    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck;NTFS_NTFSINFO=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/bin/ntfsinfo")
 
   # Crash consistency: the write ordering in platform/src/inode.c is the only
   # thing between an interrupted operation and a volume whose next allocation
@@ -166,7 +166,7 @@ if(NTFS_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
   add_test(NAME crash COMMAND test_crash)
   set_tests_properties(crash PROPERTIES
-    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck;NTFS_NTFSINFO=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/bin/ntfsinfo")
 
   # Large directories: the index B-tree. Nothing exercised a directory past a
   # handful of entries, so ntfs_ib_split(), ntfs_ir_reparent(),
@@ -182,7 +182,7 @@ if(NTFS_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
   add_test(NAME bigdir COMMAND test_bigdir)
   set_tests_properties(bigdir PROPERTIES
-    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck;NTFS_NTFSINFO=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/bin/ntfsinfo")
 
   # Compressed writes and sparse files. core/ntfs/compress.c's write half had
   # never been executed by anything, and the compressed-sparse fixture was only
@@ -209,7 +209,7 @@ if(NTFS_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
   add_test(NAME links COMMAND test_links)
   set_tests_properties(links PROPERTIES
-    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck;NTFS_NTFSINFO=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/bin/ntfsinfo")
 
   # The three name and xattr decisions in PORTING.md section 6, which were
   # recorded and then enforced by nothing: Windows-illegal names rejected,

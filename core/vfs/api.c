@@ -442,16 +442,6 @@ int ntfs_symlink(ntfs_inode_t *dir, const char *name, const char *target,
 	return do_create(dir, name, S_IFLNK | 0777, target, out);
 }
 
-/* Windows (IO_REPARSE_TAG_SYMLINK) reparse data. */
-struct ntfs_win_symlink {
-	__le16 subst_name_offset;
-	__le16 subst_name_length;
-	__le16 print_name_offset;
-	__le16 print_name_length;
-	__le32 flags;
-	__le16 path_buffer[];
-} __packed;
-
 int ntfs_readlink(ntfs_inode_t *h, char *buf, size_t bufsize, size_t *len_out)
 {
 	struct inode *vi = VI(h);

@@ -68,6 +68,13 @@ enum ntfs_mount_flags {
 	 * otherwise clean -- a dirty volume or an unclean journal still refuses.
 	 * Destructive to the user's Windows session: ask first. */
 	NTFS_MOUNT_DISCARD_HIBERNATION	= 1u << 7,
+	/* Write every symlink with the WSL reparse tag (IO_REPARSE_TAG_LX_SYMLINK)
+	 * instead of choosing per link. The default writes the native Windows tag
+	 * whenever the target can be expressed in it, which is what Windows, WSL,
+	 * Linux ntfs3 and ntfs-3g all follow; the WSL tag is refused by Windows and
+	 * unreadable by ntfs3. Set this only for a volume that must match what
+	 * ntfsplus or ntfsprogs-plus would write. */
+	NTFS_MOUNT_WSL_SYMLINKS		= 1u << 9,
 };
 
 enum ntfs_ro_reason {
