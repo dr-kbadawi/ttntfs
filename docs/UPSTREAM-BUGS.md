@@ -654,7 +654,41 @@ anything could resolve the wrong way.
 restoring the unconditional EA-size write fails it with "reads 0x0000002d".
 `d95d728`.
 
-Still to confirm on the Windows box: the same round trip that broke the old
-links -- `chkdsk /f`, a Mac write session, Windows again -- leaves links written
-by this build listing as `<SYMLINK>`.
+### Confirmed, and the real cause found (2026-09-18)
+
+The union fix above was necessary and **not sufficient**: links written by
+`d95d728` -- both copies of the union correct -- degraded on the very next
+round trip. Reading the damaged index block off the stick gave the answer:
+
+    index entry union: 2d 00 0f 00   (packed_ea_size 0x2d, reserved 0x0f)
+    MFT copies:        intact, tag 0xa000000c throughout
+
+Nothing in this driver writes the EA form into an index entry. **`chkdsk`
+does.** [MS-FSA] states that reparse points and extended attributes are
+mutually exclusive; `chkdsk` recomputes each index entry's duplicated
+`$FILE_NAME` from the MFT record, sees `$EA_INFORMATION`, and writes the EA
+form of the union over the tag. By its rules the file cannot be a reparse
+point, so it reports no problems. Windows then reads a reparse flag with an
+unrecognisable tag and lists a zero-byte file.
+
+Every symlink we ever wrote carried `$LXUID`/`$LXGID`/`$LXMOD`, because
+upstream writes them on every inode. The research had flagged the coexistence
+as outside the spec; it was set aside because Windows *follows* such links.
+It does. `chkdsk` is what objects.
+
+Fix, `e045c2e`: no `$EA` on symlinks, as Linux ntfs3 does. A symlink's mode is
+0777 by definition and uid/gid are mount-wide under noowners, so nothing is
+lost. Verified on Windows 10 with the exact sequence that had broken three
+previous sets -- `dir`, `chkdsk /f`, a Mac read-write session in the same
+directory, `dir` again: `<SYMLINKD>`, `<SYMLINK>`, `<SYMLINK>` all intact.
+
+This also explains the very first observation in this thread: the 500 GB
+disk's links listing as zero-byte files on 2026-09-17, after its `chkdsk /f`
+three days earlier.
+
+**Migration.** Links created by builds before `e045c2e` still carry `$EA` and
+the next `chkdsk` will still rewrite their index entries. The reparse
+attribute survives, so they still work on the Mac; only Windows' listing is
+affected. A repair pass that strips `$EA` from existing symlinks would fix
+them; not written.
 

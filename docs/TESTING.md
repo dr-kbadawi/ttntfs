@@ -211,6 +211,13 @@ extraction moved the comment with it and changed nothing else.
   (entry 1 is at `RT_HEADER_SIZE + OA1_SIZE`); and an all-zero payload makes an
   update-sequence test vacuous, because the sector tails then trivially match a
   zero USN. Both cost an afternoon.
+* **When a symptom will not reproduce locally, read the damaged bytes.** Three
+  round trips were spent attributing broken symlinks to two different things
+  in our own code -- each fit the sequence, neither reproduced through the raw
+  API or FSKit, on 4 KiB or 512-byte clusters. Reading the damaged index block
+  off the stick took one look: the bytes were a form nothing in this driver
+  writes, and the only other writer was `chkdsk`. A sequence that fits a theory
+  is not evidence for it; bytes are.
 * **Verify what is on the disk before it leaves the desk.** A stick handed to
   Windows to test the new native symlinks turned out to carry the old WSL tags:
   `fskitd` had kept a stale extension instance resident across the reinstall and
