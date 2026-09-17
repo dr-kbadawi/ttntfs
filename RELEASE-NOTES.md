@@ -1,5 +1,40 @@
 # TT NTFS Native — release notes
 
+## Build of 2026-09-18 (commit 166b6ed)
+
+### Symlinks survive `chkdsk`
+
+The previous build's symlinks were correct on disk and Windows followed them --
+until `chkdsk` ran. After that, Windows listed every one as an empty file.
+
+The cause was a rule this driver had inherited without knowing it broke one:
+Windows forbids a file from carrying both a reparse point and extended
+attributes, and the Linux source this driver is ported from puts three small
+extended attributes on every file it creates, symlinks included. Windows
+tolerates the combination when opening the link. `chkdsk` does not: it
+silently rewrites the link's directory entry as an ordinary file, and reports
+no problems because, by its rules, there were none.
+
+Symlinks no longer carry those attributes. A symlink's permissions are fixed by
+definition and its ownership is set per volume, so nothing is lost. Verified
+with the exact sequence that had broken every earlier set: `chkdsk /f`, a
+read-write session on the Mac, back to Windows -- all links intact.
+
+**Symlinks made by earlier builds** still carry the attributes, and the next
+`chkdsk` will still demote their Windows listing. They keep working on the Mac
+either way. Recreating them with this build fixes them.
+
+### Everything in the previous build, now verified against real Windows links
+
+The previous build's reading of Windows junctions and directory symlinks had
+been tested against reconstructed examples. It has now been tested against
+links Windows itself made on the test disk -- `mklink /J`, `mklink /D` with
+relative and absolute targets, and a plain `mklink`. All present as symlinks
+on the Mac, all resolve to the right place, `cd` works through a junction, and
+deleting one removes the link and nothing else.
+
+---
+
 ## Build of 2026-09-17, third (commit d95d728)
 
 ### Windows directory links and junctions are no longer empty folders
