@@ -1,6 +1,39 @@
 # TT NTFS Native — release notes
 
-## Build of 2026-09-17 (commit fb7c1bb)
+## Build of 2026-09-17, second (commit 0023620)
+
+### Symlinks now work on Windows
+
+Every symlink this driver created was invisible in Explorer and unopenable from
+the Windows command line -- `type` reported "The file cannot be accessed by the
+system". The data behind the link was fine; the link itself was unusable.
+
+Two causes, both fixed. The link was marked as a hidden system file, so `dir`
+and Explorer skipped it. And it carried the WSL reparse tag, which native Windows
+refuses to follow; Linux's ntfs3 driver cannot read it either. That tag was
+inherited from the Linux source this driver is ported from, and the justification
+in this project's own notes for keeping it -- "it is what Linux writes" -- turned
+out on inspection to be false.
+
+Symlinks are now written with the native Windows tag whenever the target can be
+expressed in it, which is every ordinary link a copied tree contains. Verified
+on Windows 10: `dir` lists them as `<SYMLINK>`, `type` follows them, and
+`chkdsk /f` finds no problems. A target Windows cannot name -- one containing
+`: * ? " < > |` or a literal backslash -- keeps the WSL tag so it survives
+unchanged, which is the same per-link rule Microsoft's own WSL applies. A new
+`wsl_symlinks` mount option forces the old behaviour for every link.
+
+Also fixed on the way: a native symlink written by Windows or Linux reported a
+size of 0 bytes after a remount, because only WSL-tagged links were decoded at
+load. Both kinds now stat correctly.
+
+One thing to know: a symlink to a *directory* is written as a file-type link,
+which Windows lists as `<SYMLINK>` rather than `<SYMLINKD>`. Following it works;
+`cd` through it from cmd may not. Recorded as a follow-up.
+
+---
+
+## Build of 2026-09-17, first (commit fb7c1bb)
 
 ### Journal replay is now verified against Windows, not inferred
 
