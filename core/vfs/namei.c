@@ -367,7 +367,26 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 	si->creation_time = si->last_data_change_time = utc2ntfs(ni->i_crtime);
 	si->last_mft_change_time = si->last_access_time = si->creation_time;
 
-	if (!S_ISREG(mode) && !S_ISDIR(mode))
+	/*
+	 * PORT: upstream marks every non-regular, non-directory inode as a system
+	 * file. We exclude symlinks.
+	 *
+	 * FILE_ATTR_SYSTEM hides a file from `dir` and from Explorer unless the
+	 * user has turned on "show protected operating system files". That is
+	 * defensible for a device node or a FIFO, which Windows can do nothing
+	 * with. A symlink is not in that category: Windows has its own symlinks,
+	 * lists them in `dir` as <SYMLINK>, and a user who copied a tree
+	 * containing one expects to see it.
+	 *
+	 * Measured on Windows 10, 2026-09-17 (finding 20): a directory holding two
+	 * of our symlinks showed 4 entries under `dir` and 6 under `dir /a`. The
+	 * links were simply invisible.
+	 *
+	 * This does not make them followable -- they carry the WSL reparse tag,
+	 * which native Windows declines to follow. That is a separate decision
+	 * recorded in the same finding. This change only stops us hiding them.
+	 */
+	if (!S_ISREG(mode) && !S_ISDIR(mode) && !S_ISLNK(mode))
 		si->file_attributes = FILE_ATTR_SYSTEM;
 
 	/* Add STANDARD_INFORMATION to inode. */
@@ -478,8 +497,14 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 		fn->data_size = cpu_to_le64(ni->data_size);
 		fn->allocated_size = cpu_to_le64(ni->allocated_size);
 	}
+	/* PORT: same exclusion as the $STANDARD_INFORMATION copy above, and this
+	 * is the one that matters -- `dir` reads the index entry's cached
+	 * attributes, not the MFT record's. A symlink still gets
+	 * FILE_ATTR_REPARSE_POINT, which is what makes Windows show it as a link;
+	 * it just no longer gets FILE_ATTR_SYSTEM, which was hiding it. */
 	if (!S_ISREG(mode) && !S_ISDIR(mode)) {
-		fn->file_attributes = FILE_ATTR_SYSTEM;
+		if (!S_ISLNK(mode))
+			fn->file_attributes = FILE_ATTR_SYSTEM;
 		if (rollback_reparse)
 			fn->file_attributes |= FILE_ATTR_REPARSE_POINT;
 	}
