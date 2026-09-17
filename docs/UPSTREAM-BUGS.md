@@ -344,3 +344,42 @@ reports **which** of its six checks failed. It previously said only "malformed
 client record", which was the sum total of the evidence for a rejection that
 turned out to be wrong.
 
+## Finding 19: replay cannot recover a torn index block — **OPEN**
+
+Phase 4 scenario C, 2026-09-17. The first capture to exercise directory index
+recovery, and it found a real limit.
+
+**The capture.** 25 deletes and 25 creates issued against an 80-entry directory
+on Windows 10, with the stick pulled mid-loop. 448 records, ten operation types,
+including 28 `AddIndexEntryAllocation` and 26 `DeleteIndexEntryAllocation` --
+against scenario A's three types. Saved as `scenC2-dirty.img` with its metadata.
+
+**What we do.** Replay applies 148 records and then refuses:
+
+    lsn 0x1806de5: index block torn
+
+The record is `AddIndexEntryAllocation`, a 120-byte insert at offset 0x478 into
+the index block at VCN 8. The block fails its update-sequence check, so its
+contents cannot be trusted, and patching 120 bytes into an untrustworthy block
+is refused. Nothing is written.
+
+**What Windows does.** Applies all 50 operations. The directory comes back with
+55 originals and 25 new entries, 80 total, and the journal clean. Windows
+recovers a torn index block; we do not.
+
+**The naive fix is worse than the refusal, which is the useful part.** Tolerating
+the failed fixup and applying the insert anyway was tried: it produces **79
+entries where Windows produces 80** -- one `zz-new-entry` missing. A silently
+incomplete directory is worse than a loud refusal, so the check stays.
+
+**What this means.** Our replay is not yet correct for index-heavy crash
+recovery. The likely gap is dirty-page handling: a torn page has to be rebuilt by
+replaying every update to it from its own `oldest_lsn` in the dirty page table,
+rather than by patching whatever is on disk. We start from a single global
+`redo_lsn` (0x1804af9 here) and treat the on-disk block as a base, which is only
+valid when the block is intact.
+
+Until this is understood, replay of a crash that caught a directory index
+mid-update will refuse rather than half-apply. That is the right failure, and it
+is why replay stays opt-in.
+
