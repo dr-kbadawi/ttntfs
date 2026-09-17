@@ -69,10 +69,15 @@ Add `NTFS_CORE_MODE=real` for the real core.
   order 500 is unverified (no signing).
 
 ## Next
+Note on the two macOS defects this project has measured -- the System Settings
+toggle that cannot enable a third-party FSKit module, and the ~5 s gap between
+probe and mount: **these are recorded here and deliberately not reported to
+Apple.** The workarounds are in place (the app enables its own module; the probe
+was made cheap), so nothing here is blocked on Apple fixing them. They are
+written up in this file and in fskit/README.md for whoever hits them next.
+
 - `FSVolume.AccessCheckOperations`, if the kernel's permission checks ever fight
   `noowners`. Not needed so far.
-- The Feedback report to Apple: the System Settings toggle that cannot enable a
-  third-party module, and the 5 s gap between probe and mount.
 
 Done since this list was written: signing, installing and `mount-test.sh` both
 ways (it now asserts an 8 MiB checksum round trip, 64 scattered sub-page writes,

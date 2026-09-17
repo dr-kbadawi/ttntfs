@@ -36,8 +36,7 @@
       test_rw_mount_retires_the_journal_in_two_writes (327 writes vs 2).
 - [ ] Port ntfsprogs-plus's v2.0 acceptance into core/ntfs/logfile.c so the log
       stops saying "LogFile version 2.0 is not supported" on every mount.
-- [ ] Apple Feedback: System Settings toggle, 5 s mount gap, and possibly
-      metadataFlush EIO on USB (test FSSupportsKernelOffloadedIO first).
+
 - [ ] x86_64 build. arm64 only; nothing has ever compiled for a second arch.
 - [ ] mkfs/fsck in the app, Homebrew cask.
 - [x] Rebuild the DMG. Done 2026-09-15 from a47cd6e: notarized, stapled,
