@@ -346,6 +346,47 @@ in the LSN field, the 1.1 convention) sitting beside v2.0 pages. That stick has
 lived as both versions, which is direct evidence of Windows' documented
 downgrade-to-1.1-on-clean-dismount and upgrade-on-mount cycle.
 
+### Phase 4 scenarios A, C and D all reproduce Windows (2026-09-17)
+
+Three real Windows 10 crash captures, each replayed by us and by Windows from
+the same journal, then compared.
+
+| | A: file create | C: directory index | D: file extension |
+|---|---|---|---|
+| records | 5 | 448 | **1113** |
+| redone / undone | 6 / 0 | 161 / 0 | **832 / 2** |
+| operation types | 3 | 10 | 8 |
+| what it exercises | MFT record init, `$I30` | `AddIndexEntryAllocation`, `DeleteIndexEntryAllocation`, index block splits | `UpdateMappingPairs` x276, `SetNewAttributeSizes` x278, `$Bitmap` |
+| result vs Windows | identical | identical | identical |
+
+**D is the strongest of the three.** `D.bin` came out at exactly 18,481,152
+bytes on both sides, its MFT record differing in **4 bytes** -- the `$LogFile`
+stamp and the two update-sequence fixup slots, neither of which two correct
+writers can agree on. The runlist, the one thing this scenario exists to test,
+is byte-identical: 276 `UpdateMappingPairs` records reconstructing which clusters
+the file occupies, reproduced exactly.
+
+Across the volume, **241 of 256 MFT records are identical or differ only in
+fixups**. The 15 with real differences carry the same signature every time: the
+`$LogFile` LSN at +0x08 and timestamps. That is Windows mounting and browsing the
+volume after replaying, which we do not do.
+
+Our replay also **fixed** a cluster-bitmap inconsistency that the crash left
+behind (`Inode(6:80)`), which was present in the image before either side
+replayed.
+
+**One residual difference that is not a difference.** Both sides finish with
+`ntfsck` reporting `Inode(135): Allocated size is different with
+IDX/$FN(1048576), MFT/$DATA(18546688)` -- `D.bin`'s directory index entry still
+carrying its pre-extension size. Byte-for-byte the same complaint from both. The
+journal contains **no `UpdateFileNameAllocation` records at all**, so neither
+implementation could have replayed that update; NTFS refreshes an index entry's
+cached size lazily. Windows leaves it stale too.
+
+**Still unrun:** B (hibernation / Fast Startup) and E (baselines). B is the case
+`ntfsrecover` refuses by default as dangerous, because part of the state never
+reaches the disk at all.
+
 ### A journal with no restart page is regenerable, not dirty (2026-09-15)
 
 A Windows Recovery volume arrived with its two restart pages `0xff` since 2022
