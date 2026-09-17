@@ -1,5 +1,44 @@
 # TT NTFS Native — release notes
 
+## Build of 2026-09-17 (commit fb7c1bb)
+
+### Journal replay is now verified against Windows, not inferred
+
+Four scenarios were captured from a real Windows 10 machine -- each one a genuine
+interrupted write, with the disk pulled mid-operation -- then replayed both by
+this driver and by Windows, and the results compared byte for byte.
+
+| what was interrupted | journal records | result |
+|---|---|---|
+| creating a file and a directory | 5 | matches Windows |
+| 25 deletes and 25 creates in one directory | 448 | matches Windows |
+| appending 300 MB to a file | 1113 | matches Windows |
+| `chkdsk` on a volume **only this driver** recovered | -- | **no problems found** |
+
+That last row is the one that matters most: Windows never saw the journal, and
+still found nothing to correct in a directory index this driver had rebuilt from
+50 pending operations.
+
+Two real bugs were found and fixed along the way, both of which would have
+mattered on ordinary crashes: an index block written into a freshly allocated
+cluster came out without its integrity data, which made every later read of it
+fail; and a replay payload could be truncated.
+
+### "Close Journal" when nothing needs replaying
+
+Fast Startup is on by default in Windows, and a normal shutdown with a disk
+attached does **not** close that disk's journal. The volume then looks dirty
+while being completely intact -- nothing to replay, no unfinished writes.
+
+Until now the app offered "Replay Journal" and warned about possible file system
+damage. For this case every word of that was wrong. It now reads **Close
+Journal**, explains that Windows simply left the journal open, and says plainly
+that it changes two pages of bookkeeping and touches none of your files. The
+original warning is kept, with a count, for journals that really do carry
+unfinished work.
+
+---
+
 ## Build of 2026-09-15, third (commit c8f9e94)
 
 ### A volume whose journal has no restart page is now usable
