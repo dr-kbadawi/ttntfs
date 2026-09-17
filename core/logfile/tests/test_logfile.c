@@ -419,6 +419,10 @@ static ntfs_logfile_t *open_log(struct memio *m, struct ntfs_log_io *io)
 #define MFT_LCN 16u			/* 16 clusters = 64 records */
 #define MFT_CLUSTERS 16u
 #define BITMAP_LCN 40u
+/* An index allocation on its own cluster, left zeroed by vol_init. That is the
+ * state finding 19 was about: a cluster allocated but never written, into which
+ * a redo record lays down the first INDX header this volume has ever seen. */
+#define INDEX_LCN  44u
 #define VOL_CLUSTERS 64u
 
 struct vol {
@@ -497,6 +501,11 @@ static void build_record(uint8_t *rec, uint64_t no, uint16_t flags, void (*fill)
 
 static void fill_mft(uint8_t *rec, uint32_t *off) { put_nonres_attr(rec, off, ATTR_TYPE_DATA, MFT_LCN, MFT_CLUSTERS, 1); }
 static void fill_bitmap(uint8_t *rec, uint32_t *off) { put_nonres_attr(rec, off, ATTR_TYPE_DATA, BITMAP_LCN, 1, 1); }
+static void fill_index(uint8_t *rec, uint32_t *off)
+{
+	put_nonres_attr(rec, off, ATTR_TYPE_INDEX_ALLOCATION, INDEX_LCN, 1, 1);
+}
+
 static void fill_plain(uint8_t *rec, uint32_t *off)
 {
 	static const uint8_t si[0x30] = { 1, 2, 3 };
@@ -521,6 +530,8 @@ static void vol_init(struct vol *v)
 	vol_put_record(v, 6, rec);
 	build_record(rec, 30, MFT_RECORD_IN_USE, fill_plain);
 	vol_put_record(v, 30, rec);
+	build_record(rec, 31, MFT_RECORD_IN_USE, fill_index);
+	vol_put_record(v, 31, rec);
 }
 
 static int v_read_mft(void *ctx, uint64_t no, void *buf)
@@ -1505,6 +1516,93 @@ static void test_flush_failure_is_not_a_partial_write(void)
 	CHECK(!res.flush_failed);
 	ntfs_logfile_close(log);
 }
+/*
+ * Finding 19: a record that is the first thing ever written into a freshly
+ * allocated cluster must still leave a PROTECTED index block.
+ *
+ * From a real Windows 10 crash capture, 2026-09-17. The block at attr 0x68 vcn 8
+ * was all zeros on disk -- allocated, never written -- and an
+ * UpdateNonresidentValue laid down its INDX header. Because the block had not
+ * ARRIVED as INDX, the outgoing update sequence array was skipped, so the next
+ * record to read it found no USNs, called it "index block torn" and refused the
+ * whole replay. Windows completed all 50 operations on the same journal.
+ *
+ * The fix protects on the result rather than the origin. Revert it and the
+ * second half of this test fails: the stored block deprotects as torn.
+ */
+static void test_first_write_into_fresh_cluster_is_protected(void)
+{
+	struct lb b;
+	struct memio m;
+	struct ntfs_log_io io;
+	ntfs_logfile_t *log;
+	struct vol v;
+	struct ntfs_log_apply ap;
+	struct ntfs_log_replay_result res;
+	struct ntfs_logfile_info info;
+	struct crec c;
+	uint8_t oat[256], indx[VCS];
+	uint32_t oatn = build_oatbl(oat, 31, ATTR_TYPE_INDEX_ALLOCATION);
+	uint64_t start, oa_lsn, restart_lsn;
+	uint8_t *stored;
+	bool torn = false;
+
+	printf("test_first_write_into_fresh_cluster_is_protected\n");
+
+	/* The payload: an INDX header and nothing else, exactly as a first write
+	 * into an empty cluster looks. usa_count covers every 512-byte sector. */
+	/* Filled with a recognisable pattern, NOT zeros. An all-zero payload makes
+	 * this test vacuous: the update sequence number would be zero too, every
+	 * sector tail would trivially match it, and an unprotected block would pass
+	 * the check it is supposed to fail. Caught by reverting the fix and seeing
+	 * no failure. */
+	for (size_t i = 0; i < sizeof(indx); i++)
+		indx[i] = (uint8_t)(0xA5 ^ (i & 0xff));
+	lf_put32(indx + 0, LFS_MAGIC_INDX);
+	lf_put16(indx + 4, 0x28);
+	lf_put16(indx + 6, VCS / 512 + 1);
+
+	lb_init(&b, FIRST_PAGE, 2);
+	start = lb_simple(&b, 0x18, LOP_Noop, LOP_Noop);
+	oa_lsn = lb_table_dump(&b, LOP_OpenAttributeTableDump, oat, oatn);
+	restart_lsn = lb_checkpoint(&b, start, oa_lsn, oatn, 0, 0, 0, 0);
+
+	memset(&c, 0, sizeof(c));
+	c.redo_op = LOP_UpdateNonresidentValue;
+	c.undo_op = LOP_Noop;
+	/* Entry 1 of the open-attribute table: RT_HEADER_SIZE + OA1_SIZE. Entry 0
+	 * is $MFT's own $DATA, and aiming there writes inside the MFT. */
+	c.target_attr = RT_HEADER_SIZE + OA1_SIZE;
+	c.lcns = 1;
+	c.lcn[0] = INDEX_LCN;
+	c.target_vcn = 0;
+	c.redo = indx;
+	c.redo_len = (uint16_t)sizeof(indx);
+	(void)lb_client(&b, 0x40, 0, &c);
+	(void)lb_simple(&b, 0x40, LOP_ForgetTransaction, LOP_Noop);
+	lb_restart(&b, b.last_lsn, b.last_len, start, restart_lsn, 0, false);
+	lb_protect(&b);
+
+	m.buf = b.buf; m.size = LSIZE; m.writes = 0;
+	log = open_log(&m, &io);
+	ntfs_logfile_get_info(log, &info);
+	CHECK_EQ(info.state, NTFS_LOG_DIRTY);
+
+	vol_init(&v);
+	vol_apply(&v, &ap);
+	memset(&res, 0, sizeof(res));
+	CHECK_EQ(ntfs_logfile_replay(log, &ap, false, &res), 0);
+	CHECK(v.clu_writes >= 1);
+
+	stored = v.disk + INDEX_LCN * VCS;
+	CHECK_EQ(lf_get32(stored), LFS_MAGIC_INDX);
+	/* The point of the test: it must carry an update sequence array, so that
+	 * reading it back succeeds. Without the fix this deprotects as torn. */
+	CHECK_EQ(ntfs_log_fixup_post_read(stored, VCS, LFS_SECTOR_SIZE, &torn), 0);
+	CHECK(!torn);
+	ntfs_logfile_close(log);
+}
+
 
 int main(void)
 {
@@ -1518,6 +1616,7 @@ int main(void)
 	test_tables_api();
 	test_v2_log();
 	test_flush_failure_is_not_a_partial_write();
+	test_first_write_into_fresh_cluster_is_protected();
 	test_images();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

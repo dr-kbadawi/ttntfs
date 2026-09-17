@@ -30,9 +30,10 @@
 - [ ] Author email on 29 commits. Safest now, no remote. Needs a fresh backup branch.
 
 ## Unblocked, not started
-- [ ] Give core/logfile/tests a volume fixture with a real $INDEX_ALLOCATION, so
-      finding 19 and the two-page retirement can have unit tests instead of only
-      capture evidence. Attempted 2026-09-17 and abandoned; see docs/TESTING.md.
+- [x] Done 2026-09-17: the logfile fixture now carries a real $INDEX_ALLOCATION,
+      and both gaps have load-bearing unit tests --
+      test_first_write_into_fresh_cluster_is_protected (finding 19) and
+      test_rw_mount_retires_the_journal_in_two_writes (327 writes vs 2).
 - [ ] Port ntfsprogs-plus's v2.0 acceptance into core/ntfs/logfile.c so the log
       stops saying "LogFile version 2.0 is not supported" on every mount.
 - [ ] Apple Feedback: System Settings toggle, 5 s mount gap, and possibly

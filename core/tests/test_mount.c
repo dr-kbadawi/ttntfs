@@ -455,13 +455,80 @@ static void test_probe_light_matches(void)
 /* ---- 4. exactly one device flush per sync ---------------------------- */
 
 static int flush_count;
+static unsigned long write_count;
 static const struct ntfs_bdev_ops *real_ops;
 static struct ntfs_bdev_ops counting_ops;
 
 static ssize_t c_pread(struct ntfs_bdev *d, void *b, size_t c, u64 o) { return real_ops->pread(d, b, c, o); }
-static ssize_t c_pwrite(struct ntfs_bdev *d, const void *b, size_t c, u64 o) { return real_ops->pwrite(d, b, c, o); }
+static ssize_t c_pwrite(struct ntfs_bdev *d, const void *b, size_t c, u64 o) { write_count++; return real_ops->pwrite(d, b, c, o); }
 static int c_flush(struct ntfs_bdev *d) { flush_count++; return real_ops->flush(d); }
 static void c_close(struct ntfs_bdev *d) { real_ops->close(d); }
+
+/*
+ * Retiring a clean journal must cost two pages, not the whole log.
+ *
+ * ntfs_empty_logfile() -- upstream's, and what ntfs-3g's "recover" does -- walks
+ * every page from VCN 0 writing 0xff, and destroys the two restart pages FIRST.
+ * Measured at the device on a real Windows volume, a read-write mount that
+ * changed nothing else cost 1420 writes and 5.5 MiB; a 64 MiB journal makes that
+ * 16384 pages. A crash inside that loop leaves a journal full of recoverable
+ * work with nothing left to reach it by, which is what this driver did to a
+ * user's disk on 2026-09-13.
+ *
+ * ntfs_logfile_mark_clean_device() writes two restart pages, last, and leaves
+ * what Windows leaves on a clean dismount -- verified field by field against a
+ * real Windows safe-removal (E1). This pins the cost, because a regression here
+ * is silent: the volume still mounts, it just writes thousands of pages again.
+ */
+static void test_rw_mount_retires_the_journal_in_two_writes(void)
+{
+	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol = NULL;
+	int err;
+
+	printf("test_rw_mount_retires_the_journal_in_two_writes\n");
+
+	if (copy_fixture("basic-4k.img") != 0) {
+		fprintf(stderr, "SKIP test_rw_mount_retires_the_journal_in_two_writes: no fixture\n");
+		return;
+	}
+	/* Clean but NOT empty: an empty journal is skipped at the first line and
+	 * this would measure nothing. erase_restart_pages() writes record pages
+	 * for exactly this reason, so reuse its second half by writing a valid
+	 * header over the top of them. */
+	if (erase_restart_pages(scratch) != 0 ||
+	    write_restart_pages(scratch, true, RESTART_VOLUME_IS_CLEAN) != 0) {
+		fprintf(stderr, "SKIP: could not build a non-empty clean journal\n");
+		unlink(scratch);
+		return;
+	}
+
+	dev = ntfs_bdev_open_path(scratch, false);
+	CHECK(dev != NULL);
+	if (!dev) { unlink(scratch); return; }
+	real_ops = dev->ops;
+	counting_ops = *real_ops;
+	counting_ops.pread = c_pread; counting_ops.pwrite = c_pwrite;
+	counting_ops.flush = c_flush; counting_ops.close = c_close;
+	dev->ops = &counting_ops;
+
+	write_count = 0;
+	err = ntfs_mount(dev, &o, &vol);
+	CHECK(err == 0);
+	if (!err) {
+		checks++;
+		if (write_count > 8) {
+			failures++;
+			fprintf(stderr, "FAIL: retiring a clean journal took %lu device writes. "
+					"Two restart pages is the whole job; the full erase is "
+					"thousands, and destroys them first.\n", write_count);
+		}
+		ntfs_unmount(vol);
+	}
+	unlink(scratch);
+}
+
 
 static void test_one_flush_per_sync(void)
 {
@@ -533,6 +600,7 @@ int main(void)
 {
 	test_journal_clean_rule();
 	test_headerless_is_not_dirty();
+	test_rw_mount_retires_the_journal_in_two_writes();
 	test_nonempty_journal_rw();
 	test_probe_light_matches();
 	test_one_flush_per_sync();

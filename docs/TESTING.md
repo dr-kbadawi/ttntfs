@@ -113,20 +113,6 @@ Being explicit about this is the point of the document.
 * **Everything in the app that touches the system**: IOKit and Disk Arbitration
   enumeration, `SMAppService`, the uninstaller, the packager, and the SwiftUI
   views. `fskit/NTFSTests` covers the logic that could be separated from them.
-* **Two journal-replay fixes have no unit test**, only verification against real
-  Windows crash captures. Finding 19 (an index block written into a fresh
-  cluster must still get its update sequence array) and the two-page journal
-  retirement were both proved by replaying a real capture and diffing the result
-  against what Windows produced from the same journal -- stronger evidence than
-  a synthetic test, but it does not run in CI, and the captures are 3.2 GB of
-  gitignored images.
-
-  Writing the synthetic equivalent was attempted on 2026-09-17 and abandoned:
-  `core/logfile/tests/test_logfile.c` builds its volume from a handful of
-  hand-made MFT records, and a record carrying a real `$INDEX_ALLOCATION` whose
-  runlist the replay engine will resolve turned out to need more fixture than the
-  harness currently offers. Worth doing; not worth faking. Until then a
-  regression in either would be caught only by re-running a capture by hand.
 * **x86_64.** arm64 only, so nothing has ever been compiled for a second
   architecture.
 * **Specific gaps the new suites named**, each because the code is unreachable
@@ -217,6 +203,14 @@ extraction moved the comment with it and changed nothing else.
   failed only after a remount: a truncated symlink target served from
   `ni->target`, and a compressed extension served from the page cache. Every
   assertion about what reached the disk must remount first.
+* **The logfile fixture has a real `$INDEX_ALLOCATION`** (record 31, cluster 44,
+  left zeroed). That is what lets `test_first_write_into_fresh_cluster_is_protected`
+  exist: it is the state finding 19 was about, a cluster allocated but never
+  written. Two traps when using it: the open-attribute table's entry 0 is `$MFT`'s
+  own `$DATA`, so a record aimed at `target_attr = 0x18` writes *inside the MFT*
+  (entry 1 is at `RT_HEADER_SIZE + OA1_SIZE`); and an all-zero payload makes an
+  update-sequence test vacuous, because the sector tails then trivially match a
+  zero USN. Both cost an afternoon.
 * **An all-`0xff` device is not necessarily a dead one.** A test stick yanked
   mid-write came back enumerating with no partition table and reading `0xff` at
   every offset across all 1.7 GB. It looked unambiguously erased. Windows then
