@@ -1962,7 +1962,8 @@ int ntfs_attr_make_non_resident(struct ntfs_inode *ni, const u32 data_size)
 		ni->runlist.count = 0;
 	write_lock_irqsave(&ni->size_lock, flags);
 	ni->allocated_size = new_size;
-	if (NInoSparse(ni) || NInoCompressed(ni)) {
+	/* PORT: see ntfs_resident_attr_resize(); the itype union again. */
+	if ((NInoSparse(ni) || NInoCompressed(ni)) && !S_ISDIR(VFS_I(ni)->i_mode)) {
 		ni->itype.compressed.size = ni->allocated_size;
 		if (a->data.non_resident.compression_unit) {
 			ni->itype.compressed.block_size = 1U <<
@@ -4513,7 +4514,21 @@ attr_resize_again:
 			/* Update attribute size everywhere. */
 			attr_ni->data_size = attr_ni->initialized_size = newsize;
 			attr_ni->allocated_size = (newsize + 7) & ~7;
-			if (NInoCompressed(attr_ni) || NInoSparse(attr_ni))
+			/*
+			 * PORT: never on a directory. ni->itype is a union: the
+			 * index geometry for a directory, compressed-file
+			 * bookkeeping for a file. NInoCompressed on a directory
+			 * is only the "children inherit compression" marker, so
+			 * this store -- which runs when the directory's own
+			 * $INDEX_ROOT grows -- overwrote itype.index.block_size
+			 * with the new index-root size (480, 528...). The next
+			 * lookup compared an INDX block's real 4096 against that,
+			 * declared the directory corrupt, and errors=remount-ro
+			 * took the volume read-only. Third file created in a
+			 * Windows-compressed folder, 2026-09-18.
+			 */
+			if ((NInoCompressed(attr_ni) || NInoSparse(attr_ni)) &&
+			    !S_ISDIR(VFS_I(attr_ni)->i_mode))
 				attr_ni->itype.compressed.size = attr_ni->allocated_size;
 			if (attr_ni->type == AT_DATA && attr_ni->name == AT_UNNAMED)
 				NInoSetFileNameDirty(attr_ni);

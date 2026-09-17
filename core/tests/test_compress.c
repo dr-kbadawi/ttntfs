@@ -349,15 +349,35 @@ static void test_create_in_compressed_directory(void)
 		fprintf(stderr, "SKIP: /compressed/inherit not in fixture\n");
 		goto out;
 	}
-	for (i = 0; i < 12 && !rc; i++) {
-		char name[96];
+	/*
+	 * Real-sized files, not one-byte ones. The first version of this test
+	 * wrote a single byte each and passed while the same sequence with
+	 * 200 KB files took a real volume read-only: growing the directory's
+	 * $INDEX_ROOT ran ntfs_resident_attr_resize(), which saw NInoCompressed
+	 * on the directory and stored the new index-root size through the
+	 * compressed side of the itype union -- over itype.index.block_size.
+	 * The next lookup compared an INDX block's 4096 against 480 and called
+	 * the directory corrupt. Non-resident children are what make the index
+	 * grow in the pattern that reached it.
+	 */
+	{
+		static char big[200000];
 
-		snprintf(name, sizeof(name),
-			 "a-deliberately-long-file-name-to-fill-the-index-root-%02d.txt", i);
-		rc = ntfs_create(dir, name, 0100644, &f);
-		if (!rc) {
-			CHECK_EQ(ntfs_write(f, "x", 1, 0), 1, "write into a file in a compressed dir");
-			ntfs_inode_put(f); f = NULL;
+		memset(big, 'Q', sizeof(big));
+		/* Short names on purpose: they make the index root grow in several
+		 * small resident resizes before it overflows, and that is the
+		 * sequence that reached the clobber. With long names the root
+		 * overflowed at once and the test passed with the bug present. */
+		for (i = 0; i < 8 && !rc; i++) {
+			char name[32];
+
+			snprintf(name, sizeof(name), "c%d-file.bin", i);
+			rc = ntfs_create(dir, name, 0100644, &f);
+			if (!rc) {
+				CHECK_EQ(ntfs_write(f, big, sizeof(big), 0), (ssize_t)sizeof(big),
+					 "200 KB write into a file in a compressed dir");
+				ntfs_inode_put(f); f = NULL;
+			}
 		}
 	}
 	CHECK_EQ(rc, 0, "create in a compressed directory (was EOPNOTSUPP from "
