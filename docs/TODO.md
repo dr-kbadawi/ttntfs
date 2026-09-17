@@ -14,8 +14,9 @@
       log open like Fast Startup, with one transaction to roll back. Both attempts
       failed to strand a write: Windows seems to finish a pending copy before
       hibernating. Expected finding is already known from ntfsrecover's refusal.
-- [ ] Scenario D on a 512-byte-cluster stick, for multi-cluster records
-      (lcns_to_follow > 1), a path none of the three captures exercised.
+- [x] Done 2026-09-17 after four attempts: 26,543 records, 6,634 UpdateMappingPairs,
+      8 clusters per dirty page. Our replay matches Windows -- D.bin identical, its
+      MFT record differing in 5 per-write bytes. The lcns_to_follow > 1 path works.
 - [x] Answered by B2 and E1: a *safely removed* stick comes back v1.1 CLEAN (E1),
       and an open v2.0 log is what a shutdown that does not dismount leaves (B2).
       The removal policy was never the cause. Ordinary users DO hit the read-only

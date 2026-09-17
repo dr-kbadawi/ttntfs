@@ -429,6 +429,46 @@ would be safe. The analysis reporting "nothing to replay" is a claim by our own
 code, and scenario C showed that claim can be wrong in ways only real hardware
 reveals. ntfs3 does use an empty transaction table as its signal; we do not, yet.
 
+### D on 512-byte clusters: multi-cluster records work (2026-09-17)
+
+The last untested geometry, and the one that mattered: at 512 bytes per cluster a
+journal record can describe **more clusters than fit in one**
+(`lcns_to_follow > 1`), which no 4 KiB capture ever produced.
+
+It took four attempts to catch. Three yanks were too early and left a journal
+with nothing in it; the fourth, with 5-8 seconds of copying before the pull,
+landed. The stick's controller also failed to enumerate twice along the way,
+reading `0xff` across the whole device until power-cycled.
+
+| | D at 4 KiB | **D at 512 B** |
+|---|---:|---:|
+| records analysed | 1113 | **26,543** |
+| redone / undone | 832 / 2 | **29,557 / 3** |
+| `UpdateMappingPairs` | 276 | **6,634** |
+| clusters per dirty page | 1 | **8** |
+
+**Our replay matches Windows.** `D.bin` is 80,617,472 bytes on both sides, and
+its MFT record differs in **5 bytes**: the `$LogFile` LSN, the update sequence
+number, and the two fixup slots -- every one of them a per-write value that two
+correct implementations cannot agree on. Across the volume, 221 of 256 records
+are byte-identical and 24 more differ only in fixups; the 11 with real
+differences all carry the same LSN-and-timestamp signature of Windows mounting
+the volume after replaying.
+
+Our replay also **fixed the cluster-bitmap inconsistency** the crash had left,
+exactly as it did at 4 KiB, and the residual `ntfsck` complaint is the same one
+Windows leaves: `D.bin`'s index entry still carrying its pre-extension size,
+because the journal holds no `UpdateFileNameAllocation` records for either side
+to replay.
+
+**A correction worth keeping.** While this volume was attached, the extension
+read the device continuously -- 124,000 reads in 30 seconds -- and I called it a
+spin and said the test had found a mount bug. It had not. The reads continued
+*with nothing mounted at all*, which rules out mount logic; it was Disk
+Arbitration re-probing a volume it could not mount. Offline, the same image
+mounts in **172 reads** and correctly returns `-EROFS`. Check whether anything
+is actually mounted before calling sustained I/O a hang.
+
 ### B1: hibernation leaves the log open, same as Fast Startup (2026-09-17)
 
 A 300 MB copy started and `shutdown /h` issued a second later. The copy won:
