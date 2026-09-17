@@ -9,7 +9,9 @@
 
 extern __le16 reparse_index_name[];
 
-unsigned int ntfs_make_symlink(struct ntfs_inode *ni);
+/* @dir_record: the MFT record carries MFT_RECORD_IS_DIRECTORY. A junction is
+ * only valid on one; a symlink may sit on either. */
+unsigned int ntfs_make_symlink(struct ntfs_inode *ni, bool dir_record);
 
 /*
  * Windows symbolic link reparse data, [MS-FSCC] 2.1.2.4. Offsets are from byte

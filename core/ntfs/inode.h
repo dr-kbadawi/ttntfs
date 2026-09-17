@@ -143,6 +143,19 @@ struct ntfs_inode {
 	} ext;
 	unsigned int i_dealloc_clusters;
 	char *target;
+	/*
+	 * PORT: how @target must be interpreted. Upstream stores only the WSL
+	 * link's UTF-8 target, which is always link-relative. A native Windows
+	 * symlink or a junction can instead carry a volume-absolute target
+	 * (\??\C:\path). Its drive letter is meaningless here -- which letter
+	 * this volume was lives in the other machine's registry -- so we assume
+	 * the current volume and, at readlink time, prefix @target with one
+	 * "../" per level between the link and the volume root. That is what
+	 * Linux ntfs3 does. reparse_tag is kept so callers can tell a junction
+	 * from a symlink without re-reading the attribute.
+	 */
+	bool target_volume_abs;
+	__le32 reparse_tag;
 };
 
 /*
@@ -160,6 +173,10 @@ struct ntfs_inode {
  * NI_NonResident		Unnamed data attr is non-resident (f)
  *				Attribute is non-resident (a).
  * NI_IndexAllocPresent		$I30 index alloc attr is present (d).
+ * NI_DirRecord			The MFT record is a directory record. A junction
+ *				or directory symlink presents as S_IFLNK but has
+ *				this set; callers that must not treat a
+ *				directory record as a plain file check it.
  * NI_Compressed		Unnamed data attr is compressed (f).
  *				Create compressed files by default (d).
  *				Attribute is compressed (a).
@@ -195,6 +212,7 @@ enum {
 	NI_BeingDeleted,
 	NI_BeingCreated,
 	NI_HasEA,
+	NI_DirRecord,		/* MFT_RECORD_IS_DIRECTORY, whatever i_mode says */
 	NI_RunlistDirty,
 };
 
@@ -254,6 +272,7 @@ NINO_FNS(FileNameDirty)
 TAS_NINO_FNS(FileNameDirty)
 NINO_FNS(BeingDeleted)
 NINO_FNS(HasEA)
+NINO_FNS(DirRecord)
 NINO_FNS(RunlistDirty)
 
 /*

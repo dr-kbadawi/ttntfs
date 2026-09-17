@@ -662,11 +662,32 @@ static inline int ntfs_filldir(struct ntfs_volume *vol,
 	}
 
 	mref = MREF_LE(ie->data.dir.indexed_file);
-	if (ie->key.file_name.file_attributes &
+	/*
+	 * PORT: upstream tested the directory bit first, so a junction or a
+	 * directory symlink came back DT_DIR while stat() on the same entry
+	 * said S_IFLNK; `find -type l` missed them and `ls -F` disagreed with
+	 * itself. Test the reparse bit first.
+	 *
+	 * The index entry carries the reparse tag in the $FILE_NAME union
+	 * (Windows' FindFirstFile serves dwReserved0 from exactly this), so a
+	 * link can usually be typed without opening the inode. ntfs3 notes the
+	 * cached copy is "not reliable"; when it reads as zero, fall back to
+	 * the inode as before.
+	 */
+	if (ie->key.file_name.file_attributes & FILE_ATTR_REPARSE_POINT) {
+		__le32 tag = ie->key.file_name.type.rp.reparse_point_tag;
+
+		if (tag == IO_REPARSE_TAG_SYMLINK || tag == IO_REPARSE_TAG_LX_SYMLINK ||
+		    tag == IO_REPARSE_TAG_MOUNT_POINT)
+			dt_type = DT_LNK;
+		else
+			dt_type = ntfs_reparse_tag_dt_types(vol, mref);
+		if (dt_type == DT_UNKNOWN &&
+		    (ie->key.file_name.file_attributes & FILE_ATTR_DUP_FILE_NAME_INDEX_PRESENT))
+			dt_type = DT_DIR;
+	} else if (ie->key.file_name.file_attributes &
 			FILE_ATTR_DUP_FILE_NAME_INDEX_PRESENT)
 		dt_type = DT_DIR;
-	else if (ie->key.file_name.file_attributes & FILE_ATTR_REPARSE_POINT)
-		dt_type = ntfs_reparse_tag_dt_types(vol, mref);
 	else
 		dt_type = DT_REG;
 

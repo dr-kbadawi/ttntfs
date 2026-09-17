@@ -71,6 +71,8 @@ _Static_assert(XATTR_REPLACE == NTFS_XATTR_REPLACE,
 #define HANDLE(vi) ((ntfs_inode_t *)(vi))
 
 /* Serializes renames, like the kernel's per-sb s_vfs_rename_mutex. */
+static ssize_t link_target(struct inode *vi, char *buf, size_t bufsize);
+
 static DEFINE_MUTEX(rename_mutex);
 
 static inline struct ntfs_timespec ts_out(struct timespec64 t)
@@ -223,9 +225,11 @@ static void fill_attr(struct inode *vi, struct ntfs_attr *a)
 	a->uid = uid_valid(vol->uid) ? vol->uid.val : vi->i_uid.val;
 	a->gid = gid_valid(vol->gid) ? vol->gid.val : vi->i_gid.val;
 	read_lock_irqsave(&ni->size_lock, flags);
-	if (S_ISLNK(vi->i_mode) && ni->target)
-		a->size = strlen(ni->target);
-	else
+	if (S_ISLNK(vi->i_mode) && ni->target) {
+		ssize_t n = link_target(vi, NULL, 0);
+
+		a->size = n > 0 ? n : 0;
+	} else
 		a->size = i_size_read(vi);
 	if (S_ISREG(vi->i_mode) && (NInoCompressed(ni) || NInoSparse(ni)))
 		a->alloc_size = ni->itype.compressed.size;
@@ -457,14 +461,21 @@ int ntfs_readlink(ntfs_inode_t *h, char *buf, size_t bufsize, size_t *len_out)
 		return -EINVAL;
 
 	if (ni->target) {
-		/* WSL symlink, decoded by reparse.c at inode load. */
-		*len_out = strlen(ni->target);
-		if (buf) {
-			if (bufsize < *len_out)
-				return -ERANGE;
-			memcpy(buf, ni->target, *len_out);
-		}
-		return 0;
+		/* Decoded by reparse.c at inode load: WSL, native symlink or
+		 * junction. link_target() adds the "../" prefix a
+		 * volume-absolute target needs. */
+		ssize_t n = link_target(vi, NULL, 0);	/* length first */
+
+		if (n < 0)
+			return (int)n;
+		*len_out = (size_t)n;		/* reported even on -ERANGE, so the
+						 * caller can size a retry */
+		if (!buf)
+			return 0;
+		if (bufsize < (size_t)n)
+			return -ERANGE;
+		n = link_target(vi, buf, bufsize);
+		return n < 0 ? (int)n : 0;
 	}
 
 	mutex_lock(&ni->mrec_lock);
@@ -590,6 +601,73 @@ int ntfs_rmdir(ntfs_inode_t *dir, const char *name)
 }
 
 /* Is @ancestor_ino an ancestor of (or equal to) directory @dir? */
+/*
+ * The string readlink() returns for @vi, and its length. Both fill_attr and
+ * ntfs_readlink use this, so st_size always equals what readlink produces.
+ *
+ * A link-relative target (a WSL link, or a RELATIVE native symlink) is
+ * ni->target verbatim. A volume-absolute one -- a junction, or an absolute
+ * native symlink, whose drive letter reparse.c has already dropped -- is
+ * ni->target with one "../" per directory between the link and the volume
+ * root, so it resolves from wherever the volume is mounted without our
+ * needing to know where that is. This is Linux ntfs3's convention.
+ *
+ * Depth is the link's PHYSICAL depth, found by walking $FILE_NAME parent
+ * references, so a hard-linked or bind-mounted view cannot skew it. A
+ * directory record has exactly one parent, so for junctions it is exact.
+ *
+ * Returns the length, or a negative errno. When @buf is NULL only the length
+ * is computed. Computed on demand rather than cached so that renaming an
+ * ancestor cannot leave a stale prefix behind.
+ */
+static ssize_t link_target(struct inode *vi, char *buf, size_t bufsize)
+{
+	struct ntfs_inode *ni = NTFS_I(vi);
+	size_t tlen, depth = 0, need;
+	u64 cur;
+
+	if (!ni->target)
+		return -EINVAL;
+	tlen = strlen(ni->target);
+	if (ni->target_volume_abs) {
+		int guard = 0;
+
+		cur = vi->i_ino;
+		while (cur != FILE_root && guard++ < 4096) {
+			struct inode *p;
+			u64 parent;
+
+			if (cur == vi->i_ino) {
+				parent = ntfs_vfs_parent_ino(vi);
+			} else {
+				p = ntfs_iget(vi->i_sb, cur);
+				if (IS_ERR(p))
+					return PTR_ERR(p);
+				parent = ntfs_vfs_parent_ino(p);
+				iput(p);
+			}
+			if (parent == (u64)-1 || parent == cur)
+				break;
+			/* the link itself sits in its parent; count the parent's
+			 * ancestors, not the parent */
+			if (cur != vi->i_ino)
+				depth++;
+			cur = parent;
+		}
+	}
+	need = depth * 3 + tlen;
+	if (!buf)
+		return (ssize_t)need;
+	if (bufsize < need)
+		return -ERANGE;
+	while (depth--) {
+		memcpy(buf, "../", 3);
+		buf += 3;
+	}
+	memcpy(buf, ni->target, tlen);
+	return (ssize_t)need;
+}
+
 static int is_subdir(struct inode *dir, u64 ancestor_ino)
 {
 	u64 cur = dir->i_ino;

@@ -571,6 +571,154 @@ static uint32_t disk_reparse_tag(const char *name)
  * because ni->target used to be filled only for the WSL tag and native links
  * stat()ed at 0 bytes.
  */
+/*
+ * Windows directory symlinks and junctions must read as links, resolve to the
+ * right place, and delete without touching their target.
+ *
+ * Inherited defect: upstream decided the inode type by MFT_RECORD_IS_DIRECTORY
+ * before looking at the reparse point, so a mklink /D or mklink /J -- a
+ * directory record WITH a reparse point -- loaded as an empty folder. That is
+ * every junction on a Windows system disk. ntfs3, ntfs-3g and WSL present them
+ * as symlinks; ntfsplus fixed the same bug in June 2026.
+ *
+ * Nothing on macOS can create one, so the fixture is built here: directories
+ * made through our own driver, then tools/mkfixtures/patch_reparse.py rewrites
+ * each record into the exact bytes Windows leaves. The cases cover both tags,
+ * a relative and an absolute target, a mount-volume GUID, a junction one level
+ * deep (the "../" prefix must count depth), and a cross-volume one.
+ *
+ * Two things this pins that the first version got wrong: the WSL $LXMOD EA
+ * had already put S_IFDIR in i_mode, and OR-ing S_IFLNK on top produced a type
+ * that was neither; and readlink must report the length on -ERANGE.
+ */
+static void test_windows_dir_links(void)
+{
+	static const struct {
+		const char *path, *kind, *target, *print, *expect;
+		int depth;			/* directories between link and root */
+	} cases[] = {
+		{ "jdir",      "junction",    "\\??\\C:\\target", "C:\\target", "target",  0 },
+		{ "sdir",      "symlink-abs", "\\??\\C:\\target", "C:\\target", "target",  0 },
+		{ "rdir",      "symlink-rel", "target",           "target",     "target",  0 },
+		{ "vdir",      "volume",      "\\??\\Volume{3f0a1c2e-5b6d-4e7f-8a9b-0c1d2e3f4a5b}\\", "",
+		  "/??/Volume{3f0a1c2e-5b6d-4e7f-8a9b-0c1d2e3f4a5b}/", 0 },
+		{ "sub/updir", "junction",    "\\??\\C:\\sub",    "C:\\sub",    "../sub",  1 },
+		{ "fdir",      "junction",    "\\??\\D:\\other",  "D:\\other",  "other",   0 },
+	};
+	const size_t N = sizeof(cases) / sizeof(cases[0]);
+	const char *py = getenv("NTFS_PATCH_REPARSE");
+	struct vol v;
+	ntfs_inode_t *d = NULL, *sub = NULL, *t = NULL, *f = NULL, *l = NULL;
+	char cmd[PATH_MAX * 2 + 256];
+	size_t i;
+	int rc;
+
+	printf("test_windows_dir_links\n");
+	if (!py || !*py || access(py, R_OK) != 0) {
+		fprintf(stderr, "SKIP test_windows_dir_links: NTFS_PATCH_REPARSE not set\n");
+		return;
+	}
+	if (copy_fixture("winlinks") != 0) {
+		fprintf(stderr, "SKIP test_windows_dir_links: no fixture\n");
+		return;
+	}
+
+	/* Phase 1: plain directories, plus a real target with a file in it. */
+	if (vol_up(&v, 022, 022, 501, 20)) { unlink(scratch); return; }
+	CHECK(ntfs_mkdir(v.root, "target", 0755, &t) == 0);
+	if (t) {
+		CHECK(ntfs_create(t, "hello.txt", 0100644, &f) == 0);
+		if (f) { CHECK(ntfs_write(f, "hi\n", 3, 0) == 3); ntfs_inode_put(f); f = NULL; }
+		ntfs_inode_put(t); t = NULL;
+	}
+	CHECK(ntfs_mkdir(v.root, "sub", 0755, &sub) == 0);
+	for (i = 0; i < N; i++) {
+		const char *slash = strchr(cases[i].path, '/');
+
+		if (slash) {
+			CHECK(ntfs_mkdir(sub, slash + 1, 0755, &d) == 0);
+		} else {
+			CHECK(ntfs_mkdir(v.root, cases[i].path, 0755, &d) == 0);
+		}
+		if (d) { ntfs_inode_put(d); d = NULL; }
+	}
+	if (sub) { ntfs_inode_put(sub); sub = NULL; }
+	vol_down(&v);
+
+	/* Phase 2: turn each directory into what Windows would have left. The
+	 * MFT number comes from ntfsinfo so the test does not depend on
+	 * allocation order. */
+	for (i = 0; i < N; i++) {
+		const char *info = getenv("NTFS_NTFSINFO");
+		char line[64];
+		FILE *p;
+		long mftno = -1;
+
+		if (!info) break;
+		snprintf(cmd, sizeof(cmd),
+			 "%s -F /%s %s 2>/dev/null | grep -m1 'Dumping Inode' | grep -oE '[0-9]+' | head -1",
+			 info, cases[i].path, scratch);
+		p = popen(cmd, "r");
+		if (p && fgets(line, sizeof(line), p)) mftno = strtol(line, NULL, 10);
+		if (p) pclose(p);
+		CHECK_MSG(mftno > 0, "could not find the MFT number of %s", cases[i].path);
+		if (mftno <= 0) continue;
+		snprintf(cmd, sizeof(cmd), "python3 %s %s %ld %s '%s' '%s' >/dev/null 2>&1",
+			 py, scratch, mftno, cases[i].kind, cases[i].target, cases[i].print);
+		rc = system(cmd);
+		CHECK_MSG(rc == 0, "patch_reparse.py failed for %s (rc %d)", cases[i].path, rc);
+	}
+
+	/* Phase 3: read them back. */
+	if (vol_up(&v, 022, 022, 501, 20)) {
+		fprintf(stderr, "FAIL test_windows_dir_links: remount failed\n");
+		failures++; checks++; unlink(scratch); return;
+	}
+	for (i = 0; i < N; i++) {
+		struct ntfs_attr at;
+		char buf[256];
+		size_t n = 0;
+		ntfs_inode_t *dir = v.root;
+		const char *name = cases[i].path, *slash = strchr(name, '/');
+
+		if (slash) { CHECK(ntfs_lookup(v.root, "sub", &sub) == 0); dir = sub; name = slash + 1; }
+		CHECK_MSG(ntfs_lookup(dir, name, &l) == 0, "lookup(%s)", cases[i].path);
+		if (l) {
+			CHECK(ntfs_getattr(l, &at) == 0);
+			CHECK_MSG((at.mode & S_IFMT) == S_IFLNK,
+				  "%s (%s): mode %o is not S_IFLNK -- a Windows directory link "
+				  "read as something else", cases[i].path, cases[i].kind, at.mode);
+			CHECK_MSG(ntfs_readlink(l, buf, sizeof(buf), &n) == 0, "readlink(%s)", cases[i].path);
+			CHECK_MSG(n == strlen(cases[i].expect) && !memcmp(buf, cases[i].expect, n),
+				  "%s: readlink '%.*s', expected '%s'", cases[i].path, (int)n, buf, cases[i].expect);
+			CHECK_MSG(at.size == (int64_t)n, "%s: size %lld != readlink length %zu",
+				  cases[i].path, (long long)at.size, n);
+			ntfs_inode_put(l); l = NULL;
+		}
+		if (sub) { ntfs_inode_put(sub); sub = NULL; }
+	}
+
+	/* Phase 4: the sharp edge. Removing a junction removes the junction. */
+	CHECK_MSG(ntfs_rmdir(v.root, "jdir") == -ENOTDIR, "rmdir on a junction must be ENOTDIR");
+	CHECK_MSG(ntfs_unlink(v.root, "jdir") == 0, "unlink on a junction must remove it");
+	CHECK(ntfs_lookup(v.root, "jdir", &l) == -ENOENT);
+	CHECK_MSG(ntfs_lookup(v.root, "target", &t) == 0, "the junction's TARGET must survive");
+	if (t) {
+		CHECK_MSG(ntfs_lookup(t, "hello.txt", &f) == 0, "the target's contents must survive");
+		if (f) { ntfs_inode_put(f); f = NULL; }
+		ntfs_inode_put(t); t = NULL;
+	}
+	/* and a directory record must not be hard-linkable, however it presents */
+	if (ntfs_lookup(v.root, "sdir", &l) == 0 && l) {
+		CHECK_MSG(ntfs_link(l, v.root, "sdir-hl") == -EPERM,
+			  "hard-linking a directory-record symlink must be refused");
+		ntfs_inode_put(l); l = NULL;
+	}
+	vol_down(&v);
+	fsck_clean("windows directory links");
+	unlink(scratch);
+}
+
 static void test_symlink_tag_choice(void)
 {
 	static const struct {
@@ -1262,6 +1410,7 @@ int main(void)
 	test_many_links();
 	test_symlinks();
 	test_symlink_tag_choice();
+	test_windows_dir_links();
 	test_time_conversion();
 	test_timestamps();
 	test_permissions();

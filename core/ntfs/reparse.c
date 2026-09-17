@@ -18,6 +18,7 @@
 #include "index.h"
 #include "lcnalloc.h"
 #include <ctype.h>
+#include <strings.h>
 #include "reparse.h"
 
 struct wsl_link_reparse_data {
@@ -77,7 +78,7 @@ static bool ntfs_is_valid_reparse_buffer(struct ntfs_inode *ni,
  * If the reparse data looks like a junction point or symbolic
  * link, more checks can be done.
  */
-static bool valid_reparse_data(struct ntfs_inode *ni,
+static bool valid_reparse_data(struct ntfs_inode *ni, bool dir_record,
 		const struct reparse_point *reparse_attr, size_t size)
 {
 	const struct wsl_link_reparse_data *wsl_reparse_data =
@@ -93,6 +94,32 @@ static bool valid_reparse_data(struct ntfs_inode *ni,
 		    wsl_reparse_data->type != cpu_to_le32(2))
 			return false;
 		break;
+	case IO_REPARSE_TAG_MOUNT_POINT:
+		/* [MS-FSA]: a mount point on a non-directory is refused at set
+		 * time, and ntfs-3g refuses to read one. So do we. */
+		if (!dir_record)
+			return false;
+		fallthrough;
+	case IO_REPARSE_TAG_SYMLINK: {
+		/* Both names must lie inside the data, [MS-FSCC] 2.1.2.4/5.
+		 * A mount point has no flags field, so its names start 4
+		 * bytes earlier. */
+		const struct ntfs_win_symlink *sl =
+			(const struct ntfs_win_symlink *)reparse_attr->reparse_data;
+		unsigned int hdr = reparse_attr->reparse_tag == IO_REPARSE_TAG_MOUNT_POINT
+				   ? offsetof(struct ntfs_win_symlink, flags) : sizeof(*sl);
+		unsigned int so, sn, po, pn;
+
+		if (data_len < hdr)
+			return false;
+		so = le16_to_cpu(sl->subst_name_offset); sn = le16_to_cpu(sl->subst_name_length);
+		po = le16_to_cpu(sl->print_name_offset); pn = le16_to_cpu(sl->print_name_length);
+		if ((so | sn | po | pn) & 1)
+			return false;
+		if (hdr + so + sn > data_len || hdr + po + pn > data_len)
+			return false;
+		break;
+	}
 	case IO_REPARSE_TAG_AF_UNIX:
 	case IO_REPARSE_TAG_LX_FIFO:
 	case IO_REPARSE_TAG_LX_CHR:
@@ -111,6 +138,10 @@ static unsigned int ntfs_reparse_tag_mode(struct reparse_point *reparse_attr)
 	switch (reparse_attr->reparse_tag) {
 	case IO_REPARSE_TAG_SYMLINK:
 	case IO_REPARSE_TAG_LX_SYMLINK:
+	/* PORT: a junction is a directory-record link. Upstream had no case
+	 * for it, so every mklink /J showed as an empty directory. ntfs3,
+	 * ntfs-3g and WSL all present it as a symlink; so do we now. */
+	case IO_REPARSE_TAG_MOUNT_POINT:
 		mode = S_IFLNK;
 		break;
 	case IO_REPARSE_TAG_AF_UNIX:
@@ -132,7 +163,7 @@ static unsigned int ntfs_reparse_tag_mode(struct reparse_point *reparse_attr)
 /*
  * Get the target for symbolic link
  */
-unsigned int ntfs_make_symlink(struct ntfs_inode *ni)
+unsigned int ntfs_make_symlink(struct ntfs_inode *ni, bool dir_record)
 {
 	s64 attr_size = 0;
 	unsigned int lth;
@@ -143,7 +174,8 @@ unsigned int ntfs_make_symlink(struct ntfs_inode *ni)
 	reparse_attr = ntfs_attr_readall(ni, AT_REPARSE_POINT, NULL, 0,
 					 &attr_size);
 	if (reparse_attr && attr_size &&
-	    valid_reparse_data(ni, reparse_attr, attr_size)) {
+	    valid_reparse_data(ni, dir_record, reparse_attr, attr_size)) {
+		ni->reparse_tag = reparse_attr->reparse_tag;
 		switch (reparse_attr->reparse_tag) {
 		case IO_REPARSE_TAG_LX_SYMLINK:
 			wsl_link_data =
@@ -159,48 +191,79 @@ unsigned int ntfs_make_symlink(struct ntfs_inode *ni)
 				}
 			}
 			break;
-		case IO_REPARSE_TAG_SYMLINK: {
+		case IO_REPARSE_TAG_SYMLINK:
+		case IO_REPARSE_TAG_MOUNT_POINT: {
 			/*
-			 * PORT: upstream decodes only its own WSL tag here, so a
+			 * PORT: upstream decoded only its own WSL tag here, so a
 			 * native Windows symlink never got ni->target and stat()
-			 * reported size 0 after a remount (the readlink slow path
-			 * in core/vfs/api.c still worked, which hid it). Decoding
-			 * it here serves getattr and readlink alike, for links
-			 * written by Windows, ntfs3, or -- now -- us.
+			 * reported size 0 after a remount, and a junction was not
+			 * a link at all. Both are decoded now.
 			 *
-			 * PrintName is preferred: it is what Windows shows and
-			 * what ntfs3 reads. SubstituteName is the fallback when
-			 * PrintName is empty, which ntfs-3g and old mklink do.
-			 * "\??\" is the NT object-namespace prefix and "X:" a
-			 * Windows drive; neither has a meaning to a POSIX caller.
+			 * The SubstituteName is what Windows reparses with
+			 * ([MS-FSCC] 2.1.2.4: "a pathname identifying the
+			 * target"); the PrintName is display text and is EMPTY on a
+			 * mountvol mount point, which is why ntfs3, reading the
+			 * PrintName, fails on those. PrintName is used only when the
+			 * SubstituteName is empty.
+			 *
+			 * A mount point has no flags field, so its names start four
+			 * bytes earlier than a symlink's.
 			 */
 			const struct ntfs_win_symlink *sl;
-			unsigned int dlen, off, nlen;
+			unsigned int dlen, hdr, off, nlen;
 			unsigned char *s = NULL;
 			int slen;
+			bool volume_abs = false;
 
 			dlen = le16_to_cpu(reparse_attr->reparse_data_length);
-			if (dlen < sizeof(*sl))
-				break;		/* header does not fit: not a link */
 			sl = (const struct ntfs_win_symlink *)reparse_attr->reparse_data;
-			off = le16_to_cpu(sl->print_name_offset);
-			nlen = le16_to_cpu(sl->print_name_length);
+			hdr = reparse_attr->reparse_tag == IO_REPARSE_TAG_MOUNT_POINT
+			      ? offsetof(struct ntfs_win_symlink, flags) : sizeof(*sl);
+			off = le16_to_cpu(sl->subst_name_offset);
+			nlen = le16_to_cpu(sl->subst_name_length);
 			if (!nlen) {
-				off = le16_to_cpu(sl->subst_name_offset);
-				nlen = le16_to_cpu(sl->subst_name_length);
+				off = le16_to_cpu(sl->print_name_offset);
+				nlen = le16_to_cpu(sl->print_name_length);
 			}
-			if ((off | nlen) & 1 || sizeof(*sl) + off + nlen > dlen)
-				break;
+			if (!nlen)
+				break;			/* validated, but nothing to say */
 			slen = ntfs_ucstonls(ni->vol,
-					(const __le16 *)((const u8 *)sl->path_buffer + off),
+					(const __le16 *)((const u8 *)reparse_attr->reparse_data + hdr + off),
 					nlen / 2, &s, 0);
 			if (slen > 0) {
 				unsigned char *p = s, *q;
 
-				if (slen >= 4 && !memcmp(p, "\\??\\", 4))
-					p += 4;
-				if (isalpha(p[0]) && p[1] == ':')
-					p += 2;
+				/*
+				 * Strip the NT object-namespace prefix. A path that
+				 * then starts "X:" or "\" is volume-absolute: the
+				 * letter is meaningless here and is dropped, and the
+				 * vfs layer will prefix "../" per level at readlink
+				 * time. A path starting "\??\Volume{" or "UNC\" names
+				 * something that cannot be on this volume; it is kept
+				 * verbatim (slashes flipped) as an honest dangling
+				 * target rather than fabricating a location for it.
+				 * A RELATIVE symlink (flags & 1) is left alone.
+				 */
+				if (slen >= 4 && (!memcmp(p, "\\??\\", 4) || !memcmp(p, "\\\\?\\", 4))) {
+					if (!strncasecmp((char *)p + 4, "Volume{", 7) ||
+					    !strncasecmp((char *)p + 4, "UNC\\", 4)) {
+						/* keep the prefix: this is not on this volume */
+					} else {
+						p += 4;
+					}
+				}
+				if (reparse_attr->reparse_tag == IO_REPARSE_TAG_MOUNT_POINT ||
+				    !(sl->flags & SYMLINK_FLAG_RELATIVE)) {
+					if (isalpha(p[0]) && p[1] == ':') {
+						p += 2;
+						volume_abs = true;
+					} else if (p[0] == '\\' && p[1] != '?') {
+						volume_abs = true;
+					}
+					/* drop one leading separator: "\Users" -> "Users" */
+					if (volume_abs && p[0] == '\\')
+						p++;
+				}
 				for (q = p; *q; q++)
 					if (*q == '\\')
 						*q = '/';
@@ -208,6 +271,7 @@ unsigned int ntfs_make_symlink(struct ntfs_inode *ni)
 				ni->target = kvzalloc(lth + 1, GFP_NOFS);
 				if (ni->target) {
 					memcpy(ni->target, p, lth + 1);
+					ni->target_volume_abs = volume_abs;
 					mode = ntfs_reparse_tag_mode(reparse_attr);
 				}
 			}
@@ -244,6 +308,7 @@ unsigned int ntfs_reparse_tag_dt_types(struct ntfs_volume *vol, unsigned long mr
 		switch (reparse_attr->reparse_tag) {
 		case IO_REPARSE_TAG_SYMLINK:
 		case IO_REPARSE_TAG_LX_SYMLINK:
+		case IO_REPARSE_TAG_MOUNT_POINT:
 			dt_type = DT_LNK;
 			break;
 		case IO_REPARSE_TAG_AF_UNIX:
@@ -497,7 +562,10 @@ static int ntfs_set_ntfs_reparse_data(struct ntfs_inode *ni, char *value, size_t
 	 * any more, it is required by Windows 10, but may
 	 * lead to problems with earlier versions.
 	 */
-	if (valid_reparse_data(ni, (const struct reparse_point *)value, size) == false)
+	/* We never write a mount point ourselves, so the directory-record
+	 * requirement cannot bite here; the VFS mode is a fine proxy. */
+	if (valid_reparse_data(ni, S_ISDIR(VFS_I(ni)->i_mode),
+			       (const struct reparse_point *)value, size) == false)
 		return -EINVAL;
 
 	xr = open_reparse_index(ni->vol);

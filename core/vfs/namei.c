@@ -1135,7 +1135,10 @@ int ntfs_vfs_link(struct inode *vi, struct inode *dir, const char *name, int len
 
 	if (NVolShutdown(vol))
 		return -EIO;
-	if (S_ISDIR(vi->i_mode))
+	/* PORT: a junction or directory symlink presents as S_IFLNK but is a
+	 * directory RECORD, and NTFS forbids hard-linking one of those. Check
+	 * the record, not the presented mode. */
+	if (S_ISDIR(vi->i_mode) || NInoDirRecord(NTFS_I(vi)))
 		return -EPERM;
 	if (vi->i_sb != dir->i_sb)
 		return -EXDEV;

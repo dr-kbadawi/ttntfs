@@ -469,6 +469,8 @@ void __ntfs_init_inode(struct super_block *sb, struct ntfs_inode *ni)
 	ni->mft_lcn[0] = LCN_RL_NOT_MAPPED;
 	ni->mft_lcn_count = 0;
 	ni->target = NULL;
+	ni->target_volume_abs = false;
+	ni->reparse_tag = 0;
 	ni->i_dealloc_clusters = 0;
 }
 
@@ -831,38 +833,66 @@ skip_attr_list_load:
 		ntfs_ea_get_wsl_inode(vi, &dev, flags);
 	}
 
-	if (m->flags & MFT_RECORD_IS_DIRECTORY) {
-		vi->i_mode |= S_IFDIR;
-		/*
-		 * Apply the directory permissions mask set in the mount
-		 * options.
-		 */
-		vi->i_mode &= ~vol->dmask;
-		/* Things break without this kludge! */
-		if (vi->i_nlink > 1)
-			set_nlink(vi, 1);
-	} else {
-		if (ni->flags & FILE_ATTR_REPARSE_POINT) {
-			unsigned int mode;
+	/*
+	 * PORT: upstream decided the type by MFT_RECORD_IS_DIRECTORY first and
+	 * looked at the reparse point only for file records. A Windows directory
+	 * symlink (mklink /D) or junction (mklink /J) is a directory record WITH
+	 * a reparse point, so every one of them showed here as an empty folder
+	 * -- including the junctions Windows itself uses for "Documents and
+	 * Settings" and "Application Data". ntfs3, ntfs-3g and WSL all present
+	 * them as symlinks. ntfsplus fixed the same inherited bug in June 2026
+	 * (commit 5e47664782) and this follows its shape.
+	 *
+	 * The reparse point is consulted first. If it yields a link mode, that
+	 * wins regardless of the record flag. If it yields nothing -- an
+	 * unknown tag, or malformed data -- the record flag decides as before,
+	 * so an unrecognised reparse point on a directory is still a directory
+	 * and on a file is still a file. What must NOT change is the branch
+	 * below that loads $INDEX_ROOT: that stays keyed on the record flag,
+	 * because a junction has an index and no $DATA, and sending it down the
+	 * file path fails the whole inode load on "$DATA attribute is missing".
+	 */
+	{
+		bool dir_record = !!(m->flags & MFT_RECORD_IS_DIRECTORY);
+		unsigned int lmode = 0;
 
-			mode = ntfs_make_symlink(ni);
-			if (mode)
-				vi->i_mode |= mode;
-			else {
-				vi->i_mode &= ~S_IFLNK;
+		if (dir_record)
+			NInoSetDirRecord(ni);
+
+		if (ni->flags & FILE_ATTR_REPARSE_POINT)
+			lmode = ntfs_make_symlink(ni, dir_record);
+
+		if (S_ISLNK(lmode)) {
+			/* The WSL $LXMOD EA may already have put S_IFDIR here for
+			 * a record that was a plain directory before Windows
+			 * turned it into a junction; the type bits are ours to
+			 * decide, so clear them before setting the link type. */
+			vi->i_mode = (vi->i_mode & ~S_IFMT) | S_IFLNK;
+			vi->i_mode &= ~vol->fmask;
+		} else if (dir_record) {
+			vi->i_mode |= S_IFDIR;
+			/* Apply the directory permissions mask set in the mount
+			 * options. */
+			vi->i_mode &= ~vol->dmask;
+			/* Things break without this kludge! */
+			if (vi->i_nlink > 1)
+				set_nlink(vi, 1);
+		} else {
+			if (lmode)
+				vi->i_mode |= lmode;	/* fifo, socket, device */
+			else
 				vi->i_mode |= S_IFREG;
-			}
-		} else
-			vi->i_mode |= S_IFREG;
-		/* Apply the file permissions mask set in the mount options. */
-		vi->i_mode &= ~vol->fmask;
+			/* Apply the file permissions mask set in the mount
+			 * options. */
+			vi->i_mode &= ~vol->fmask;
+		}
 	}
 
 	/*
 	 * If an attribute list is present we now have the attribute list value
 	 * in ntfs_ino->attr_list and it is ntfs_ino->attr_list_size bytes.
 	 */
-	if (S_ISDIR(vi->i_mode)) {
+	if (m->flags & MFT_RECORD_IS_DIRECTORY) {
 		struct index_root *ir;
 		u8 *ir_end, *index_end;
 
@@ -987,8 +1017,12 @@ view_index_meta:
 		unmap_mft_record(ni);
 		m = NULL;
 		ctx = NULL;
-		/* Setup the operations for this inode. */
-		ntfs_set_vfs_operations(vi, S_IFDIR, 0);
+		/* Setup the operations for this inode. A junction or directory
+		 * symlink reached this branch by its record flag but presents
+		 * as S_IFLNK; it must get link operations, not directory ones. */
+		ntfs_set_vfs_operations(vi, S_ISLNK(vi->i_mode) ? S_IFLNK : S_IFDIR, 0);
+		if (S_ISLNK(vi->i_mode) && ni->target)
+			i_size_write(vi, strlen(ni->target));
 		if (ir->index.flags & LARGE_INDEX)
 			NInoSetIndexAllocPresent(ni);
 	} else {
