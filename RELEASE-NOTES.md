@@ -1,5 +1,40 @@
 # TT NTFS Native — release notes
 
+## Build of 2026-09-17, third (commit d95d728)
+
+### Windows directory links and junctions are no longer empty folders
+
+A directory symlink or junction made on Windows -- `mklink /D`, `mklink /J`,
+and the ones Windows itself plants on every system disk, such as `Documents
+and Settings` -> `Users` -- showed on the Mac as an empty folder. They are now
+symlinks, and they resolve: a junction one folder deep to `C:\Users` reads as
+`../Users`, exactly where the target is relative to the volume. Deleting one
+removes the link and leaves its target alone. This defect was inherited from
+the Linux source; the same fix landed upstream in June 2026.
+
+### `ln -s somedir` now makes a link Windows can `cd` into
+
+Windows has two kinds of symlink and chooses at creation; POSIX has one. A
+link to an existing directory is now written as the directory kind, which
+Windows lists as `<SYMLINKD>` and `cd`s through. Verified on Windows 10. Links
+to files, dangling links, absolute paths, and paths that pass through another
+link stay file-type, which is what every other driver writes.
+
+### A latent inconsistency that broke links after a Windows round trip
+
+Every symlink this driver wrote carried a wrong value in one of the two on-disk
+copies of its name -- the packed EA size where the reparse tag belongs. Nothing
+complained, including `chkdsk`, until a volume went to Windows and back: the
+links that had listed as `<SYMLINK>` came back as zero-byte plain files. The
+data was intact; only the label had been reconciled the wrong way. Both copies
+now carry the tag from the start.
+
+Also fixed on the way: an absolute Windows symlink (`\??\C:\target`) was read
+as a path against the Mac's root; and a Windows `mountvol` mount point, whose
+display name is empty, could not be read at all.
+
+---
+
 ## Build of 2026-09-17, second (commit 0023620)
 
 ### Symlinks now work on Windows
