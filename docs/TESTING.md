@@ -217,6 +217,13 @@ extraction moved the comment with it and changed nothing else.
   failed only after a remount: a truncated symlink target served from
   `ni->target`, and a compressed extension served from the page cache. Every
   assertion about what reached the disk must remount first.
+* **An all-`0xff` device is not necessarily a dead one.** A test stick yanked
+  mid-write came back enumerating with no partition table and reading `0xff` at
+  every offset across all 1.7 GB. It looked unambiguously erased. Windows then
+  read every file from it normally, and it returned to macOS intact: the
+  controller had failed to initialise and was reporting erased flash, and a power
+  cycle fixed it. Power-cycle a suspect device before concluding anything, and
+  never let an all-`0xff` read justify writing to a disk.
 * **Read the tool's stage name before believing its counter.** `chkdsk`'s
   "N reparse records processed" is printed by a stage called *"Reparse point and
   Object ID verification"* and counts both. A climbing count on a volume with

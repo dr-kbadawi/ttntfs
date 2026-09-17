@@ -448,13 +448,29 @@ app offers **Replay Journal** with its warning rather than **Close Journal**.
 That is the right call, because rolling back a transaction is a write, however
 small.
 
-**Still unmeasured:** a hibernation that genuinely catches a write in flight.
-Landing it needs the hibernate to interrupt a copy rather than follow it -- a
-larger file, a slower device, or issuing `shutdown /h` first and starting the
-copy into it. Worth one more attempt if the opportunity arises; not a blocker,
-since the research is clear that part of that state lives in Windows' RAM and is
-recoverable only by the same Windows, which is why `ntfsrecover` refuses the case
-outright.
+**Attempted twice, missed twice.** The second run used a 1 GB copy with
+`shutdown /h` issued a second behind it, and `B1.bin` still arrived at the full
+1,073,741,824 bytes. Windows appears to **complete or flush a pending file write
+before hibernating** rather than snapshotting mid-write, which would make the
+stranded-writes case much harder to produce than this plan assumed.
+
+Not pursued further. The expected finding is already well established: part of
+that state lives in Windows' RAM and is recoverable only by the same Windows,
+which is why `ntfsrecover` refuses the case outright and why this driver warns.
+
+**A hardware lesson from the attempt, worth not re-learning.** After the second
+yank the stick enumerated on macOS as a 1.7 GB device with *no partition table*,
+and `dd` read **all-`0xff` at every offset across the entire device** -- sector 0,
+1 MB, 100, 400, 800, 1200, 1600. That reads as conclusively erased and it was
+wrong. Windows then opened the same stick and all its files normally, and after a
+safe removal it came back to macOS with its partition table, its volume, and
+every file intact.
+
+The controller had failed to initialise after the power cut and was reporting
+erased flash for every read; a power cycle cleared it. **A device can present as
+entirely blank and be perfectly healthy**, so an all-`0xff` read is not evidence
+of data loss and must never be treated as licence to reformat or rewrite
+anything.
 
 ### E1: what a clean Windows dismount writes, compared with ours (2026-09-17)
 

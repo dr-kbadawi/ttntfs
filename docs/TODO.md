@@ -10,11 +10,10 @@
       the lot: a hybrid shutdown does NOT dismount a removable volume, so the log
       is left open and reads dirty with nothing at all to replay. The app now
       distinguishes that from real pending work (Close Journal vs Replay Journal).
-- [~] B1 attempted 2026-09-17: hibernation leaves the log open like Fast Startup,
-      with one transaction to roll back. But the 300 MB copy finished before the
-      machine hibernated, so writes-in-flight were never stranded and the dangerous
-      case is still unmeasured. Needs the hibernate to interrupt a copy rather than
-      follow it -- bigger file, slower device, or hibernate first.
+- [x] B1 attempted twice 2026-09-17 and not pursued further. Hibernation leaves the
+      log open like Fast Startup, with one transaction to roll back. Both attempts
+      failed to strand a write: Windows seems to finish a pending copy before
+      hibernating. Expected finding is already known from ntfsrecover's refusal.
 - [ ] Scenario D on a 512-byte-cluster stick, for multi-cluster records
       (lcns_to_follow > 1), a path none of the three captures exercised.
 - [x] Answered by B2 and E1: a *safely removed* stick comes back v1.1 CLEAN (E1),
