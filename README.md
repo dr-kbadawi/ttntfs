@@ -20,6 +20,9 @@ then verified byte-for-byte on the way back. Both halves matter: chkdsk repairs
 what it finds, so a clean verdict alone would not have been enough. Procedure
 and scripts are in `tools/phase2-gate/`.
 
+Windows also opens those files normally, which `chkdsk` alone does not
+establish -- it validates structure without ever opening anything.
+
 That is one Windows build, one disk, one pass; it is not a warranty. Journal
 replay remains the unproven part -- see below -- so keep a backup of anything
 you cannot replace.

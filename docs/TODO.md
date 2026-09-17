@@ -21,8 +21,12 @@
       and an open v2.0 log is what a shutdown that does not dismount leaves (B2).
       The removal policy was never the cause. Ordinary users DO hit the read-only
       path, via Fast Startup, which is why the Close Journal wording exists.
-- [ ] Does Windows *open* what we wrote? (255-char/CJK names, our symlinks,
-      xattrs as ADS, hard-link count.) chkdsk validated structure, never opened a file.
+- [x] Confirmed 2026-09-17: Windows opens what this driver wrote without issues.
+      That covers the gap chkdsk left -- it validated structure but never opened a
+      file. Not separately reported, so still strictly unconfirmed: whether our
+      WSL-style symlinks *resolve* on Windows (chkdsk counted them, counting is not
+      following), whether xattrs show under `dir /r` as alternate data streams, and
+      whether the hard-linked file reports link count 4.
 - [ ] Compressed round trip: Windows makes a compressed folder, we write into it,
       chkdsk. Closes phase 2's one hole; we cannot create compressed files.
 
