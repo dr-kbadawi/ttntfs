@@ -30,7 +30,9 @@
 - [ ] Decide whether to offer native Windows symlinks (IO_REPARSE_TAG_SYMLINK) as a
       mount option. Trades Linux/macOS round-trip fidelity for Windows usability;
       see finding 20. Not to be changed silently.
-- [ ] Still unchecked: whether xattrs appear under `dir /r` as alternate data streams.
+- [x] Xattrs confirmed 2026-09-17: `dir /r` shows them as ordinary alternate data
+      streams on Windows. Not separately checked: the 8 KB `user.big` xattr in
+      F-xattr, which exceeds the inline limit and takes a different storage path.
 - [ ] Compressed round trip: Windows makes a compressed folder, we write into it,
       chkdsk. Closes phase 2's one hole; we cannot create compressed files.
 

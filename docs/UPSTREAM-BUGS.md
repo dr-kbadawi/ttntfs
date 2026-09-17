@@ -420,6 +420,10 @@ Measured on Windows 10, 2026-09-17, against the phase 2 test tree.
 **Hard links are fine.** `fsutil hardlink list` returns all four paths for a file
 this driver hard-linked three times. Nothing to do.
 
+**Extended attributes are fine.** `dir /r` shows them as ordinary NTFS alternate
+data streams -- `hardlink-0.txt:com.apple.provenance:$DATA`, 11 bytes -- so the
+xattr-to-ADS mapping round-trips to Windows correctly.
+
 **Symlinks are structurally correct and practically unusable on Windows:**
 
     fsutil reparsepoint query symlink-relative
