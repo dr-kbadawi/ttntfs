@@ -413,7 +413,7 @@ Until this is understood, replay of a crash that caught a directory index
 mid-update will refuse rather than half-apply. That is the right failure, and it
 is why replay stays opt-in.
 
-## Finding 20: our symlinks are correct, and Windows cannot follow them
+## Finding 20 **FIXED**: our symlinks were correct, and Windows could not follow them
 
 Measured on Windows 10, 2026-09-17, against the phase 2 test tree.
 
@@ -477,8 +477,61 @@ well-formed link that was unopenable before.
 the target is relative and exists, and the WSL tag otherwise (documented, WSL
 release notes build 17046). That is the strongest precedent for a per-link rule.
 
-Three things must be measured on Windows before any switch, none of them in the
-spec: whether Windows follows a native symlink whose file also carries the WSL
+### Fixed 2026-09-17, and measured on Windows the same day
+
+Symlinks are now written with `IO_REPARSE_TAG_SYMLINK` whenever the target can
+be expressed in it, and with the WSL tag otherwise (commit 5355969). Verified on
+the Windows 10 machine against a set written through the real FSKit path:
+
+    dir
+      <SYMLINK>   n-deep    [sub\deep.txt]
+      <SYMLINK>   n-dir     [dir1]
+      <SYMLINK>   n-rel     [target.txt]
+      <SYMLINK>   n-unixabs [\usr\bin\foo]
+      <JUNCTION>  w-bslash  [...]
+      <JUNCTION>  w-colon   [...]
+      <JUNCTION>  w-star    [...]
+
+    type n-rel   -> the target
+    type n-deep  -> deep target
+
+    fsutil reparsepoint query n-rel
+      Reparse Tag Value : 0xa000000c   Tag value: Symbolic Link
+      00 00 14 00 14 00 14 00 01 00 00 00 t.a.r.g.e.t...t.x.t. t.a.r.g.e.t...t.x.t.
+
+    chkdsk /f -> found no problems. 10 reparse records processed.
+
+The three unknowns, answered:
+
+1. **Windows follows a native symlink that also carries our WSL `$EA`.** `type`
+   opens the target through it. The EA coexistence was not a blocker, so the
+   EAs stay and nothing has to be dropped for `S_ISLNK`.
+2. **`chkdsk` accepts the native tag with our `$Reparse` index layout.** No
+   problems, and the reparse count is exactly right.
+3. **A `\`-rooted RELATIVE target is a well-formed link.** `n-unixabs` lists as
+   `<SYMLINK> [\usr\bin\foo]`. Nothing there to open, but it is a link, where
+   before it was unopenable and hidden.
+
+Also learned: a *file*-type symlink whose target is a directory (`n-dir`) lists
+as `<SYMLINK>`, not `<SYMLINKD>`, and `dir n-dir` shows the link itself rather
+than the directory contents. Windows distinguishes the two at creation and we do
+not. Harmless for reading; worth a follow-up if `cd n-dir` matters to anyone.
+
+The plain `dir` listing shows the native links unhidden -- that is the
+`FILE_ATTR_SYSTEM` fix landing. The three WSL-tagged links still render as
+`<JUNCTION> [...]`, which is Windows' way of saying "a reparse point I do not
+follow"; those targets could not have been expressed natively, so that is the
+intended outcome, not a defect.
+
+**One procedural lesson worth more than the rest.** The first stick handed to
+Windows carried WSL tags despite the new code, because the mount was served by
+a stale extension instance that `fskitd` had kept resident across the reinstall.
+It was diagnosed only after Windows reported the wrong tag. The tags should have
+been read back from the MFT through the mount before the stick left the desk --
+that takes ten seconds and needs no root -- and now they are.
+
+What used to be here: "Three things must be measured on Windows before any
+switch, none of them in the spec: whether Windows follows a native symlink whose file also carries the WSL
 `$EA` we write; whether `chkdsk` accepts our `$Reparse` index layout under the new
 tag; and what Explorer does with a `\`-rooted RELATIVE target. Also required
 first: our `getattr` reports **size 0** for native symlinks after a remount,

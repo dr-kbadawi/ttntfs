@@ -211,6 +211,14 @@ extraction moved the comment with it and changed nothing else.
   (entry 1 is at `RT_HEADER_SIZE + OA1_SIZE`); and an all-zero payload makes an
   update-sequence test vacuous, because the sector tails then trivially match a
   zero USN. Both cost an afternoon.
+* **Verify what is on the disk before it leaves the desk.** A stick handed to
+  Windows to test the new native symlinks turned out to carry the old WSL tags:
+  `fskitd` had kept a stale extension instance resident across the reinstall and
+  it served the mount. The tags could have been read back from `$MFT` through
+  the mount in ten seconds, no root needed. Instead the mistake surfaced from
+  `fsutil` on the other machine, costing a full round trip. Kill the extension
+  process after installing (`pkill -f Extensions/NTFSExtension`), and check the
+  bytes locally first.
 * **An all-`0xff` device is not necessarily a dead one.** A test stick yanked
   mid-write came back enumerating with no partition table and reading `0xff` at
   every offset across all 1.7 GB. It looked unambiguously erased. Windows then

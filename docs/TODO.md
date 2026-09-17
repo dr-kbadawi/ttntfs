@@ -25,15 +25,15 @@
       all four paths, and our symlinks are structurally valid. But Windows cannot
       follow them (WSL tag) and plain `dir` hides them (we set FILE_ATTR_SYSTEM).
       Recorded as finding 20.
-- [ ] Drop FILE_ATTR_SYSTEM for S_ISLNK so symlinks are visible to `dir` on Windows.
-      Small, clearly right, and independent of the tag question.
-- [ ] Symlink tag decision (finding 20, corrected). The "keep WSL for Linux fidelity"
-      argument was false: ntfs3 writes the native tag and cannot read ours. The
-      native tag is the one every reader follows. Recommended: native by default,
-      per link, with a WSL fallback for targets Windows cannot express -- which is
-      what Microsoft's own DrvFs does. Needs three Windows measurements first (EA
-      coexistence, chkdsk on the new tag, \-rooted RELATIVE targets) and a fix to
-      getattr, which reports size 0 for native links after remount.
+- [x] FILE_ATTR_SYSTEM dropped for symlinks (50a558c). Confirmed on Windows: native
+      links now appear in a plain `dir`.
+- [x] Symlink tag: done and verified on Windows 2026-09-17. Native tag by default,
+      per link, WSL fallback for targets Windows cannot name; wsl_symlinks mount
+      flag forces the old behaviour. Windows follows them, chkdsk is clean, and the
+      EA coexistence turned out not to matter. Finding 20.
+- [ ] File-type symlink to a directory lists as <SYMLINK> not <SYMLINKD> on Windows;
+      `dir n-dir` shows the link, not the contents. We do not distinguish the two at
+      creation. Harmless for reading; matters only if `cd` through such a link does.
 - [ ] Our driver cannot read ntfs-3g's default Interix symlinks (IntxLNK $DATA files).
       Stock ntfs-3g is the most deployed third-party NTFS driver; its symlinks show
       to us as 1-cluster system files with binary contents.
