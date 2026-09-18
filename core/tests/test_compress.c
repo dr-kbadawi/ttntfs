@@ -390,6 +390,58 @@ static void test_create_in_compressed_directory(void)
 				"compressed directory. That is the errors=remount-ro policy firing "
 				"on a code bug, and it is what a user would see.\n");
 	}
+
+	/*
+	 * The files must read back intact, through our own reader, after a
+	 * remount. This is the guard against enabling compression inheritance
+	 * (NV_Compression in core/ntfs/super.c) before the fresh-file compressed
+	 * writer is fixed: with the flag on, these files report their full size
+	 * and return EIO -- measured 2026-09-18. Today they are uncompressed and
+	 * correct, which is the intended state until that writer works.
+	 *
+	 * And a subdirectory made here must carry the compression marker on, so
+	 * Windows compresses what it creates inside it.
+	 */
+	{
+		ntfs_inode_t *sub = NULL;
+
+		CHECK_EQ(ntfs_mkdir(dir, "inherit-sub", 0755, &sub), 0, "mkdir in compressed dir");
+		if (sub) {
+			struct ntfs_attr sa;
+
+			CHECK(ntfs_getattr(sub, &sa) == 0);
+			CHECK_EQ(sa.compressed, 1, "a subdirectory of a compressed folder must carry "
+						 "the compression marker (Windows semantics)");
+			ntfs_inode_put(sub);
+		}
+	}
+	if (dir) { ntfs_inode_put(dir); dir = NULL; }
+	if (comp) { ntfs_inode_put(comp); comp = NULL; }
+	if (root) { ntfs_inode_put(root); root = NULL; }
+	umount_scratch();
+	if (mount_scratch()) { failures++; checks++; unlink(scratch); return; }
+	if (!ntfs_volume_root(g_vol, &root) && !ntfs_lookup(root, "compressed", &comp) &&
+	    !ntfs_lookup(comp, "inherit", &dir)) {
+		static char big[200000], back[200000];
+
+		memset(big, 'Q', sizeof(big));
+		for (i = 0; i < 8; i++) {
+			char name[32];
+			struct ntfs_attr fa;
+			ssize_t n;
+
+			snprintf(name, sizeof(name), "c%d-file.bin", i);
+			if (ntfs_lookup(dir, name, &f)) { failures++; checks++; continue; }
+			CHECK(ntfs_getattr(f, &fa) == 0);
+			CHECK_EQ(fa.size, (int64_t)sizeof(big), "size after remount");
+			n = ntfs_read(f, back, sizeof(back), 0);
+			CHECK_EQ(n, (ssize_t)sizeof(big), "read after remount -- EIO here is what "
+				 "enabling NV_Compression without fixing the fresh-file writer causes");
+			if (n == (ssize_t)sizeof(big))
+				CHECK_EQ(memcmp(back, big, sizeof(big)), 0, "content after remount");
+			ntfs_inode_put(f); f = NULL;
+		}
+	}
 out:
 	if (dir) ntfs_inode_put(dir);
 	if (comp) ntfs_inode_put(comp);

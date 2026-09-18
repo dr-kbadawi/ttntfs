@@ -119,6 +119,8 @@ int ntfs_attr_record_rm(struct ntfs_attr_search_ctx *ctx);
 int ntfs_attr_record_move_to(struct ntfs_attr_search_ctx *ctx, struct ntfs_inode *ni);
 int ntfs_attr_add(struct ntfs_inode *ni, __le32 type,
 		__le16 *name, u8 name_len, u8 *val, s64 size);
+int ntfs_attr_set_compression_flag(struct ntfs_inode *ni, __le32 type,
+		__le16 *name, u8 name_len);
 int ntfs_attr_record_move_away(struct ntfs_attr_search_ctx *ctx, int extra);
 char *ntfs_attr_name_get(const struct ntfs_volume *vol, const __le16 *uname,
 		const int uname_len);

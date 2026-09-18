@@ -1434,6 +1434,40 @@ int ntfs_attr_lookup(const __le32 type, const __le16 *name,
 			val, val_len, ctx);
 }
 
+/*
+ * ntfs_attr_set_compression_flag - mark an existing attribute compressed
+ *
+ * PORT: there was no way to create a compressed attribute -- ntfs_attr_add()
+ * hard-codes flags to zero -- so a file created in a Windows-compressed folder
+ * came out uncompressed. Windows and ntfs3 both create it compressed, and
+ * ntfs_attr_make_non_resident() preserves ATTR_IS_COMPRESSED from the resident
+ * record when the first write converts it, allocating whole compression units
+ * from then on. So the minimal change is: add the resident attribute as before,
+ * then flag it. A resident, flagged $DATA is exactly what a small compressed
+ * file on Windows looks like.
+ *
+ * For $INDEX_ROOT the flag is the inheritance marker the inode loader reads,
+ * so a subdirectory of a compressed folder becomes a compressed folder too.
+ */
+int ntfs_attr_set_compression_flag(struct ntfs_inode *ni, __le32 type,
+		__le16 *name, u8 name_len)
+{
+	struct ntfs_attr_search_ctx *ctx;
+	int err;
+
+	ctx = ntfs_attr_get_search_ctx(ni, NULL);
+	if (!ctx)
+		return -ENOMEM;
+	err = ntfs_attr_lookup(type, name, name_len, CASE_SENSITIVE, 0, NULL, 0, ctx);
+	if (!err) {
+		ctx->attr->flags = (ctx->attr->flags & ~ATTR_COMPRESSION_MASK) |
+				   ATTR_IS_COMPRESSED;
+		mark_mft_record_dirty(ctx->ntfs_ino);
+	}
+	ntfs_attr_put_search_ctx(ctx);
+	return err;
+}
+
 /**
  * ntfs_attr_init_search_ctx - initialize an attribute search context
  * @ctx:        attribute search context to initialize

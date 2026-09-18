@@ -1553,6 +1553,27 @@ get_ctx_vol_failed:
 	vol->vol_flags = vi->flags;
 	vol->major_ver = vi->major_ver;
 	vol->minor_ver = vi->minor_ver;
+	/*
+	 * PORT: NV_Compression is upstream's "volume supports compression"
+	 * flag. ntfs_attr_open() gates its inheritance of compression from a
+	 * compressed folder on it -- and nothing in upstream ever set it, so
+	 * that inheritance was dead code. Files created in a folder Windows had
+	 * compressed come out uncompressed (finding 25).
+	 *
+	 * It stays unset, deliberately. Turning it on was tried on 2026-09-18:
+	 * a file created in a compressed folder then went through the
+	 * resident-to-non-resident conversion as a compressed attribute, and
+	 * the first write past one compression unit left a file that reported
+	 * its full size, stored every unit raw, was missing its trailing
+	 * partial unit to ntfscat, and returned EIO to our own reader.
+	 * Extending an EXISTING compressed file works, including across several
+	 * units; it is only the fresh-file conversion that is broken. Until
+	 * that writer is fixed, an uncompressed-but-correct file is the right
+	 * outcome. test_compress guards this: it creates a file in a compressed
+	 * folder and reads it back, and will fail the moment this flag is set
+	 * without the writer being fixed.
+	 */
+	(void)MAX_COMPRESSION_CLUSTER_SIZE;	/* see above; not enabled */
 	ntfs_attr_put_search_ctx(ctx);
 	unmap_mft_record(NTFS_I(vol->vol_ino));
 	pr_info("volume version %i.%i, dev %s, cluster size %d\n",

@@ -238,6 +238,7 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 		__le16 *target, int target_len,
 		bool dir_link)
 {
+	bool inherit_compressed = false;
 	struct ntfs_inode *dir_ni = NTFS_I(dir);
 	struct ntfs_volume *vol = dir_ni->vol;
 	struct ntfs_inode *ni;
@@ -399,6 +400,34 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 	if (!S_ISREG(mode) && !S_ISDIR(mode) && !S_ISLNK(mode))
 		si->file_attributes = FILE_ATTR_SYSTEM;
 
+	/*
+	 * PORT: inherit compression from a compressed folder, as Windows and
+	 * ntfs3 do. NInoCompressed on @dir_ni is upstream's own marker for
+	 * exactly this -- "newly created files in that directory should be
+	 * created compressed" -- and nothing acted on it. A regular file gets
+	 * FILE_ATTR_COMPRESSED and a $DATA flagged ATTR_IS_COMPRESSED (set
+	 * below, once the attribute exists); a subdirectory gets the flag on
+	 * its $INDEX_ROOT so the inheritance carries on down. Symlinks and
+	 * special files are left alone: Windows does not compress them either.
+	 * Measured 2026-09-18: `compact` on a folder Windows had compressed
+	 * listed twelve of our files as "not compressed". Finding 25.
+	 */
+	/*
+	 * Only subdirectories inherit today. For a regular file, marking the
+	 * inode compressed would send its first write through the
+	 * resident-to-non-resident conversion of a compressed attribute, which
+	 * produces a corrupt file (see NV_Compression in core/ntfs/super.c). So
+	 * a file created here is uncompressed and correct, and the folder's
+	 * marker is carried down to child folders so that Windows, or a future
+	 * build with the writer fixed, compresses what is created in them.
+	 */
+	inherit_compressed = NInoCompressed(dir_ni) && S_ISDIR(mode);
+	if (inherit_compressed) {
+		si->file_attributes |= FILE_ATTR_COMPRESSED;
+		ni->flags |= FILE_ATTR_COMPRESSED;
+		NInoSetCompressed(ni);
+	}
+
 	/* Add STANDARD_INFORMATION to inode. */
 	err = ntfs_attr_add(ni, AT_STANDARD_INFORMATION, AT_UNNAMED, 0, (u8 *)si,
 			si_len);
@@ -453,6 +482,12 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 		err = ntfs_attr_open(ni, AT_INDEX_ROOT, I30, 4);
 		if (err)
 			goto err_out;
+
+		if (inherit_compressed && S_ISDIR(mode)) {
+			err = ntfs_attr_set_compression_flag(ni, AT_INDEX_ROOT, I30, 4);
+			if (err)
+				goto err_out;
+		}
 
 		if (dir_link) {
 			/* Native tag only: the resolver already required a target
@@ -562,6 +597,10 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 		fn->type.ea.packed_ea_size = ea_size;
 	if (S_ISDIR(mode) || dir_link) {
 		fn->file_attributes = FILE_ATTR_DUP_FILE_NAME_INDEX_PRESENT;
+		/* an inherited compression marker must survive: ni->flags is
+		 * rebuilt from this field below */
+		if (inherit_compressed)
+			fn->file_attributes |= FILE_ATTR_COMPRESSED;
 		fn->allocated_size = fn->data_size = 0;
 	} else {
 		fn->data_size = cpu_to_le64(ni->data_size);
