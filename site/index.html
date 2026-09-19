@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TT NTFS Native</title>
+<meta name="description" content="Free, open-source NTFS read/write for macOS with no kernel extension. Built on FSKit. Checked by Windows. GPL-2.0.">
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta property="og:title" content="TT NTFS Native">
+<meta property="og:description" content="NTFS read/write for macOS. No kernel extension, no Reduced Security, no reboot. Free software.">
+<meta property="og:image" content="https://dr-kbadawi.github.io/ttntfs/icon.png">
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-2: #f5f6f8;
+    --ink: #17191d;
+    --ink-2: #4b5160;
+    --ink-3: #7a8091;
+    --line: #e3e5ea;
+    --accent: #1f9d6a;
+    --accent-ink: #ffffff;
+    --warn-bg: #fff8e6;
+    --warn-line: #f0d48a;
+    --warn-ink: #5d4a12;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", Inter, system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #101216; --bg-2: #171a20; --ink: #eef0f4; --ink-2: #b4bac7; --ink-3: #7d8494;
+      --line: #262a33; --accent: #34c184; --accent-ink: #0b1a13;
+      --warn-bg: #2a2410; --warn-line: #5a4a1a; --warn-ink: #e8d59a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #101216; --bg-2: #171a20; --ink: #eef0f4; --ink-2: #b4bac7; --ink-3: #7d8494;
+    --line: #262a33; --accent: #34c184; --accent-ink: #0b1a13;
+    --warn-bg: #2a2410; --warn-line: #5a4a1a; --warn-ink: #e8d59a;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 17px/1.55 var(--sans); font-feature-settings: "kern", "liga";
+  }
+  a { color: inherit; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 16px; }
+  header { padding: 56px 0 40px; }
+  .brand { display: flex; align-items: center; gap: 20px; }
+  .brand img { width: 96px; height: 96px; border-radius: 22px; box-shadow: 0 8px 24px rgba(0,0,0,.14); }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0; letter-spacing: -0.02em; }
+  .tag { color: var(--ink-2); margin: 6px 0 0; font-size: 18px; }
+  .lede { font-size: 21px; line-height: 1.45; margin: 28px 0 0; letter-spacing: -0.005em; }
+  .lede b { font-weight: 650; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 28px 0 0; }
+  .btn {
+    display: inline-block; padding: 13px 20px; border-radius: 10px; text-decoration: none;
+    font-weight: 600; font-size: 16px; line-height: 1;
+  }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); }
+  .btn-quiet { border: 1px solid var(--line); color: var(--ink); background: var(--bg); }
+  .meta { color: var(--ink-3); font-size: 14px; margin: 10px 0 0; }
+  .meta code { font: 13px var(--mono); }
+  section { padding: 34px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 22px; margin: 0 0 14px; letter-spacing: -0.01em; }
+  p { margin: 0 0 14px; }
+  p:last-child { margin-bottom: 0; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-top: 8px; }
+  .card { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--ink-2); font-size: 15px; line-height: 1.5; }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-line); color: var(--warn-ink); border-radius: 12px; padding: 16px 18px; }
+  .warn h2 { color: inherit; font-size: 17px; margin-bottom: 8px; }
+  .warn p { color: inherit; font-size: 15.5px; }
+  ol { padding-left: 22px; margin: 0; }
+  ol li { margin: 0 0 10px; }
+  ol li:last-child { margin-bottom: 0; }
+  kbd, code { font: 15px var(--mono); background: var(--bg-2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 15px; margin-top: 6px; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; color: var(--ink-2); font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+  td:first-child { color: var(--ink-2); }
+  .yes { color: var(--accent); font-weight: 600; }
+  .no { color: var(--ink-3); }
+  footer { padding: 34px 0 56px; border-top: 1px solid var(--line); color: var(--ink-3); font-size: 14px; }
+  footer p { margin: 0 0 6px; }
+  @media (max-width: 520px) {
+    header { padding-top: 40px; }
+    .brand img { width: 72px; height: 72px; border-radius: 17px; }
+    h1 { font-size: 28px; }
+    .lede { font-size: 19px; }
+    table { font-size: 14px; }
+    th, td { padding: 8px 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="brand">
+    <img src="icon.png" alt="" width="96" height="96">
+    <div>
+      <h1>TT NTFS Native</h1>
+      <p class="tag">NTFS read &amp; write for macOS. No kernel extension.</p>
+    </div>
+  </div>
+  <p class="lede">
+    Plug in a Windows disk and use it in Finder — read <b>and write</b> — without
+    lowering your Mac’s security or rebooting. Built on Apple’s FSKit, so it runs in
+    user space like a normal app. Free software, GPL-2.0.
+  </p>
+  <div class="cta">
+    <a class="btn btn-primary" href="https://github.com/dr-kbadawi/ttntfs/releases/latest/download/TT-NTFS-Native.dmg">Download for macOS</a>
+    <a class="btn btn-quiet" href="https://github.com/dr-kbadawi/ttntfs">Source on GitHub</a>
+  </div>
+  <p class="meta">Version 0.4.1 · macOS 26 or later · Apple Silicon · 1.6 MB · notarized</p>
+</header>
+
+<section>
+  <h2>Why it’s different</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>No kernel extension</h3>
+      <p>Every other read/write NTFS driver for the Mac loads a kext, which means Reduced Security and a reboot. This one doesn’t.</p>
+    </div>
+    <div class="card">
+      <h3>Checked by Windows</h3>
+      <p>Windows’ own <code>chkdsk</code> found no problems on a volume this driver wrote 626 files to, and every file read back byte-for-byte.</p>
+    </div>
+    <div class="card">
+      <h3>Symlinks that work both ways</h3>
+      <p>Links you make on the Mac open on Windows. Junctions and links Windows made resolve on the Mac.</p>
+    </div>
+    <div class="card">
+      <h3>Honest about the journal</h3>
+      <p>A disk Windows didn’t eject cleanly mounts read-only and tells you why. Replay is one click, per volume, and never automatic.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Install</h2>
+  <ol>
+    <li>Open the DMG and drag <b>TT NTFS Native</b> to Applications.</li>
+    <li>Open it and press <b>Enable Extension</b>. The app enables its own file system extension — the switch in System Settings does not work for third-party FSKit modules on macOS 26, and the app says so.</li>
+    <li>Plug in an NTFS disk. It appears in Finder, read/write.</li>
+  </ol>
+  <p class="meta" style="margin-top:14px">The app lives in the menu bar. It shows each NTFS volume, whether it mounted read/write, and — if it didn’t — the reason and what to do about it.</p>
+</section>
+
+<section>
+  <div class="warn">
+    <h2>Read this before writing to a disk you care about</h2>
+    <p>This driver has been checked by Windows, but that is one Windows build, one disk, one pass — it is not a warranty. <b>Keep a backup of anything you cannot replace.</b> Journal replay reproduces Windows on every real crash we have captured, and it stays off unless you turn it on for a volume, at your own risk.</p>
+  </div>
+</section>
+
+<section>
+  <h2>What works today</h2>
+  <table>
+    <tr><th>Feature</th><th>Status</th></tr>
+    <tr><td>Read and write, in Finder</td><td class="yes">yes</td></tr>
+    <tr><td>Long, Unicode and Windows-illegal names</td><td class="yes">yes (illegal names refused by default; switchable)</td></tr>
+    <tr><td>Hard links, symlinks, alternate data streams</td><td class="yes">yes, verified on Windows</td></tr>
+    <tr><td>Reading compressed and sparse files</td><td class="yes">yes</td></tr>
+    <tr><td>Writing inside a Windows-compressed folder</td><td class="yes">yes — files are stored uncompressed</td></tr>
+    <tr><td>Journal replay after a Windows crash</td><td class="yes">opt-in per volume; reproduces Windows on captured crashes</td></tr>
+    <tr><td>Creating compressed files</td><td class="no">not yet</td></tr>
+    <tr><td>Intel Macs</td><td class="no">not yet — Apple Silicon only</td></tr>
+    <tr><td>Format or repair a disk</td><td class="no">not yet — use Windows or Disk Utility</td></tr>
+    <tr><td>TRIM on SSDs</td><td class="no">not possible — FSKit provides no way to issue it</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>How it’s built</h2>
+  <p>The core is the Linux kernel’s NTFS driver (<code>fs/ntfs</code>, Linux 7.1), ported to run in user space inside an FSKit extension. The journal-replay engine, the FSKit layer, the app and the test suites are new work by TechTag GmbH. Everything is under the GPL-2.0, and every change is in the open on GitHub — including the bugs we found in ourselves and how we found them.</p>
+  <p>If you want the engineering detail — what was verified against Windows and how, what is inferred rather than measured, and what is still open — it is all in the repository’s <code>docs/</code>.</p>
+</section>
+
+<footer>
+  <p>Copyright © 2026 TechTag GmbH. Free software under the <a href="https://github.com/dr-kbadawi/ttntfs/blob/main/LICENSE">GNU GPL v2</a>; no warranty.</p>
+  <p><a href="https://github.com/dr-kbadawi/ttntfs/releases">All releases</a> · <a href="https://github.com/dr-kbadawi/ttntfs/blob/main/RELEASE-NOTES.md">Release notes</a> · <a href="https://github.com/dr-kbadawi/ttntfs/issues">Report a problem</a></p>
+</footer>
+
+</div>
+</body>
+</html>
