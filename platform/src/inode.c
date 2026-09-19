@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * The inode table (linux/fs.h) for the user-space port: a generic, kernel
  * shaped icache. The file-system specific parts come through

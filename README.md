@@ -112,4 +112,7 @@ what is still not covered.**
 ## Licence
 
 GPL-2.0. The core derives from the Linux kernel's `fs/ntfs`, so the licence is
-inherited rather than chosen. Full text in `LICENSE`, details in `COPYRIGHT`.
+inherited rather than chosen. Copyright (c) 2026 TechTag GmbH for the port, the
+FSKit extension, the app and the journal work; the original authors' notices
+are preserved in the ported files. Full text in `LICENSE`, details in
+`COPYRIGHT`.

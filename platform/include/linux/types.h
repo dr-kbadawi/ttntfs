@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Kernel scalar types for the user-space port. Contract header: every
  * component includes this, directly or through other linux/ shims.

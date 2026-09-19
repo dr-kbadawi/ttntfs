@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2026 TechTag GmbH
 /*
  * compat_extra.c - the two kernel helpers the compat layer leaves to the
  * vfs stream: dir_emit_dotdot() (needs the parent inode number, an NTFS

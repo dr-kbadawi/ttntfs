@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Synchronous bio emulation. A bio collects up to BIO_MAX_VECS segments of
  * folio memory; submit_bio()/submit_bio_wait() perform the I/O immediately

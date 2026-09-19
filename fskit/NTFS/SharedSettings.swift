@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Keys shared with the extension via the app group. Keep in sync with
 // NTFSExtension/Options.swift (SharedDefaults).

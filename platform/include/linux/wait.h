@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Wait queues over a pthread mutex + condition variable. Wakers broadcast
  * under the queue mutex, and wait_event() re-checks the condition under the

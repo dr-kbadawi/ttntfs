@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 /*
  * Restart tables (transaction, dirty page, open attribute) and the
  * checkpoint (NTFS_RESTART client restart record) that references them.

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Error mapping. The core returns negative errnos; some of them are Linux-only
 // values defined in platform/include/linux/errno.h (EUCLEAN, ENOMEDIUM, ...).

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Bit search and bitmap helpers (linux/bitops.h). Bit 0 is the LSB of
  * word 0, the kernel's little-endian bitmap layout, which is also the

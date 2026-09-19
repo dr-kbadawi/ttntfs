@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Mount status shared between the extension and the host app, without XPC:
 // the extension writes one JSON file into the app-group container on

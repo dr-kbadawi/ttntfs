@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2026 TechTag GmbH
 /*
  * api.c - the public C ABI (core/include/ntfscore.h) of the port.
  *

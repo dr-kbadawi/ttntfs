@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Synchronous bio emulation (linux/bio.h). mft.c writes MFT records and
  * the MFT mirror with bios; each bio is executed immediately through the

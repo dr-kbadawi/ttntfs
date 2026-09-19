@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Wait queues (linux/wait.h): a mutex + condition variable. wait_event()
  * evaluates its condition with the mutex held and blocks in __wait_block();

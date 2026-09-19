@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 
 import SwiftUI
 
@@ -44,6 +45,33 @@ struct SettingsView: View {
                 Text("Changes apply to volumes mounted from now on.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            /*
+             * GPL-2.0 §1 asks each copy to carry an appropriate copyright
+             * notice and §2(c) asks an interactive program to show it along
+             * with the no-warranty notice. For a menu-bar app this panel is
+             * where that lives. The version and commit come from the bundle,
+             * stamped at build time by scripts/version.sh, so a build from an
+             * uncommitted tree shows "-dirty" and a bug report can name the
+             * exact source it came from.
+             */
+            Section("About") {
+                LabeledContent("TT NTFS Native", value: BuildInfo.versionLine)
+                LabeledContent("Build", value: BuildInfo.commit)
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(BuildInfo.copyright)
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Free software under the GNU General Public License, version 2. " +
+                     "It comes with no warranty. The complete source code is available " +
+                     "under the same licence.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("Contains code from the Linux NTFS driver, © Anton Altaparmakov, " +
+                     "Tuxera Inc., Richard Russon, Jean-Pierre Andre, LG Electronics Co., Ltd. " +
+                     "and others, used under the GPL.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             // Dragging the app to the Trash would leave the module in FSKit's
             // enabled list, the bundle registered with LaunchServices, and the
             // login item orphaned -- only the app can undo those.
@@ -77,4 +105,19 @@ struct SettingsView: View {
         .frame(width: 440)
         .padding()
     }
+}
+
+
+/// Version, build and copyright as stamped into the bundle at build time.
+enum BuildInfo {
+    private static func str(_ key: String) -> String {
+        (Bundle.main.object(forInfoDictionaryKey: key) as? String) ?? "?"
+    }
+    /// e.g. "0.4.0 (155)"
+    static var versionLine: String {
+        "\(str("CFBundleShortVersionString")) (\(str("CFBundleVersion")))"
+    }
+    /// git describe at build time, e.g. "v0.3-ui-fixes-103-gbcc13ab13-dirty"
+    static var commit: String { str("TTGitCommit") }
+    static var copyright: String { str("NSHumanReadableCopyright") }
 }

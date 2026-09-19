@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 /*
  * bdev_mapping.c - the page cache over a raw block device (bdev->bd_mapping)
  *

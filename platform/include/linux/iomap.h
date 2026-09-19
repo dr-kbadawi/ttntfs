@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /* iomap does not exist in the port: file data bypasses the page cache and
  * metadata goes through a_ops. Only the bits Tier 1 touches are here. */
 #ifndef _LINUX_IOMAP_H

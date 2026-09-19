@@ -17,14 +17,16 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.utilities</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>GPL-2.0</string>
+	<string>Copyright © 2026 TechTag GmbH. Free software under the GNU GPL v2; no warranty.</string>
+	<key>TTGitCommit</key>
+	<string>$(TT_GIT_COMMIT)</string>
 </dict>
 </plist>

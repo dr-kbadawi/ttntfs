@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /* Shared fake backend for the page cache tests: an in-memory disk where
  * each inode owns a 16 MiB region selected by i_ino. */
 #ifndef PC_FAKE_DISK_H

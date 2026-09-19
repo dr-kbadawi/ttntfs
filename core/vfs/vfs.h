@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * vfs.h - private glue shared by the Tier 2 replacement in core/vfs/.
  *

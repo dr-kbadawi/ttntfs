@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * On-disk layout of the NTFS $LogFile (the LFS journal) and of the NTFS
  * structures the replay engine touches (MFT records, attributes, index

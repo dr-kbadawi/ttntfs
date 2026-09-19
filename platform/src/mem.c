@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Memory for the user-space port: kmalloc family, page allocation,
  * kmem_cache with constructors, and vmap (linux/slab.h, linux/pagemap.h).

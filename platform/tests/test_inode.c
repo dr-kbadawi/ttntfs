@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Tests for platform/src/inode.c: lookup/creation, I_NEW blocking,
  * reference counting, LRU caching and its cap, iget_failed, dirty

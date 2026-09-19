@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /* Mount option parser. The port receives options through ntfscore.h, but
  * super.c's table-driven parser is kept so its semantics survive. */
 #ifndef _LINUX_FS_PARSER_H

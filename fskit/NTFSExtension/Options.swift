@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Mount options: defaults shared with the host app through the app group
 // (SharedSettings.swift in the app writes them), overridable per mount by

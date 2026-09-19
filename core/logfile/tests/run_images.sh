@@ -1,5 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-2.0
+# Copyright (c) 2026 TechTag GmbH
 # Run the ntfslog analyzer over every fixture image and require each one to
 # be clean for a read-write mount. Exit 77 (ctest SKIP_RETURN_CODE) when the
 # tools stream has not generated the images.

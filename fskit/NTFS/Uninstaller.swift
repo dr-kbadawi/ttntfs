@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Removing the app by dragging it to the Trash is not enough: the module stays
 // in fskit_agent's enabled list, the bundle stays registered with

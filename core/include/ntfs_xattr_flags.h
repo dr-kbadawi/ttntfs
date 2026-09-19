@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * ntfs_xattr_flags.h - the one definition of the ntfs_setxattr() flag bits.
  *

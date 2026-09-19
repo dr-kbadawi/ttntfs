@@ -12,6 +12,32 @@ a derivative of it and carries the same licence. It is not a licence we picked;
 it is the one we inherited, and it is why this driver can exist at all — no
 other complete, GPL-licensed NTFS write implementation does.
 
+## Who holds the copyright
+
+Copyright in the ported code stays with its original authors — Anton
+Altaparmakov, Tuxera Inc., Richard Russon, Jean-Pierre Andre, LG Electronics
+Co., Ltd., Namjae Jeon and the other contributors named in each file's header.
+Those notices are preserved unchanged, as GPL-2.0 §1 requires.
+
+Copyright in everything written for this project — the FSKit extension, the
+menu-bar app, the platform layer under `platform/`, the journal analysis and
+replay under `core/logfile/`, the VFS layer under `core/vfs/`, the porting
+changes themselves, the tests, and the tooling — is held by:
+
+    Copyright (c) 2026 TechTag GmbH
+
+and licensed under the same GPL-2.0. GPL is a licence, not a transfer: TechTag
+GmbH keeps its copyright, and "TT NTFS Native" and "TechTag" are not licensed as
+trademarks by it.
+
+## What distributing this obliges
+
+GPL-2.0 §3: whoever distributes a binary (the DMG) must make the complete
+corresponding source available under the same licence, or accompany the binary
+with a written offer to. The application's Settings window states this and
+carries the copyright and no-warranty notices (§1, §2(c)). Until a public
+repository exists, the source is available from TechTag GmbH on request.
+
 ## Per-file identifiers
 
 Every source file carries an SPDX identifier, and the two differ on purpose:

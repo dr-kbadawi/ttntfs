@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Tests for platform/src/bdev_file.c and bio.c over a temporary image file.
  */

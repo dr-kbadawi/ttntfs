@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * UTF-8 <-> UTF-16 conversion and the fixed UTF-8 NLS table
  * (linux/nls.h). Same behaviour as the kernel's fs/nls/nls_base.c:

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 #ifndef _LINUX_POSIX_ACL_XATTR_H
 #define _LINUX_POSIX_ACL_XATTR_H
 #include <linux/posix_acl.h>

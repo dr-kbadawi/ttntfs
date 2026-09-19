@@ -35,8 +35,11 @@ echo "==> building Release (Developer ID), from scratch"
 # and then refuses the build claiming it "was modified during the build" when
 # the project has merely been regenerated since.
 rm -rf "$DD"
+# Stamp the build with the version and the commit it was made from; the two
+# Info.plists read these. A DMG from an uncommitted tree is marked "-dirty".
+# shellcheck disable=SC2046
 xcodebuild -project "$FSKIT/NTFS.xcodeproj" -scheme NTFS -configuration Release \
-           -derivedDataPath "$DD" build >/dev/null
+           -derivedDataPath "$DD" $("$FSKIT/scripts/version.sh") build >/dev/null
 [ -d "$APP" ] || { echo "no app at $APP" >&2; exit 1; }
 
 echo "==> checking the signature"

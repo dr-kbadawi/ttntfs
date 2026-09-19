@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /* Dentries do not exist in the port. The struct is kept minimal so that
  * signatures in Tier 1 (statfs, xattr handlers) still type-check; the vfs
  * stream never creates real dentries. */

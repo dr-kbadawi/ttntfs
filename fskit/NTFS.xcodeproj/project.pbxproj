@@ -375,6 +375,9 @@
 				CODE_SIGN_ENTITLEMENTS = NTFS/NTFS.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				INFOPLIST_FILE = NTFS/Info.plist;
+				MARKETING_VERSION = 0.4.0;
+				CURRENT_PROJECT_VERSION = 0;
+				TT_GIT_COMMIT = xcode;
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -400,6 +403,9 @@
 					"$(SRCROOT)/Bridge",
 				);
 				INFOPLIST_FILE = NTFSExtension/Info.plist;
+				MARKETING_VERSION = 0.4.0;
+				CURRENT_PROJECT_VERSION = 0;
+				TT_GIT_COMMIT = xcode;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -426,6 +432,9 @@
 					"$(SRCROOT)/Bridge",
 				);
 				INFOPLIST_FILE = NTFSExtension/Info.plist;
+				MARKETING_VERSION = 0.4.0;
+				CURRENT_PROJECT_VERSION = 0;
+				TT_GIT_COMMIT = xcode;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -446,6 +455,9 @@
 				CODE_SIGN_ENTITLEMENTS = NTFS/NTFS.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
 				INFOPLIST_FILE = NTFS/Info.plist;
+				MARKETING_VERSION = 0.4.0;
+				CURRENT_PROJECT_VERSION = 0;
+				TT_GIT_COMMIT = xcode;
 				INFOPLIST_KEY_LSUIElement = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

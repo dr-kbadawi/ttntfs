@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Host app: a menu-bar item that carries the FSKit extension, shows mounted
 // NTFS volumes, and exposes the mount options.

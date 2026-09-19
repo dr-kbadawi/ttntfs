@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /* The port always speaks UTF-8; nls_table is a fixed UTF-8 codec. */
 #ifndef _LINUX_NLS_H
 #define _LINUX_NLS_H

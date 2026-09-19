@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Stress test: 8 threads doing random reads, writes (dirty), syncs,
  * invalidates and truncates on 3 mappings for N seconds, tracking an

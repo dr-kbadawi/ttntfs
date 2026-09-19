@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Minimal read access to an NTFS image for the $LogFile tools: boot
  * sector geometry, the $MFT run list from record 0, the $LogFile run list

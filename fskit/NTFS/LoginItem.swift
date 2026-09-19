@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // "Open at login" via SMAppService.mainApp. Registering puts the app in
 // System Settings → General → Login Items & Extensions → Open at Login, where

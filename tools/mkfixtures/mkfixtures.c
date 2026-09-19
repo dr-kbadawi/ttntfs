@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * mkfixtures - generate NTFS test images with libntfs-3g and write a JSON
  * manifest describing every file on them (path, size, sha256, streams,

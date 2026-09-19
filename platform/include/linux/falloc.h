@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 #ifndef _LINUX_FALLOC_H
 #define _LINUX_FALLOC_H
 #define FALLOC_FL_KEEP_SIZE 0x01

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Every NTFS partition on the machine, mounted or not, so the app can show them
 // all and let the user decide. `getmntinfo` only knows about volumes that are

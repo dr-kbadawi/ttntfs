@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Logging and BUG/WARN for the user-space port (linux/kernel.h, linux/bug.h).
  *

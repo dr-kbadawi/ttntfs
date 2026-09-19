@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /* POSIX ACLs are not mapped in v1 (docs/PORTING.md §6). The types exist so
  * ea.c compiles; every operation reports "no ACL". */
 #ifndef _LINUX_POSIX_ACL_H

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Small kernel library functions: string parsing (kstrto*, simple_strto*),
  * strscpy, hex helpers, sort(), time truncation, seq_file, and the generic_*

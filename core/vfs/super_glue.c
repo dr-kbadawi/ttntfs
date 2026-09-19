@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+// Copyright (c) 2026 TechTag GmbH
 /*
  * super_glue.c - mount/unmount entry points for the user-space port.
  *

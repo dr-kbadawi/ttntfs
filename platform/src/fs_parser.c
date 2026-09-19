@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * Mount-option parsing (linux/fs_parser.h) and the mount entry point
  * get_tree_bdev() (linux/fs_context.h).

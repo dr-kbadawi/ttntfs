@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 /*
  * logfile_analyse.c - what replaying this volume's $LogFile would do
  *

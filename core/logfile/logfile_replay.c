@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 /*
  * $LogFile replay: ARIES-style analysis, redo and undo passes.
  *

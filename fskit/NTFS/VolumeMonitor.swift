@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2026 TechTag GmbH
 //
 // Lists mounted NTFS volumes by polling getmntinfo(3), joins them with the
 // status file the extension writes into the app group (MountStatus.swift:

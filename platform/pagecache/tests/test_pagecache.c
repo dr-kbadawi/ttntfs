@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /* Functional tests for the user-space page cache. */
 #include <unistd.h>
 #include <stdint.h>

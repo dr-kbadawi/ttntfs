@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * seq_file: a bounded text buffer. super_operations.show_options writes the
  * mount options into it; the vfs layer can hand one to the core to render

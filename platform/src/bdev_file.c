@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2026 TechTag GmbH */
 /*
  * ntfsport/bdev.h over a regular file or a /dev node (bdev_file.c).
  *
