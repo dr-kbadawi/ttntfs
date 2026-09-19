@@ -50,8 +50,13 @@
 - [x] Compressed round trip done 2026-09-18: chkdsk clean, Windows reads our
       modifications to its own compressed file byte for byte. Phase 2 closed. Found
       and fixed two volume-goes-read-only defects on the way (finding 24).
-- [ ] Inherit compression on create in a compressed folder (finding 25). Files we
-      make there are valid but uncompressed; Windows and ntfs-3g compress them.
+- [ ] Compressed-file creation (finding 25). NOT "set a flag": the flag exists
+      (NV_Compression) and turning it on corrupts files -- a fresh compressed
+      attribute's resident-to-non-resident conversion breaks on the first write past
+      one compression unit (65536 OK, 65537 EIO). Fix the writer in
+      ntfs_attr_make_non_resident / the first writeback, then set NV_Compression.
+      test_create_in_compressed_directory fails 12 ways if the flag is set first.
+      Subdirectories already inherit the marker. Needs a Windows round trip to verify.
 
 ## Blocked on a decision
 - [ ] Git remote. CI exists (tools/ci.sh, 6 stages) and runs only when typed.

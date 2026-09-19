@@ -38,6 +38,18 @@ with a written offer to. The application's Settings window states this and
 carries the copyright and no-warranty notices (§1, §2(c)). Until a public
 repository exists, the source is available from TechTag GmbH on request.
 
+## Commercial use, and what cannot be restricted
+
+GPL-2.0 permits selling this software at any price and charging for support.
+It does not permit restricting what recipients do with it: no non-commercial
+clause, no limit on derivative works, no EULA narrower than the GPL (§6). Any
+such term would void TechTag's own licence to the Linux code, and with it the
+right to distribute at all. Dual licensing would need the consent of every
+Linux `fs/ntfs` contributor over twenty-five years and is not realistic. The
+licence was fixed the moment the Linux driver was chosen as the core; it is
+GPL-2.0-only, inherited, permanently. What GPL leaves in TechTag's hands is
+the trademark, support, and being the trusted source of signed builds.
+
 ## Per-file identifiers
 
 Every source file carries an SPDX identifier, and the two differ on purpose:
