@@ -2,6 +2,12 @@
 
 ## 0.4.1 — 2026-09-19
 
+### The app and the disk image have an icon
+
+They had none. A drive glyph with the NTFS wordmark now appears on the app in
+/Applications and the Dock, and on the mounted disk image.
+
+
 ### Every switch in Settings now does what it says
 
 Each of the switches was traced from the window to the point on disk where it
