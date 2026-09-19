@@ -1,5 +1,30 @@
 # TT NTFS Native — release notes
 
+## Build of 2026-09-19 -- version 0.4.0 (commit 18f7c70)
+
+### Version and copyright, visible
+
+Settings now has an About section showing the version, the build number, and
+the exact source commit the build was made from -- so a bug report can name
+it. It also carries the copyright notice (TechTag GmbH), the licence and
+no-warranty statement the GPL asks an interactive program to show, and the
+statement that the complete source is available under the same licence.
+
+This is the first build with a real version number. Earlier DMGs all reported
+"1.0 (1)".
+
+### Compressed folders: subfolders inherit; files stay uncompressed on purpose
+
+A subfolder created inside a compressed folder now carries the compression
+marker, so Windows compresses what it creates there. Files created from the
+Mac inside a compressed folder are still written uncompressed. That is
+deliberate: enabling compression on new files was tried, and it produced
+corrupt files. Until the underlying writer is fixed, an uncompressed but
+correct file is the right outcome. Reading, and modifying files Windows
+compressed, is unaffected and verified against Windows.
+
+---
+
 ## Build of 2026-09-18, second (commit d3a19a0)
 
 ### A compressed folder no longer takes the whole disk read-only
