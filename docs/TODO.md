@@ -77,7 +77,12 @@
       driver is for disks that are already NTFS. Not a gap; a stance, stated on the site.
 - [ ] fsck in the app: not planned either; chkdsk is the tool and we will not
       pretend otherwise. Journal recovery is the safe subset and it is done.
-- [ ] Homebrew cask.
+- [x] Homebrew cask, 2026-09-19: tap at github.com/dr-kbadawi/homebrew-ttntfs.
+      `brew tap dr-kbadawi/ttntfs && brew install --cask ttntfs`. Install, run,
+      uninstall --zap all verified end to end. Submit to homebrew-cask proper once
+      the repo clears their notability bar (~75 stars). Per release: upload a
+      versioned DMG (TT-NTFS-Native-X.Y.Z.dmg) alongside the stable one, bump
+      `version` and `sha256` in Casks/ttntfs.rb.
 - [x] Rebuild the DMG. Done 2026-09-15 from a47cd6e: notarized, stapled,
       `source=Notarized Developer ID`, installed from the DMG itself and verified
       serving a real volume. Release notes in `RELEASE-NOTES.md`.

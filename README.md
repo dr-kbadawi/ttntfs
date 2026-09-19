@@ -15,6 +15,8 @@ a normal app. GPL-2.0, and verified against Windows itself.
 
 macOS 26 or later · Apple Silicon · 1.6 MB · notarized by Apple
 
+Or with Homebrew: `brew tap dr-kbadawi/ttntfs && brew install --cask ttntfs`
+
 ## The first of its kind
 
 Until now, writing to NTFS on a Mac meant one of two things: pay for a driver
