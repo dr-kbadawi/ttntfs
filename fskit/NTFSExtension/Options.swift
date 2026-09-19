@@ -19,6 +19,8 @@ enum SharedDefaults {
     static let allowWindowsIllegalNames = "allowWindowsIllegalNames"
     static let discard = "discard"
     static let caseSensitive = "caseSensitive"
+    static let hideDotFiles = "hideDotFiles"
+    static let wslSymlinks = "wslSymlinks"
     /// One-shot requests, written by the app: BSD names whose saved Windows
     /// hibernation image the user has agreed to discard. Consumed at mount.
     static let pendingHibernationDiscard = "pendingHibernationDiscard"
@@ -36,6 +38,8 @@ struct MountOptions {
     var allowWindowsIllegalNames = false
     var discard = false
     var caseSensitive = false
+    var hideDotFiles = false      // mark new dot-files Windows-hidden
+    var wslSymlinks = false       // write the WSL reparse tag for every symlink
     /// Discard the saved Windows session so the volume can mount read-write.
     /// Never a stored preference: only ever set for one mount, by explicit
     /// user consent, because it destroys whatever Windows had suspended.
@@ -55,6 +59,8 @@ struct MountOptions {
         o.allowWindowsIllegalNames = d.bool(forKey: SharedDefaults.allowWindowsIllegalNames)
         o.discard = d.bool(forKey: SharedDefaults.discard)
         o.caseSensitive = d.bool(forKey: SharedDefaults.caseSensitive)
+        o.hideDotFiles = d.bool(forKey: SharedDefaults.hideDotFiles)
+        o.wslSymlinks = d.bool(forKey: SharedDefaults.wslSymlinks)
         return o
     }
 
@@ -137,6 +143,8 @@ struct MountOptions {
         if allowWindowsIllegalNames { f |= NTFS_MOUNT_ALLOW_WINDOWS_ILLEGAL.rawValue }
         if discard { f |= NTFS_MOUNT_DISCARD.rawValue }
         if caseSensitive { f |= NTFS_MOUNT_CASE_SENSITIVE.rawValue }
+        if hideDotFiles { f |= NTFS_MOUNT_HIDE_DOT_FILES.rawValue }
+        if wslSymlinks { f |= NTFS_MOUNT_WSL_SYMLINKS.rawValue }
         if discardHibernation { f |= NTFS_MOUNT_DISCARD_HIBERNATION.rawValue }
         if replayJournal { f |= NTFS_MOUNT_REPLAY_JOURNAL.rawValue }
         return f

@@ -15,6 +15,8 @@ enum SharedSettings {
     static let allowWindowsIllegalNames = "allowWindowsIllegalNames"
     static let discard = "discard"
     static let caseSensitive = "caseSensitive"
+    static let hideDotFiles = "hideDotFiles"
+    static let wslSymlinks = "wslSymlinks"
     /// One-shot requests consumed by the extension at mount: BSD names whose
     /// saved Windows hibernation image the user agreed to discard.
     static let pendingHibernationDiscard = "pendingHibernationDiscard"

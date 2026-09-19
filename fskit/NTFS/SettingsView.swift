@@ -13,6 +13,8 @@ struct SettingsView: View {
     @AppStorage(SharedSettings.allowWindowsIllegalNames, store: SharedSettings.store) private var allowIllegal = false
     @AppStorage(SharedSettings.discard, store: SharedSettings.store) private var discard = false
     @AppStorage(SharedSettings.caseSensitive, store: SharedSettings.store) private var caseSensitive = false
+    @AppStorage(SharedSettings.hideDotFiles, store: SharedSettings.store) private var hideDotFiles = false
+    @AppStorage(SharedSettings.wslSymlinks, store: SharedSettings.store) private var wslSymlinks = false
 
     var body: some View {
         Form {
@@ -38,6 +40,15 @@ struct SettingsView: View {
             Section("Compatibility") {
                 Toggle("Allow file names Windows cannot open (: ? * < > | \")", isOn: $allowIllegal)
                 Text("Off: such names are rejected so everything written here opens on Windows.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Hide macOS dot-files from Windows (.DS_Store, ._*, …)", isOn: $hideDotFiles)
+                Text("New files whose names start with a dot get the Windows hidden attribute, so "
+                     + "Explorer does not show them. Files that already exist are left alone.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Write symlinks in WSL format", isOn: $wslSymlinks)
+                Text("Off: symlinks use Windows' own format, which Explorer, cmd, WSL and Linux all "
+                     + "follow. On: the WSL-only format, which Windows itself cannot follow; choose "
+                     + "this only for a disk used mainly from WSL.")
                     .font(.caption).foregroundStyle(.secondary)
                 /*
                  * Wired all the way to the allocator (NVolDiscard in

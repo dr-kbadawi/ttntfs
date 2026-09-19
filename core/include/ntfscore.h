@@ -76,6 +76,11 @@ enum ntfs_mount_flags {
 	 * unreadable by ntfs3. Set this only for a volume that must match what
 	 * ntfsplus or ntfsprogs-plus would write. */
 	NTFS_MOUNT_WSL_SYMLINKS		= 1u << 9,
+	/* Mark names beginning with '.' as Windows-hidden when they are created,
+	 * so .DS_Store, ._resource forks, .Spotlight-V100 and .fseventsd do not
+	 * litter Explorer on a disk shared with Windows. Only affects files this
+	 * driver creates; existing files are left alone. */
+	NTFS_MOUNT_HIDE_DOT_FILES	= 1u << 10,
 };
 
 enum ntfs_ro_reason {

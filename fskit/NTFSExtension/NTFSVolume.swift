@@ -453,12 +453,27 @@ extension NTFSVolume: FSVolume.Operations {
         if attributes.isValid(.accessTime) { a.atime = ntfs_timespec(attributes.accessTime); valid |= NTFS_SETATTR_ATIME.rawValue; consumed.insert(.accessTime) }
         if attributes.isValid(.modifyTime) { a.mtime = ntfs_timespec(attributes.modifyTime); valid |= NTFS_SETATTR_MTIME.rawValue; consumed.insert(.modifyTime) }
         if attributes.isValid(.birthTime) { a.crtime = ntfs_timespec(attributes.birthTime); valid |= NTFS_SETATTR_CRTIME.rawValue; consumed.insert(.birthTime) }
+        /*
+         * The kernel marks .flags valid on every create, with value 0 unless
+         * the caller asked for something. Mapping that 0 through
+         * fileAttributes() clears FILE_ATTR_HIDDEN -- which is exactly the bit
+         * the core has just set when hide_dot_files is on. The result was a
+         * file whose $STANDARD_INFORMATION said plain and whose $FILE_NAME
+         * said hidden (measured 2026-09-19), the two-copies-disagree shape
+         * that let chkdsk rewrite our symlinks' index entries. A zero flags
+         * word on a file that did not exist a moment ago is not a request to
+         * un-hide it; only apply flags at create when the caller set some.
+         * chflags(2) on an existing file still goes through setattr and can
+         * clear the bit as before.
+         */
         if attributes.isValid(.flags) {
-            var cur = ntfs_attr()
-            if ntfs_getattr(it.inode, &cur) == 0 {
-                a.file_attributes = fileAttributes(cur.file_attributes, applyingBSDFlags: attributes.flags)
-                valid |= NTFS_SETATTR_FLAGS.rawValue
-                consumed.insert(.flags)
+            consumed.insert(.flags)
+            if attributes.flags != 0 {
+                var cur = ntfs_attr()
+                if ntfs_getattr(it.inode, &cur) == 0 {
+                    a.file_attributes = fileAttributes(cur.file_attributes, applyingBSDFlags: attributes.flags)
+                    valid |= NTFS_SETATTR_FLAGS.rawValue
+                }
             }
         }
         if valid != 0 {

@@ -399,6 +399,16 @@ static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *d
 	 */
 	if (!S_ISREG(mode) && !S_ISDIR(mode) && !S_ISLNK(mode))
 		si->file_attributes = FILE_ATTR_SYSTEM;
+	/*
+	 * PORT: upstream applied hide_dot_files only to the $FILE_NAME copy
+	 * (below), leaving $STANDARD_INFORMATION without the bit. Windows reads
+	 * the $FILE_NAME copy for Explorer, so the option appeared to work, but
+	 * the two copies of the same attribute disagreed on disk -- the shape
+	 * that let chkdsk rewrite our symlinks' index entries (finding 23).
+	 * Both copies get it.
+	 */
+	if (NVolHideDotFiles(vol) && name_len > 0 && name[0] == cpu_to_le16('.'))
+		si->file_attributes |= FILE_ATTR_HIDDEN;
 
 	/*
 	 * PORT: inherit compression from a compressed folder, as Windows and
