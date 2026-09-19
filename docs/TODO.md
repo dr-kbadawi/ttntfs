@@ -59,8 +59,16 @@
       Subdirectories already inherit the marker. Needs a Windows round trip to verify.
 
 ## Blocked on a decision
-- [ ] Git remote. CI exists (tools/ci.sh, 6 stages) and runs only when typed.
-- [ ] Author email on 29 commits. Safest now, no remote. Needs a fresh backup branch.
+- [x] Git remote, 2026-09-19: github.com/dr-kbadawi/ttntfs, public. GPL §3 is met
+      from that moment. CI runs on every push (macos-26 runner) and is green.
+- [x] Author email, 2026-09-19: all commits rewritten to karim.badawi@techtag.ch
+      before the first push. Same day, all AI attribution trailers were stripped
+      from every commit and force-pushed; attribution is to the user only, always.
+      Old history kept locally in backup-before-*-2026-09-19 branches, never pushed.
+- [x] Website, 2026-09-19: https://ntfs.techtag.ch (GitHub Pages from site/, custom
+      domain, Let's Encrypt, HTTPS enforced). Release v0.4.1 carries the DMG under
+      a stable name (releases/latest/download/TT-NTFS-Native.dmg) and a versioned
+      one for the cask. The version line on the page is hand-written per release.
 
 ## Unblocked, not started
 - [x] Done 2026-09-17: the logfile fixture now carries a real $INDEX_ALLOCATION,

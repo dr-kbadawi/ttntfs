@@ -35,8 +35,9 @@ trademarks by it.
 GPL-2.0 §3: whoever distributes a binary (the DMG) must make the complete
 corresponding source available under the same licence, or accompany the binary
 with a written offer to. The application's Settings window states this and
-carries the copyright and no-warranty notices (§1, §2(c)). Until a public
-repository exists, the source is available from TechTag GmbH on request.
+carries the copyright and no-warranty notices (§1, §2(c)). The complete
+source is public at https://github.com/dr-kbadawi/ttntfs, and every release's
+DMG is built from a tagged commit there, which satisfies §3(a).
 
 ## Commercial use, and what cannot be restricted
 

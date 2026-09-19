@@ -271,6 +271,12 @@ NTFS toolchains. It cannot run `mount-test.sh` (needs an enabled module and a
 real mount) or `package.sh` (needs the Developer ID certificate), so a release
 still needs a person.
 
-There is no git remote yet, so nothing runs automatically. Until there is one,
-`tools/install-hooks.sh` installs a pre-push hook that runs `tools/ci.sh
---quick`.
+It runs on every push to `main` via `.github/workflows/ci.yml` on GitHub's
+`macos-26` runner, and has been green since 2026-09-19. Two things that runner
+taught us, both fixed at the source: Homebrew installs GNU libtool as
+`glibtoolize`, so `ensure_autotools` must accept that name; and the runner's
+Xcode may be newer than the developer's -- its 26.6 SDK added
+`FSVolume.MountOptions`, which shadowed our own type inside a subclass of
+`FSVolume`, so ours is `NTFSMountOptions`. `tools/install-hooks.sh` still
+installs a pre-push hook running `tools/ci.sh --quick`, which catches most
+things before the runner does.
