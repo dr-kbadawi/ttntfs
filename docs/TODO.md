@@ -71,7 +71,13 @@
       stops saying "LogFile version 2.0 is not supported" on every mount.
 
 - [ ] x86_64 build. arm64 only; nothing has ever compiled for a second arch.
-- [ ] mkfs/fsck in the app, Homebrew cask.
+- [x] mkfs in the app: **decided against, 2026-09-19.** NTFS on a disk means the disk
+      comes from or goes to Windows, and Windows formats it. A Mac user starting from
+      a blank disk should use exFAT, which everything reads and writes natively. This
+      driver is for disks that are already NTFS. Not a gap; a stance, stated on the site.
+- [ ] fsck in the app: not planned either; chkdsk is the tool and we will not
+      pretend otherwise. Journal recovery is the safe subset and it is done.
+- [ ] Homebrew cask.
 - [x] Rebuild the DMG. Done 2026-09-15 from a47cd6e: notarized, stapled,
       `source=Notarized Developer ID`, installed from the DMG itself and verified
       serving a real volume. Release notes in `RELEASE-NOTES.md`.
