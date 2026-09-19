@@ -260,6 +260,57 @@ before yanking a disk immediately after a large copy.
   drag leaves the module in FSKit's enabled list and the bundle registered, so
   System Settings keeps listing an extension that no longer exists.
   `scripts/uninstall.sh` is the same thing for a machine without the app.
+## Settings switches: what each one actually does
+
+Every switch was traced from the SwiftUI binding through the app-group store
+(`group.ch.techtag.ntfs`), the extension's `MountOptions.fromDefaults()`, the
+C flags in `ntfscore.h`, the kernel-side option `super_glue.c` passes, and the
+`NVol` bit that option sets -- and then exercised live in both states through
+the installed extension on a probe volume (2026-09-19). Changes apply to
+volumes mounted from then on.
+
+| switch | C flag | kernel option | takes effect in |
+|---|---|---|---|
+| Mount volumes read-only | `RDONLY` | -- | every write op returns `EROFS` |
+| Show files Windows marks as hidden | `HIDE_HIDDEN` (inverted) | `nohidden` | `ntfs_filldir`, `FILE_ATTR_HIDDEN` |
+| Show NTFS system files | `SHOW_SYSTEM` | `show_sys_files` | `ntfs_filldir` |
+| Case-sensitive names | `CASE_SENSITIVE` | `case_sensitive` / `nocase` | lookup and index collation |
+| Allow names Windows cannot open | `ALLOW_WINDOWS_ILLEGAL` (inverted) | `windows_names` | `ntfs_check_bad_windows_name` |
+| Hide macOS dot-files from Windows | `HIDE_DOT_FILES` | `hide_dot_files` | create: `FILE_ATTR_HIDDEN` on both `$SI` and `$FN` |
+| Write symlinks in WSL format | `WSL_SYMLINKS` | `wsl_symlinks` | `__ntfs_create`: tag choice |
+| TRIM freed space | `DISCARD` | `discard` | `NVolDiscard` in `lcnalloc.c` -- **and stops there** |
+| Open at login | -- | -- | `SMAppService.mainApp` |
+
+Two platform limits the switches cannot get past:
+
+- **TRIM cannot work.** The core honours it and would issue discards, but the
+  FSKit block device on macOS 26 exposes no TRIM/UNMAP primitive (checked
+  against the 26.2 SDK: the only "trim" in FSKit is file-level preallocation
+  trimming on close). The bridge reports `discard_granularity 0` and the core
+  never asks. The switch is disabled with that reason beneath it; the setting
+  is kept so it takes effect the day the primitive exists.
+- **Read-only is enforced, not advertised.** FSKit lets the kernel tell an
+  extension a mount is read-only (`--rdonly`); there is no path the other way.
+  So with the switch on, every write is refused, but the VFS mount stays `rw`:
+  Finder shows no lock badge and the kernel rewrites our `EROFS` to `EACCES`
+  ("Permission denied") because the mount is not `MNT_RDONLY`.
+
+Two traps found while verifying, both recorded in `docs/TESTING.md`:
+
+- `defaults write group.ch.techtag.ntfs …` from a shell writes to
+  `~/Library/Preferences/`; the sandboxed extension reads
+  `~/Library/Group Containers/group.ch.techtag.ntfs/Library/Preferences/`.
+  Probing that way made three switches look like mocks.
+- The kernel marks `.flags` valid on every create with value 0, and mapping
+  that through `fileAttributes()` cleared `FILE_ATTR_HIDDEN` -- undoing what
+  `hide_dot_files` had just set, and leaving `$STANDARD_INFORMATION` and
+  `$FILE_NAME` disagreeing. `applyCreateAttributes` now applies flags at
+  create only when the caller set some.
+
+Not offered as switches, on purpose: automatic journal replay (opt-in per
+volume by decision), `errors=continue` (data loss), `uid`/`gid`/`umask`
+(meaningless under `noowners`), and the allocator tuning knobs.
+
 - **Discarding a hibernation image is the one read-only case we can fix.**
   Windows' Fast Startup saves a kernel session into `hiberfil.sys` and resumes
   from it, including its own cached picture of this filesystem, so writing

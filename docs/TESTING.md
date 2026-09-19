@@ -218,6 +218,12 @@ extraction moved the comment with it and changed nothing else.
   Probing the Settings switches that way made three of them look like mocks.
   Second time this trap has cost an hour (the first was the replay request).
   Write to the full group-container path, or flip the switch in the real app.
+* **The kernel sends `flags = 0` on every create, and 0 is not a request.**
+  `applyCreateAttributes` mapped it through the BSD-flags converter, which
+  clears `FILE_ATTR_HIDDEN` when `UF_HIDDEN` is absent -- so `hide_dot_files`
+  set the bit and the next call cleared it, leaving `$SI` plain and `$FN`
+  hidden. The two-copies-disagree shape again. When a create-time attribute
+  carries a default value, ask whether the caller meant it before applying it.
 * **When a symptom will not reproduce locally, read the damaged bytes.** Three
   round trips were spent attributing broken symlinks to two different things
   in our own code -- each fit the sequence, neither reproduced through the raw
