@@ -29,7 +29,14 @@ enum SharedDefaults {
     static let pendingJournalReplay = "pendingJournalReplay"
 }
 
-struct MountOptions {
+/*
+ * Named NTFSMountOptions, not MountOptions: the FSKit SDK in Xcode 26.6 adds
+ * FSVolume.MountOptions, and inside a class that inherits from FSVolume an
+ * unqualified `MountOptions` resolves to Apple's type first. That broke the
+ * build on GitHub's macos-26 runner (Xcode 26.6) while Xcode 26.2 locally
+ * compiled it fine. A prefix is cheaper than qualifying every use.
+ */
+struct NTFSMountOptions {
     var readOnly = false          // Settings toggle or -o ro
     var kernelReadOnly = false    // --rdonly from FSKit / mount -r: the kernel already has MNT_RDONLY
     var force = false             // -f
@@ -49,8 +56,8 @@ struct MountOptions {
     /// using a layout that has not been checked against Windows.
     var replayJournal = false
 
-    static func fromDefaults() -> MountOptions {
-        var o = MountOptions()
+    static func fromDefaults() -> NTFSMountOptions {
+        var o = NTFSMountOptions()
         guard let d = UserDefaults(suiteName: SharedDefaults.suite) else { return o }
         o.readOnly = d.bool(forKey: SharedDefaults.readOnly)
         // SettingsView's default for showHidden is true; the key is absent until toggled.

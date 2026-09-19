@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// MountOptions: the boolean -> ntfs_mount_flags mapping and the -o option list.
+// NTFSMountOptions: the boolean -> ntfs_mount_flags mapping and the -o option list.
 // Both are pure, and both sit between the user and a filesystem that will be
 // written to, so a flag landing on the wrong bit is not a cosmetic mistake:
 // NTFS_MOUNT_DISCARD_HIBERNATION destroys a suspended Windows session.
@@ -13,7 +13,7 @@ final class MountOptionsTests: XCTestCase {
 
     /// Every toggle with the bit it is supposed to set. Written out rather than
     /// derived so that the table itself is the statement of intent.
-    private static let mapping: [(String, (inout MountOptions) -> Void, UInt32)] = [
+    private static let mapping: [(String, (inout NTFSMountOptions) -> Void, UInt32)] = [
         ("readOnly",                 { $0.readOnly = true },                 NTFS_MOUNT_RDONLY.rawValue),
         ("hideHidden",               { $0.hideHidden = true },               NTFS_MOUNT_HIDE_HIDDEN.rawValue),
         ("showSystem",               { $0.showSystem = true },               NTFS_MOUNT_SHOW_SYSTEM.rawValue),
@@ -27,12 +27,12 @@ final class MountOptionsTests: XCTestCase {
     /// The read-only fallback is unconditional: PORTING.md §6 says a dirty or
     /// hibernated volume mounts read-only with an explanation, never fails.
     func testDefaultsAskOnlyForTheReadOnlyFallback() {
-        XCTAssertEqual(MountOptions().cFlags, NTFS_MOUNT_RDONLY_FALLBACK.rawValue)
+        XCTAssertEqual(NTFSMountOptions().cFlags, NTFS_MOUNT_RDONLY_FALLBACK.rawValue)
     }
 
     func testEachToggleSetsItsOwnBitAndNothingElse() {
         for (name, set, bit) in Self.mapping {
-            var o = MountOptions()
+            var o = NTFSMountOptions()
             set(&o)
             XCTAssertEqual(o.cFlags, NTFS_MOUNT_RDONLY_FALLBACK.rawValue | bit,
                            "\(name) does not map to the expected flag bit")
@@ -49,7 +49,7 @@ final class MountOptionsTests: XCTestCase {
     }
 
     func testCombinationsOrTogether() {
-        var o = MountOptions()
+        var o = NTFSMountOptions()
         o.readOnly = true
         o.showSystem = true
         o.caseSensitive = true
@@ -61,7 +61,7 @@ final class MountOptionsTests: XCTestCase {
     }
 
     func testEveryToggleAtOnce() {
-        var o = MountOptions()
+        var o = NTFSMountOptions()
         var expected = NTFS_MOUNT_RDONLY_FALLBACK.rawValue
         for (_, set, bit) in Self.mapping {
             set(&o)
@@ -74,7 +74,7 @@ final class MountOptionsTests: XCTestCase {
     /// core is told: the kernel has already set MNT_RDONLY, and -f is ours.
     /// Neither may leak into the flags word.
     func testKernelReadOnlyAndForceDoNotReachTheCore() {
-        var o = MountOptions()
+        var o = NTFSMountOptions()
         o.kernelReadOnly = true
         o.force = true
         XCTAssertEqual(o.cFlags, NTFS_MOUNT_RDONLY_FALLBACK.rawValue)
@@ -84,9 +84,9 @@ final class MountOptionsTests: XCTestCase {
     /// an explicit per-mount request can set them. Guards against a default that
     /// would discard a suspended Windows session on every mount.
     func testDestructiveOptionsAreOffByDefaultAndNotReachableFromAnOptionList() {
-        XCTAssertFalse(MountOptions().discardHibernation)
-        XCTAssertFalse(MountOptions().replayJournal)
-        var o = MountOptions()
+        XCTAssertFalse(NTFSMountOptions().discardHibernation)
+        XCTAssertFalse(NTFSMountOptions().replayJournal)
+        var o = NTFSMountOptions()
         o.applyList("discardhibernation,replayjournal,discard_hibernation,replay_journal")
         XCTAssertFalse(o.discardHibernation)
         XCTAssertFalse(o.replayJournal)
@@ -94,8 +94,8 @@ final class MountOptionsTests: XCTestCase {
 
     // MARK: -o option lists
 
-    private func options(_ list: String) -> MountOptions {
-        var o = MountOptions()
+    private func options(_ list: String) -> NTFSMountOptions {
+        var o = NTFSMountOptions()
         o.applyList(list)
         return o
     }
@@ -166,9 +166,9 @@ final class MountOptionsTests: XCTestCase {
     }
 
     func testEmptyAndDegenerateListsChangeNothing() {
-        XCTAssertEqual(options("").cFlags, MountOptions().cFlags)
-        XCTAssertEqual(options(",").cFlags, MountOptions().cFlags)
-        XCTAssertEqual(options(",,,").cFlags, MountOptions().cFlags)
+        XCTAssertEqual(options("").cFlags, NTFSMountOptions().cFlags)
+        XCTAssertEqual(options(",").cFlags, NTFSMountOptions().cFlags)
+        XCTAssertEqual(options(",,,").cFlags, NTFSMountOptions().cFlags)
         XCTAssertEqual(options(",ro,,").cFlags,
                        NTFS_MOUNT_RDONLY_FALLBACK.rawValue | NTFS_MOUNT_RDONLY.rawValue)
     }
@@ -179,11 +179,11 @@ final class MountOptionsTests: XCTestCase {
         XCTAssertTrue(options("CASE_SENSITIVE").caseSensitive)
     }
 
-    /// applyList is applied repeatedly over one MountOptions (defaults first,
+    /// applyList is applied repeatedly over one NTFSMountOptions (defaults first,
     /// then loadResource, then activate), so it must accumulate rather than
     /// reset. A second list that says nothing about read-only must not clear it.
     func testApplyingASecondListAccumulates() {
-        var o = MountOptions()
+        var o = NTFSMountOptions()
         o.applyList("ro")
         o.applyList("showsystem")
         XCTAssertTrue(o.readOnly)

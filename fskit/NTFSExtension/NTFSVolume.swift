@@ -26,7 +26,7 @@ final class NTFSVolume: FSVolume {
     let device: OpaquePointer                        // struct ntfs_bdev *
     let bsdName: String
     let coreLabel: String
-    private(set) var options: MountOptions
+    private(set) var options: NTFSMountOptions
     private var vol: OpaquePointer?                  // ntfs_volume_t *
     private var root: NTFSItem?
     private let itemsLock = NSLock()
@@ -41,7 +41,7 @@ final class NTFSVolume: FSVolume {
     private(set) var roReason: Int32 = 0
 
     init(volumeID: FSVolume.Identifier, volumeName: FSFileName,
-         device: OpaquePointer, bsdName: String, label: String, options: MountOptions) {
+         device: OpaquePointer, bsdName: String, label: String, options: NTFSMountOptions) {
         self.device = device
         self.bsdName = bsdName
         self.coreLabel = label

@@ -41,6 +41,15 @@ ensure_autotools() {
 	if [ -n "${NTFS_AUTOTOOLS_BIN:-}" ]; then
 		export PATH="$NTFS_AUTOTOOLS_BIN:$PATH"
 	fi
+	# Homebrew installs GNU libtool's script as glibtoolize, keeping the
+	# unprefixed name for Apple's unrelated libtool. autoreconf finds it if
+	# LIBTOOLIZE says so. Without this, a Homebrew-only machine -- every
+	# GitHub macOS runner -- fails here with everything installed.
+	if command -v autoreconf >/dev/null 2>&1 && command -v glibtoolize >/dev/null 2>&1 &&
+	   ! command -v libtoolize >/dev/null 2>&1; then
+		export LIBTOOLIZE="$(command -v glibtoolize)"
+		return 0
+	fi
 	if command -v autoreconf >/dev/null 2>&1 && command -v libtoolize >/dev/null 2>&1; then
 		return 0
 	fi

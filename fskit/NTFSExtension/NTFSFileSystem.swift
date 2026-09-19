@@ -95,7 +95,7 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
             return
         }
         let name = NTFSFileSystem.label(from: info)
-        var mountOptions = MountOptions.fromDefaults()
+        var mountOptions = NTFSMountOptions.fromDefaults()
         mountOptions.apply(taskOptions: options)
         /*
          * One-shot requests from the app, consumed here so they cannot apply
@@ -117,11 +117,11 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
         if ntfs_bdev_fskit_is_read_only(dev) {
             log.debug("\(block.bsdName, privacy: .public): read-only handle; leaving one-shot requests pending")
         } else {
-            if MountOptions.takeJournalReplayRequest(for: block.bsdName) {
+            if NTFSMountOptions.takeJournalReplayRequest(for: block.bsdName) {
                 mountOptions.replayJournal = true
                 log.notice("\(block.bsdName, privacy: .public): replaying the journal at the user's request")
             }
-            if MountOptions.takeHibernationDiscardRequest(for: block.bsdName) {
+            if NTFSMountOptions.takeHibernationDiscardRequest(for: block.bsdName) {
                 mountOptions.discardHibernation = true
                 log.notice("\(block.bsdName, privacy: .public): discarding the saved Windows hibernation image at the user's request")
             }
