@@ -1,64 +1,135 @@
+<p align="center"><img src="site/icon.png" width="128" height="128" alt=""></p>
+
 # TT NTFS Native
 
-A free, open-source, kext-less NTFS read/write driver for macOS: the Linux 7.1
-`ntfs` driver (ntfsplus) ported to a user-space FSKit file system extension.
+**NTFS read & write for macOS. No kernel extension. Free and open source.**
 
-No kernel extension. No Reduced Security. No reboot. GPL-2.0.
+Mount NTFS disks and volumes in Finder — read *and* write — without lowering your
+Mac's security or rebooting. Built on Apple's FSKit, so it runs in user space like
+a normal app. GPL-2.0, and verified against Windows itself.
 
-## Status (2026-09-14)
+**[Download](https://github.com/dr-kbadawi/ttntfs/releases/latest/download/TT-NTFS-Native.dmg)** ·
+[Website](https://dr-kbadawi.github.io/ttntfs/) ·
+[Release notes](RELEASE-NOTES.md) ·
+[Report a problem](https://github.com/dr-kbadawi/ttntfs/issues)
 
-Phases 0 to 3 are done. Real NTFS disks mount read/write in Finder on macOS 26.3
-and 26.6.2, from a notarized Developer ID DMG whose app enables its own
-extension.
+macOS 26 or later · Apple Silicon · 1.6 MB · notarized by Apple
 
-**Windows has checked our writes.** On 2026-09-14 `chkdsk /f` (Windows 10,
-19045) reported no problems on a volume this driver had written 626 files to --
-covering the resident/non-resident boundary, fragmented 200 MiB files, a
-500-entry index B-tree, 255-unit and CJK and NFC-vs-NFD names, alternate data
-streams, hard links, symlinks, and a delete/rename churn -- and all 626 files
-then verified byte-for-byte on the way back. Both halves matter: chkdsk repairs
-what it finds, so a clean verdict alone would not have been enough. Procedure
-and scripts are in `tools/phase2-gate/`.
+## The first of its kind
 
-Windows also opens those files normally, which `chkdsk` alone does not
-establish -- it validates structure without ever opening anything.
+Until now, writing to NTFS on a Mac meant one of two things: pay for a driver
+that loads a kernel extension — which on Apple Silicon requires putting the
+whole machine into Reduced Security and rebooting — or run an open-source FUSE
+stack that needs a kernel extension of its own. Apple's built-in driver reads
+NTFS but has not written to it since Ventura.
 
-Compressed folders are covered too: Windows reads back our modifications to a
-file it compressed itself, byte for byte, and `chkdsk` finds nothing. Files we
-*create* in such a folder are valid but not themselves compressed -- a gap,
-recorded.
+**TT NTFS Native is the first NTFS read/write driver for macOS that is free,
+open source, and needs no kernel extension at all.** It installs like an app,
+runs with your Mac's security fully intact, and can be read, audited and
+improved by anyone.
 
-That is one Windows build, one disk, one pass; it is not a warranty. Journal
-replay remains the unproven part -- see below -- so keep a backup of anything
-you cannot replace.
+## Why it's different
 
-Journal replay stays off unless you ask for it per volume, at your own risk --
-but it is verified rather than inferred. Four phase 4 scenarios have been run
-against real Windows 10 crash captures, replaying each journal both here and on
-Windows and comparing the results: file creation, directory index recovery (448
-records, 50 index operations), file extension (1113 records, 276 runlist
-updates), and `chkdsk` on a volume only our replay recovered. All four match.
-See `docs/LOGFILE.md`.
+- **No kernel extension.** Full Security stays on. No reboot, no Recovery Mode,
+  no third-party code in the kernel. Uninstalling is dragging an app to the Trash.
+- **Verified against Windows.** Not just self-tested. Volumes this driver wrote
+  were checked by Windows' own `chkdsk`, and its crash repair was compared record
+  for record against what Windows does with the same damaged disk.
+- **Symlinks that work both ways.** Links made on the Mac open on Windows.
+  Junctions and directory links made on Windows resolve on the Mac. No other open
+  driver manages both.
+- **Honest about the journal.** A volume Windows didn't eject cleanly mounts
+  read-only and tells you exactly why. Repairing it is one click, does what
+  Windows would do, and is never silent or automatic.
+- **Open source, all of it.** The driver, the app, the tests, and the engineering
+  notes — including every bug found along the way and how it was found.
+- **Small and native.** A menu-bar app and a system extension, in C and Swift.
+  No background daemons, no telemetry, no account.
 
-A volume whose journal Windows left open -- which is what a normal Fast Startup
-shutdown does to an attached disk -- mounts read-only and the menu bar offers
-**Close Journal**, which writes two pages and touches no files. A journal with
-genuine unfinished work says **Replay Journal** instead and warns accordingly.
+## Compared with the alternatives
 
-Performance, against Apple's own FSKit exFAT module on matched images: ahead on
-streaming writes, level on overwrite and append, within the "2x of exFAT" bar on
-every metadata operation. Sequential reads on a USB SSD are within about 11% of
-Apple's built-in driver, close to the enclosure's ceiling.
+Verified September 2026 against each vendor's shipped installer and
+documentation. Full table with sources, including iBoysoft and EaseUS, in
+[`docs/COMPARISON.md`](docs/COMPARISON.md).
 
-Not yet: x86_64 (arm64 only), format, repair, a Homebrew cask.
+| | TT NTFS Native | Apple built-in | Paragon 18 | Tuxera 26 | NTFS-3G + macFUSE |
+|---|---|---|---|---|---|
+| Price | **free** | free | $29.95 / major version | $28.95 | free |
+| Open source | **yes, GPL-2.0** | no | no | no | yes |
+| Kernel extension | **none** | none | required | required | required |
+| Full Security on Apple Silicon | **yes** | yes | no | no | no by default |
+| Write to NTFS | **yes** | no, removed since Ventura | yes | yes | yes |
+| Mac-made symlinks open on Windows | **yes, verified** | — | ? | ? | no, by its manual |
+| Windows junctions resolve on the Mac | **yes, verified** | no | ? | yes | yes |
+| Repairs a volume after a crash | **yes — opt-in, reproduces Windows** | no | not claimed | yes, undocumented, automatic | no — clears the log |
+| When repair cannot proceed | **refuses, writes nothing** | — | — | resets the journal, mounts anyway | — |
+| Per-volume status in the menu bar | **yes** | no | yes | yes | no |
+| Create compressed files | not yet | — | ? | experimental | yes |
+| Intel Macs | not yet | yes | yes | yes | yes |
+| Format NTFS | no, by design | no | yes | yes | yes |
+
+## Performance
+
+Absolute throughput depends on the disk and the enclosure, so the only honest
+comparison is against another driver on the same hardware. Same 1 TB USB SSD,
+same files, identical test, against Apple's built-in NTFS driver — the only
+other kext-free option, and read-only:
+
+- **+22%** faster sequential reads
+- **+30%** faster random 4 KiB reads
+- delete time **flat** regardless of directory size
+- streaming writes **faster than Apple's own exFAT** driver on the same disk
+
+The driver is not the bottleneck on ordinary USB storage: through the same code
+on fast internal storage, writes sustain several times the USB figure. Random
+small-block writes are the one area where it still trails; recorded as open
+work. Method and raw figures in `docs/progress/`.
+
+## How it was tested
+
+A file system that writes to your disks should be held to a higher standard than
+"it seemed to work". The bar here was Windows itself.
+
+- **626 files** written by this driver, then checked by Windows `chkdsk`: no
+  problems, and every file read back byte-for-byte. Covers the resident /
+  non-resident boundary, fragmented 200 MiB files, a 500-entry index B-tree,
+  255-unit, CJK and NFC-vs-NFD names, alternate data streams, hard links,
+  symlinks, and a delete/rename churn. Procedure in `tools/phase2-gate/`.
+- **4 of 4 real Windows crashes** with work to recover, captured on hardware:
+  the driver's repair matched Windows' own on every one, record for record. In
+  one test Windows never saw the journal — it only checked a volume this driver
+  had already repaired — and found nothing to fix. See `docs/LOGFILE.md`.
+- **3,400+ automated checks** across 15 test suites, run under the
+  undefined-behaviour sanitizer on every push.
+- **Two dozen defects** found and fixed along the way — nine of them in the
+  Linux driver it was ported from — each with a test that fails if it comes
+  back. The ledger is `docs/UPSTREAM-BUGS.md`.
+
+## What works today
+
+| | |
+|---|---|
+| Read and write, in Finder and the Terminal | yes |
+| Long, Unicode and Windows-illegal names | yes — illegal names refused by default, switchable |
+| Hard links, symlinks, alternate data streams | yes, verified on Windows |
+| Reading compressed and sparse files | yes |
+| Writing inside a Windows-compressed folder | yes — new files are stored uncompressed |
+| Repair after a crash or unclean shutdown | yes — the same journal recovery Windows performs; opt-in per volume |
+| 4Kn (native 4 KiB sector) disks | yes, measured |
+| Creating compressed files | not yet |
+| Intel Macs | not yet — Apple Silicon only |
+| Format a disk as NTFS | no, by design — NTFS is for disks that come from Windows; a blank disk on a Mac should be exFAT |
+| Repair structural corruption (bad records, orphaned files) | no — that is `chkdsk`'s job; this driver will not make a damaged volume worse |
+| TRIM on SSDs | not possible — FSKit gives file systems no way to issue it |
 
 ## Using it
 
 Install from the DMG, open the app, and press **Enable Extension**. The System
 Settings switch for File System Extensions does not work for any third-party
-FSKit module on macOS 26 -- `fskitd` refuses the call from every caller lacking
-a private Apple entitlement -- which is why the app is unsandboxed and enables
-itself. `fskit/README.md` has the detail, the evidence, and the known issues.
+FSKit module on macOS 26 — `fskitd` refuses the call from every caller lacking a
+private Apple entitlement — which is why the app is unsandboxed and enables
+itself. `fskit/README.md` has the detail, the evidence, and the known issues,
+including what every switch in Settings actually does.
 
 ## Building
 
@@ -78,8 +149,8 @@ tools/ci.sh --quick      # skip the slow fixture suite
 tools/install-hooks.sh   # run --quick before every push
 ```
 
-Four suites: **15 `ctest` targets (~2,700 checks)**, 265 fixture checks against
-ntfsprogs as ground truth plus a real structural `fsck`, 51 Swift unit tests,
+Four suites: **15 `ctest` targets (~3,200 checks)**, 265 fixture checks against
+ntfsprogs as ground truth plus a real structural `fsck`, 52 Swift unit tests,
 and a manual end-to-end mount test. Everything runs twice, instrumented with
 UBSan and not. **`docs/TESTING.md` says what each covers and, more usefully,
 what is still not covered.**
