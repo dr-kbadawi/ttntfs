@@ -9,7 +9,7 @@ Mac's security or rebooting. Built on Apple's FSKit, so it runs in user space li
 a normal app. GPL-2.0, and verified against Windows itself.
 
 **[Download](https://github.com/dr-kbadawi/ttntfs/releases/latest/download/TT-NTFS-Native.dmg)** ·
-[Website](https://dr-kbadawi.github.io/ttntfs/) ·
+[Website](https://ntfs.techtag.ch/) ·
 [Release notes](RELEASE-NOTES.md) ·
 [Report a problem](https://github.com/dr-kbadawi/ttntfs/issues)
 
