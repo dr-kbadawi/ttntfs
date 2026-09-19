@@ -149,7 +149,7 @@
     </div>
     <div class="card">
       <h3>Honest about the journal</h3>
-      <p>A volume Windows didn’t eject cleanly mounts read-only and tells you exactly why. Recovery is one click, per volume, never silent, never automatic.</p>
+      <p>A volume Windows didn’t eject cleanly mounts read-only and tells you exactly why. Repairing it is one click, does what Windows would do, and is never silent or automatic.</p>
     </div>
     <div class="card">
       <h3>Open source, all of it</h3>
@@ -175,7 +175,7 @@
     <tr><td>Write to NTFS</td><td class="us">yes</td><td class="no">no, removed since Ventura</td><td>yes</td><td>yes</td><td>yes</td></tr>
     <tr><td>Symlinks made on the Mac open on Windows</td><td class="us">yes, verified</td><td>—</td><td>?</td><td>?</td><td class="no">no, by its own manual</td></tr>
     <tr><td>Windows junctions and directory links resolve</td><td class="us">yes, verified</td><td class="no">no, shown as plain files</td><td>?</td><td>yes</td><td>yes</td></tr>
-    <tr><td>Journal recovery after a Windows crash</td><td class="us">yes — opt-in, verified against Windows</td><td class="no">no</td><td class="no">not claimed</td><td>yes, undocumented, automatic</td><td class="no">no — clears the log instead</td></tr>
+    <tr><td>Repairs a volume after a crash</td><td class="us">yes — opt-in, reproduces Windows’ result</td><td class="no">no</td><td class="no">not claimed</td><td>yes, undocumented, automatic</td><td class="no">no — clears the log instead</td></tr>
     <tr><td>When recovery cannot proceed</td><td class="us">refuses, writes nothing</td><td>—</td><td>—</td><td class="no">resets the journal and mounts anyway</td><td>—</td></tr>
     <tr><td>Per-volume status in a menu bar</td><td class="us">yes</td><td class="no">no</td><td>yes</td><td>yes</td><td class="no">no</td></tr>
     <tr><td>Hard links, streams, compressed files</td><td class="us">yes</td><td>read only</td><td>yes</td><td>yes</td><td>yes</td></tr>
@@ -189,15 +189,15 @@
 
 <section id="performance">
   <h2>Performance</h2>
-  <p>Measured on the same 1 TB USB SSD, same files, identical test, against Apple’s built-in NTFS driver — the only other kext-free option, and read-only.</p>
+  <p>Absolute throughput depends on the disk and the enclosure, so the only honest comparison is against another driver on the same hardware. Measured on the same 1 TB USB SSD, same files, identical test, against Apple’s built-in NTFS driver — the only other kext-free option, and read-only:</p>
   <div class="stats">
-    <div class="stat"><div class="n">+22%</div><div class="l">sequential read vs Apple’s driver<br>59 MB/s vs 48 MB/s</div></div>
-    <div class="stat"><div class="n">+30%</div><div class="l">random 4 KiB reads vs Apple’s driver<br>141 vs 108 IOPS</div></div>
-    <div class="stat"><div class="n">87 MB/s</div><div class="l">sustained write on that USB SSD</div></div>
-    <div class="stat"><div class="n">466 MB/s</div><div class="l">sustained write through the same driver on fast storage</div></div>
+    <div class="stat"><div class="n">+22%</div><div class="l">faster sequential reads than Apple’s driver</div></div>
+    <div class="stat"><div class="n">+30%</div><div class="l">faster random 4 KiB reads than Apple’s driver</div></div>
+    <div class="stat"><div class="n">flat</div><div class="l">delete time regardless of directory size</div></div>
+    <div class="stat"><div class="n">faster</div><div class="l">streaming writes than Apple’s own exFAT driver on the same disk</div></div>
   </div>
-  <p>On that USB enclosure both drivers were limited by the enclosure itself, which accepts one command at a time; the last figure shows the driver’s own ceiling is far higher. Deletes are near-constant time regardless of directory size, and streaming writes outpace Apple’s own exFAT driver on the same hardware.</p>
-  <p class="note">Numbers from <a href="https://github.com/dr-kbadawi/ttntfs/blob/main/docs/">the repository’s benchmark notes</a>, September 2026. Random small-block writes are the one place the driver still trails; it is recorded as open work.</p>
+  <p>The driver is not the bottleneck on ordinary USB storage: through the same code on fast internal storage, writes sustain several times the USB figure. Random small-block writes are the one area where it still trails, and that is recorded as open work.</p>
+  <p class="note">Method and raw figures in <a href="https://github.com/dr-kbadawi/ttntfs/blob/main/docs/">the repository’s benchmark notes</a>, September 2026.</p>
 </section>
 
 <section id="tested">
@@ -222,12 +222,12 @@
     <tr><td>Hard links, symlinks, alternate data streams</td><td class="yes">yes, verified on Windows</td></tr>
     <tr><td>Reading compressed and sparse files</td><td class="yes">yes</td></tr>
     <tr><td>Writing inside a Windows-compressed folder</td><td class="yes">yes — new files are stored uncompressed</td></tr>
-    <tr><td>Journal recovery after a Windows crash</td><td class="yes">yes — opt-in per volume, reproduces Windows</td></tr>
+    <tr><td>Repair after a crash or unclean shutdown</td><td class="yes">yes — the same journal recovery Windows performs, reproducing its result; opt-in per volume</td></tr>
     <tr><td>4Kn (native 4 KiB sector) disks</td><td class="yes">yes, measured</td></tr>
     <tr><td>Creating compressed files</td><td class="no">not yet</td></tr>
     <tr><td>Intel Macs</td><td class="no">not yet — Apple Silicon only</td></tr>
     <tr><td>Format a disk as NTFS</td><td class="no">no, by design — see the FAQ</td></tr>
-    <tr><td>Repair a damaged volume</td><td class="no">no — Windows <code>chkdsk</code> is the tool; this driver will not make a damaged volume worse</td></tr>
+    <tr><td>Repair structural corruption (bad records, orphaned files)</td><td class="no">no — that is <code>chkdsk</code>’s job; this driver will not make a damaged volume worse</td></tr>
     <tr><td>TRIM on SSDs</td><td class="no">not possible — FSKit gives file systems no way to issue it</td></tr>
   </table>
   </div>
@@ -268,7 +268,8 @@
   </details>
   <details>
     <summary>Can it repair a damaged NTFS volume?</summary>
-    <p>Repair means Windows <code>chkdsk</code>. What this driver does is narrower and safer: it recovers the journal after a crash the way Windows would, and if it cannot do that safely it refuses to write rather than guess. It will not make a damaged volume worse, and it tells you what it found.</p>
+    <p>Yes, for the damage that actually happens: a crash, a power cut, a disk pulled without ejecting, a Windows shutdown with Fast Startup on. In all of those Windows repairs the volume by replaying its journal when you next plug it in. This driver does the same, and on every real crash captured on hardware its result matched Windows’ record for record. The one difference is that it asks first.</p>
+    <p>What it does not do is <code>chkdsk</code>’s deep structural repair — rebuilding corrupted records or reattaching orphaned files. That is rare, it is Windows’ job, and this driver will never make such a volume worse: if the journal cannot be recovered safely it refuses to write rather than guess.</p>
   </details>
   <details>
     <summary>Is it really free? What’s the catch?</summary>
