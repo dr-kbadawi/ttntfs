@@ -39,7 +39,22 @@ struct SettingsView: View {
                 Toggle("Allow file names Windows cannot open (: ? * < > | \")", isOn: $allowIllegal)
                 Text("Off: such names are rejected so everything written here opens on Windows.")
                     .font(.caption).foregroundStyle(.secondary)
+                /*
+                 * Wired all the way to the allocator (NVolDiscard in
+                 * lcnalloc.c), which does issue discards -- but the FSKit
+                 * block device on macOS 26 has no TRIM/UNMAP primitive
+                 * (checked against the 26.2 SDK: the only "trim" in FSKit is
+                 * file-level preallocation trimming on close), so the bridge
+                 * reports discard_granularity 0 and the core never asks.
+                 * Leaving the switch enabled would be a mock. Disabled, with
+                 * the reason on it, until Apple adds the primitive; the
+                 * setting is still stored so it takes effect the day it can.
+                 */
                 Toggle("TRIM freed space (SSDs)", isOn: $discard)
+                    .disabled(true)
+                Text("Not available: macOS's FSKit gives file systems no way to issue TRIM. "
+                     + "The setting is kept and will take effect when it does.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Text("Changes apply to volumes mounted from now on.")

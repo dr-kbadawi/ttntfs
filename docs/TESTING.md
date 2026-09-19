@@ -211,6 +211,13 @@ extraction moved the comment with it and changed nothing else.
   (entry 1 is at `RT_HEADER_SIZE + OA1_SIZE`); and an all-zero payload makes an
   update-sequence test vacuous, because the sector tails then trivially match a
   zero USN. Both cost an afternoon.
+* **A sandboxed extension reads the app-group container, not `~/Library/Preferences`.**
+  `defaults write group.ch.techtag.ntfs …` from a shell lands in
+  `~/Library/Preferences/group.ch.techtag.ntfs.plist`; the extension reads
+  `~/Library/Group Containers/group.ch.techtag.ntfs/Library/Preferences/…`.
+  Probing the Settings switches that way made three of them look like mocks.
+  Second time this trap has cost an hour (the first was the replay request).
+  Write to the full group-container path, or flip the switch in the real app.
 * **When a symptom will not reproduce locally, read the damaged bytes.** Three
   round trips were spent attributing broken symlinks to two different things
   in our own code -- each fit the sequence, neither reproduced through the raw
