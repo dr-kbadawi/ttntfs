@@ -73,6 +73,16 @@ echo "==> building the disk image"
 mkdir -p "$OUT" "$STAGE/vol"
 cp -R "$APP" "$STAGE/vol/"
 ln -s /Applications "$STAGE/vol/Applications"
+# Volume icon: the same artwork as the app. Finder shows a mounted image's
+# icon from a hidden .VolumeIcon.icns at its root plus the custom-icon flag on
+# the root folder. UDZO is read-only once made, so both must go into the
+# staging folder before hdiutil, and hdiutil -srcfolder preserves the flag.
+ICNS="$FSKIT/Design/AppIcon.icns"
+if [ -f "$ICNS" ]; then
+	cp "$ICNS" "$STAGE/vol/.VolumeIcon.icns"
+	SetFile -a C "$STAGE/vol" 2>/dev/null || xattr -wx com.apple.FinderInfo \
+		0000000000000000040000000000000000000000000000000000000000000000 "$STAGE/vol"
+fi
 rm -f "$DMG"
 hdiutil create -volname "$NAME" -srcfolder "$STAGE/vol" -ov -format UDZO "$DMG" >/dev/null
 

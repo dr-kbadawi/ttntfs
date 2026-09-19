@@ -26,6 +26,12 @@ settings:
     CLANG_WARN_DOCUMENTATION_COMMENTS: NO
     GCC_TREAT_WARNINGS_AS_ERRORS: NO
     SWIFT_STRICT_CONCURRENCY: minimal
+    # Version stamping. Defaults for a plain `xcodebuild`; scripts/package.sh
+    # overrides all three from VERSION and git via scripts/version.sh. Both
+    # Info.plists read them, and SettingsView shows them.
+    MARKETING_VERSION: "0.4.1"
+    CURRENT_PROJECT_VERSION: "0"
+    TT_GIT_COMMIT: "xcode"
   configs:
     Debug:
       SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
@@ -60,7 +66,12 @@ targets:
         CFBundleName: TT NTFS Native
         LSUIElement: true                    # menu-bar app, no Dock icon
         LSApplicationCategoryType: public.app-category.utilities
-        NSHumanReadableCopyright: "GPL-2.0"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        TTGitCommit: "$(TT_GIT_COMMIT)"
+        # GPL-2.0 s.1 and s.2(c): the copyright notice and the no-warranty
+        # statement belong where the user can see them. COPYRIGHT has the rest.
+        NSHumanReadableCopyright: "Copyright © 2026 TechTag GmbH. Free software under the GNU GPL v2; no warranty."
     # Deliberately NOT sandboxed. The app enables the FSKit module itself by
     # writing fskit_agent's list in the Apple-restricted group container and
     # restarting the agent; both are out of reach under the sandbox, and the
@@ -102,6 +113,10 @@ targets:
     info:
       path: NTFSExtension/Info.plist
       properties:
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        TTGitCommit: "$(TT_GIT_COMMIT)"
+        NSHumanReadableCopyright: "Copyright © 2026 TechTag GmbH. Free software under the GNU GPL v2; no warranty."
         CFBundleDisplayName: TT NTFS Native
         CFBundleName: NTFSExtension
         EXAppExtensionAttributes:
