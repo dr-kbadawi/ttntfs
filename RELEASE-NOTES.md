@@ -1,5 +1,38 @@
 # TT NTFS Native — release notes
 
+## 0.4.1 — 2026-09-19
+
+### Every switch in Settings now does what it says
+
+Each of the switches was traced from the window to the point on disk where it
+takes effect, then exercised live in both states through the installed
+extension. Seven were already real. Two changes fell out:
+
+* **TRIM is disabled, with the reason beneath it.** The setting is wired all the
+  way to the allocator, but macOS's FSKit gives a file system no way to issue
+  TRIM at all -- checked against the current SDK. An enabled switch that does
+  nothing is a mock. The setting is kept so it takes effect the day Apple adds
+  the primitive.
+* **Two new switches**, under Compatibility:
+  * *Hide macOS dot-files from Windows* -- `.DS_Store`, `._*`, `.Spotlight-V100`
+    and `.fseventsd` get the Windows hidden attribute when created, so Explorer
+    stops showing them on a shared disk.
+  * *Write symlinks in WSL format* -- off by default. On, every link uses the
+    WSL-only tag, which Windows itself cannot follow; for a disk used mainly
+    from WSL.
+
+Verifying the dot-file switch found a bug in the create path: the kernel passes
+an empty flags word on every new file, and it was being read as "clear the
+hidden bit", undoing what the option had just set. Fixed; `chflags` on existing
+files behaves as before.
+
+One thing worth knowing about *Mount volumes read-only*: it works -- every
+write is refused -- but FSKit gives a file system no way to tell the kernel the
+mount is read-only, so Finder shows no lock badge and the error reads
+"Permission denied" rather than "Read-only file system".
+
+---
+
 ## Build of 2026-09-19 -- version 0.4.0 (commit 18f7c70)
 
 ### Version and copyright, visible
