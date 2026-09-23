@@ -58,6 +58,16 @@
       test_create_in_compressed_directory fails 12 ways if the flag is set first.
       Subdirectories already inherit the marker. Needs a Windows round trip to verify.
 
+## Known, with the evidence
+
+- Disk Utility shows our volumes as "Unknown" (or "MS-DOS (FAT)" in `diskutil`),
+  because `FSShortName` must be `ttntfs` and `diskutil` resolves VolumeKind
+  against `/System/Library/Filesystems`. `ntfs` is taken: it fixes the label and
+  breaks the mount with ECONNREFUSED from `fskitd`. Measured 2026-09-23, see
+  docs/TESTING.md. Not fixable without Apple changing FSKit, or shipping a
+  `/Library/Filesystems/ttntfs.fs` bundle to teach `diskutil` our name -- which
+  is untested and would put a file outside the app bundle.
+
 ## Blocked on a decision
 - [x] Git remote, 2026-09-19: github.com/dr-kbadawi/ttntfs, public. GPL §3 is met
       from that moment. CI runs on every push (macos-26 runner) and is green.

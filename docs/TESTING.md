@@ -231,6 +231,35 @@ extraction moved the comment with it and changed nothing else.
   off the stick took one look: the bytes were a form nothing in this driver
   writes, and the only other writer was `chkdsk`. A sequence that fits a theory
   is not evidence for it; bytes are.
+* **`FSShortName: ntfs` is unavailable, and it costs the Disk Utility label.**
+  Measured 2026-09-23, because the original choice (`ttntfs`) was recorded only
+  as a commit subject -- "Apple's ntfs.fs owns NTFS" -- with no evidence.
+  Disk Arbitration's VolumeKind is the module's `FSShortName`, and `diskutil`
+  resolves that name against the filesystem bundles in
+  `/System/Library/Filesystems`. `ttntfs` matches nothing, so it falls back to
+  guessing from the partition type: **"MS-DOS (FAT)"** in the CLI, **Unknown**
+  in Disk Utility.app, for every Microsoft Basic Data volume we mount. Apple's
+  driver reports `ntfs`, which resolves to "Windows NT File System (NTFS)".
+  Note `f_fstypename` is `ntfs` for both -- the kernel name is not what
+  `diskutil` reads.
+
+  Setting `FSShortName: ntfs` fixes the label and breaks mounting. The module
+  registers, our side mounts successfully (`core: ntfs: mounted read-write`),
+  and then `fskitd` refuses: `ReallyMountVolume: returning Error
+  Domain=NSPOSIXErrorDomain Code=61` (ECONNREFUSED), preceded by `Could not get
+  file provider connection`, followed by an immediate unload. So the name is
+  genuinely taken. The wrong label is the price of a working mount.
+
+  **Reverting the plist is not enough to recover.** `fskitd` keeps per-volume
+  state that survives a replug, killing the extension, killing the fskit agent
+  and killing Apple's UserFS daemons. Only `sudo pkill -x fskitd` (or a reboot)
+  clears it, after which the volume mounts normally. A volume whose partition
+  type only we claim -- GPT Windows Recovery -- is unaffected throughout, which
+  is the quickest way to tell this state apart from a real driver fault.
+
+  **Run this class of experiment on a test image or the stick, never on a live
+  disk.** It was run on a 995 GB working volume because the stick was not
+  attached, and cost an hour of recovery.
 * **Verify what is on the disk before it leaves the desk.** A stick handed to
   Windows to test the new native symlinks turned out to carry the old WSL tags:
   `fskitd` had kept a stale extension instance resident across the reinstall and
