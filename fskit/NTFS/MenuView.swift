@@ -171,8 +171,9 @@ struct MenuView: View {
         }
     }
 
-    /// The System Settings switch cannot turn a third-party FSKit module on
-    /// (macOS 26.3 and 26.6.2), so we do it here instead. See ModuleEnabler.
+    /// On macOS 26 the System Settings switch cannot turn a third-party FSKit
+    /// module on (26.3 and 26.6.2), so we do it here; on 27 that switch is the
+    /// only path. See ModuleEnabler.
     @ViewBuilder private var enableFooter: some View {
         switch enabler.outcome {
         case .working:
@@ -182,6 +183,14 @@ struct MenuView: View {
             }
         case .succeeded:
             Text("Enabled.").font(.caption).foregroundStyle(.secondary)
+        case .needsSettings(let why):
+            VStack(alignment: .leading, spacing: 6) {
+                Text(why)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                enableButtons(title: "Open System Settings")
+            }
         case .blocked(let why), .failed(let why):
             VStack(alignment: .leading, spacing: 6) {
                 Text(why)
@@ -191,10 +200,13 @@ struct MenuView: View {
             }
         case .idle:
             VStack(alignment: .leading, spacing: 6) {
-                Text("Turn it on here — the switch in System Settings cannot enable third-party file system extensions on this version of macOS.")
+                Text(ModuleEnabler.usesSystemSettingsOnly
+                     ? "Turn the extension on in System Settings; this app will notice when it is enabled."
+                     : "Turn it on here — the switch in System Settings cannot enable third-party file system extensions on this version of macOS.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                enableButtons(title: "Enable Extension")
+                enableButtons(title: ModuleEnabler.usesSystemSettingsOnly
+                              ? "Open System Settings" : "Enable Extension")
             }
         }
     }

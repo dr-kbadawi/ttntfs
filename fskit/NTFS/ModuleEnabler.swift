@@ -31,6 +31,7 @@
 
 import Foundation
 import FSKit
+import AppKit
 import Darwin
 
 @MainActor
@@ -41,12 +42,25 @@ final class ModuleEnabler: ObservableObject {
         case succeeded
         /// Refused on purpose, with the reason to show the user.
         case blocked(String)
+        /// The user has to finish enablement in System Settings. The string is
+        /// the instruction to show, not an error.
+        case needsSettings(String)
         case failed(String)
     }
 
     @Published private(set) var outcome: Outcome = .idle
 
     static let moduleID = "ch.techtag.ntfs.extension"
+
+    /// macOS 27 no longer lets an app read or write fskit_agent's allowlist
+    /// without Apple's private entitlement. The supported switch is in System
+    /// Settings; the app can only open it and wait for FSKit to report the
+    /// module as enabled.
+    static var usesSystemSettingsOnly: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+    }
+
+    static let systemSettingsHint = "macOS 27 enables third-party file systems only in System Settings → General → Login Items & Extensions → File System Extensions. Turn the extension on there; this app will notice when it is enabled."
 
     private static var listURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -57,6 +71,15 @@ final class ModuleEnabler: ObservableObject {
 
     func enable() async {
         outcome = .working
+
+        if Self.usesSystemSettingsOnly {
+            Self.openSystemSettings()
+            outcome = .needsSettings(Self.systemSettingsHint)
+            if await Self.waitUntilEnabled(timeout: .seconds(300)) {
+                outcome = .succeeded
+            }
+            return
+        }
 
         // Restarting the agent drops volumes *our* module is serving. Volumes
         // mounted by Apple's ntfs driver survive it — verified 2026-09-13 on
@@ -94,6 +117,10 @@ final class ModuleEnabler: ObservableObject {
     /// mirror of `enable()`. Used by the uninstaller; leaving the entry behind
     /// would keep the module listed in System Settings after the app is gone.
     func disable() async -> String? {
+        if Self.usesSystemSettingsOnly {
+            Self.openSystemSettings()
+            return "macOS 27 only turns the extension off in System Settings. Switch it off there, then remove the app."
+        }
         if Self.moduleIsServingAVolume() {
             return "a volume this driver is serving is still mounted"
         }
@@ -160,6 +187,19 @@ final class ModuleEnabler: ObservableObject {
             try? await Task.sleep(for: .milliseconds(500))
         }
         return false
+    }
+
+    /// Opens the Login Items pane, where the File System Extensions list lives
+    /// behind its (i) button. The URL is available on 26 and 27; on 27 it is the
+    /// only supported way to change the switch.
+    private static func openSystemSettings() {
+        let urls = [
+            "x-apple.systempreferences:com.apple.LoginItems-Settings.extension?ExtensionItems",
+            "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
+        ]
+        for string in urls {
+            if let url = URL(string: string), NSWorkspace.shared.open(url) { return }
+        }
     }
 
     static func isEnabled() async -> Bool {
