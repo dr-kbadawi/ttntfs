@@ -109,7 +109,27 @@ stage_build_app() {
 		-derivedDataPath "${DERIVED_DATA:-/tmp/ttntfs-ci-dd}" \
 		CODE_SIGNING_ALLOWED=NO build \
 		2>&1 | grep -E '^\*\* BUILD|error:' | tail -4
-	return "${PIPESTATUS[0]}"
+	rc=${PIPESTATUS[0]}
+	[ "$rc" -eq 0 ] || return "$rc"
+
+	# The build settings say universal; prove the three artifacts are fat, not
+	# just that the link accepted two -arch flags.
+	local app="${DERIVED_DATA:-/tmp/ttntfs-ci-dd}/Build/Products/Debug/TT NTFS Native.app"
+	local binary archs
+	for binary in \
+		build/libntfscore.a \
+		"$app/Contents/MacOS/TT NTFS Native" \
+		"$app/Contents/Extensions/NTFSExtension.appex/Contents/MacOS/NTFSExtension"; do
+		archs=$(lipo -info "$binary" 2>&1) || {
+			echo "lipo: cannot read $binary"
+			return 1
+		}
+		case "$archs" in
+		*"x86_64 arm64"*|*"arm64 x86_64"*) ;;
+		*) echo "not universal: $binary"; echo "  $archs"; return 1 ;;
+		esac
+	done
+	return 0
 }
 
 run_stage "toolchain (ntfsprogs + ntfsprogs-plus)" stage_toolchain

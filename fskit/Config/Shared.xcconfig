@@ -16,6 +16,10 @@ NTFS_CORE_LDFLAGS_stub =
 NTFS_CORE_EXCLUDE_real = ntfscore_stub.c
 NTFS_CORE_LDFLAGS_real = $(SRCROOT)/../build/libntfscore.a
 
-// Apple Silicon only: the core static library is built arm64.
-ARCHS = arm64
+// Universal. FSKit itself is available on Intel -- the SDK's FSKit.tbd lists
+// x86_64-macos, and Apple's own fskit.exfat module ships fat (x86_64 + arm64e)
+// -- and nothing in the driver is architecture-specific. The core static
+// library must carry both slices or the x86_64 link finds no symbols;
+// CMakeLists.txt builds a universal archive by default.
+ARCHS = arm64 x86_64
 ONLY_ACTIVE_ARCH = NO
