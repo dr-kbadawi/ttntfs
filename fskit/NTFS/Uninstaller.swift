@@ -33,7 +33,7 @@ final class Uninstaller: ObservableObject {
     func run() async {
         state = .working("Disabling the file system extension…")
         if let problem = await enabler.disable() {
-            state = .failed("Could not disable the extension: \(problem). Eject your NTFS volumes and try again.")
+            state = .failed("Could not disable the extension: \(problem).")
             return
         }
 

@@ -30,7 +30,7 @@ final class ExtensionStatus: ObservableObject {
         }
     }
 
-    func openSettings() {
+    static func openSettings() {
         // Login Items & Extensions pane; the File System Extensions list is behind its (i) button.
         let urls = [
             "x-apple.systempreferences:com.apple.LoginItems-Settings.extension?ExtensionItems",

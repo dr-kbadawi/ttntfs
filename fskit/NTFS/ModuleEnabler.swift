@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2026 TechTag GmbH
 //
-// Turns the FSKit module on without System Settings.
+// Turns the FSKit module on, from the app.
 //
-// The switch in System Settings → General → Login Items & Extensions → File
-// System Extensions cannot enable a third-party module on macOS 26 (verified on
-// 26.3 and 26.6.2): its host, LoginItems.appex, talks to fskitd as an
-// unentitled FSClient and fskitd answers EPERM. Asking it to enable one of
+// There are two paths, chosen by what the OS allows rather than by version
+// alone.
+//
+// Up to macOS 26 the switch in System Settings → General → Login Items &
+// Extensions → File System Extensions cannot enable a third-party module
+// (verified on 26.3 and 26.6.2): its host, LoginItems.appex, talks to fskitd as
+// an unentitled FSClient and fskitd answers EPERM. Asking it to enable one of
 // Apple's own modules fails the same way, so this is not about our signature.
 //
-// What actually decides the matter is fskit_agent's list, which it loads once at
-// start and never re-reads:
+// What actually decides the matter there is fskit_agent's list, which it loads
+// once at start and never re-reads:
 //
 //     ~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist
 //
@@ -26,8 +29,14 @@
 // Apple-restricted app group a sandboxed process cannot touch, and signalling
 // another of the user's processes is likewise out of reach under the sandbox.
 //
-// It is also undocumented, so nothing here assumes success: the result is read
-// back from FSClient and reported honestly.
+// macOS 27 closes that path: the plist can no longer be read or written by an
+// app without Apple's private entitlement, so the only supported route is to
+// open System Settings and wait for FSClient to report the module enabled. The
+// same fallback is taken on 26 when the read fails with a permission error,
+// since Apple could extend the protection to a 26.x update.
+//
+// Neither path is documented, so nothing here assumes success: the result is
+// read back from FSClient and reported honestly.
 
 import Foundation
 import FSKit
@@ -41,12 +50,29 @@ final class ModuleEnabler: ObservableObject {
         case succeeded
         /// Refused on purpose, with the reason to show the user.
         case blocked(String)
+        /// The user has to finish enablement in System Settings. The string is
+        /// the instruction to show, not an error.
+        case needsSettings(String)
         case failed(String)
     }
 
     @Published private(set) var outcome: Outcome = .idle
 
     static let moduleID = "ch.techtag.ntfs.extension"
+
+    /// macOS 27 no longer lets an app read or write fskit_agent's allowlist
+    /// without Apple's private entitlement. The supported switch is in System
+    /// Settings; the app can only open it and wait for FSKit to report the
+    /// module as enabled.
+    static var usesSystemSettingsOnly: Bool {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+    }
+
+    static let systemSettingsHint = "This version of macOS enables third-party file systems only in System Settings → General → Login Items & Extensions → File System Extensions. Turn the extension on there; this app will notice when it is enabled."
+
+    /// True while a poll loop is waiting for the user to finish in System
+    /// Settings, which is not `.working` but still must not be re-entered.
+    private var isWaitingForSettings = false
 
     private static var listURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -56,7 +82,15 @@ final class ModuleEnabler: ObservableObject {
     // MARK: Enable
 
     func enable() async {
+        // A second press while enabling, or while waiting in System Settings,
+        // would start a second poll loop.
+        guard outcome != .working, !isWaitingForSettings else { return }
         outcome = .working
+
+        if Self.usesSystemSettingsOnly {
+            await requireSystemSettings()
+            return
+        }
 
         // Restarting the agent drops volumes *our* module is serving. Volumes
         // mounted by Apple's ntfs driver survive it — verified 2026-09-13 on
@@ -71,6 +105,13 @@ final class ModuleEnabler: ObservableObject {
         do {
             try Self.addToEnabledList()
         } catch {
+            // A permission error means Apple has protected the list on this
+            // build too, whatever the version says; the Settings route is then
+            // the only one left.
+            if Self.isPermissionDenied(error) {
+                await requireSystemSettings()
+                return
+            }
             outcome = .failed("Could not update the FSKit module list: \(error.localizedDescription)")
             return
         }
@@ -94,16 +135,34 @@ final class ModuleEnabler: ObservableObject {
     /// mirror of `enable()`. Used by the uninstaller; leaving the entry behind
     /// would keep the module listed in System Settings after the app is gone.
     func disable() async -> String? {
+        if Self.usesSystemSettingsOnly {
+            return await switchOffInSystemSettings()
+        }
         if Self.moduleIsServingAVolume() {
-            return "a volume this driver is serving is still mounted"
+            return "a volume this driver is serving is still mounted; eject it and try again"
         }
         do {
             try Self.removeFromEnabledList()
         } catch {
+            // Same protection as the 27 path: if the app may not edit the list,
+            // the Settings switch is the only way left.
+            if Self.isPermissionDenied(error) {
+                return await switchOffInSystemSettings()
+            }
             return "could not update the FSKit module list: \(error.localizedDescription)"
         }
         Self.restartAgent()
         return nil
+    }
+
+    /// The one route left when the app may not edit the allowlist. Returns nil
+    /// if the extension is already off — refusing there would leave the
+    /// uninstaller stuck on a machine where the user has already switched it
+    /// off — and otherwise opens Settings and explains what to do.
+    private func switchOffInSystemSettings() async -> String? {
+        guard await Self.isEnabled() else { return nil }
+        ExtensionStatus.openSettings()
+        return "this macOS build only turns the extension off in System Settings — switch it off there, then press Try Again"
     }
 
     private static func removeFromEnabledList() throws {
@@ -153,11 +212,43 @@ final class ModuleEnabler: ObservableObject {
         return agents.count
     }
 
-    private static func waitUntilEnabled(timeout: Duration) async -> Bool {
+    /// The macOS 27 route: open System Settings, then wait for the user to flip
+    /// the switch there and for FSClient to report it.
+    private func requireSystemSettings() async {
+        isWaitingForSettings = true
+        defer { isWaitingForSettings = false }
+
+        ExtensionStatus.openSettings()
+        outcome = .needsSettings(Self.systemSettingsHint)
+
+        // Polling is cheap but not free — each round asks the FSKit service —
+        // and the user has to find the pane and click, so two seconds is often
+        // enough resolution.
+        if await Self.waitUntilEnabled(timeout: .seconds(300), interval: .seconds(2)) {
+            outcome = .succeeded
+        }
+    }
+
+    /// Whether the failure is the OS refusing access to the list, which means
+    /// the Settings route is the only one left.
+    private static func isPermissionDenied(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        switch nsError.domain {
+        case NSPOSIXErrorDomain:
+            return nsError.code == EPERM || nsError.code == EACCES
+        case NSCocoaErrorDomain:
+            return nsError.code == NSFileReadNoPermissionError
+                || nsError.code == NSFileWriteNoPermissionError
+        default:
+            return false
+        }
+    }
+
+    private static func waitUntilEnabled(timeout: Duration, interval: Duration = .milliseconds(500)) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if await isEnabled() { return true }
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: interval)
         }
         return false
     }
