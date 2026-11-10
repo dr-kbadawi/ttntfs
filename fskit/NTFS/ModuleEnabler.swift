@@ -68,7 +68,7 @@ final class ModuleEnabler: ObservableObject {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
 
-    static let systemSettingsHint = "macOS 27 enables third-party file systems only in System Settings → General → Login Items & Extensions → File System Extensions. Turn the extension on there; this app will notice when it is enabled."
+    static let systemSettingsHint = "This version of macOS enables third-party file systems only in System Settings → General → Login Items & Extensions → File System Extensions. Turn the extension on there; this app will notice when it is enabled."
 
     /// True while a poll loop is waiting for the user to finish in System
     /// Settings, which is not `.working` but still must not be re-entered.
@@ -136,12 +136,7 @@ final class ModuleEnabler: ObservableObject {
     /// would keep the module listed in System Settings after the app is gone.
     func disable() async -> String? {
         if Self.usesSystemSettingsOnly {
-            // Nothing to do if it is already off; on 27 the app cannot switch
-            // it off, so refusing here would leave the uninstaller permanently
-            // stuck on a machine where the user has already done it.
-            guard await Self.isEnabled() else { return nil }
-            ExtensionStatus.openSettings()
-            return "macOS 27 only turns the extension off in System Settings — switch it off there, then remove the app"
+            return await switchOffInSystemSettings()
         }
         if Self.moduleIsServingAVolume() {
             return "a volume this driver is serving is still mounted; eject it and try again"
@@ -149,10 +144,25 @@ final class ModuleEnabler: ObservableObject {
         do {
             try Self.removeFromEnabledList()
         } catch {
+            // Same protection as the 27 path: if the app may not edit the list,
+            // the Settings switch is the only way left.
+            if Self.isPermissionDenied(error) {
+                return await switchOffInSystemSettings()
+            }
             return "could not update the FSKit module list: \(error.localizedDescription)"
         }
         Self.restartAgent()
         return nil
+    }
+
+    /// The one route left when the app may not edit the allowlist. Returns nil
+    /// if the extension is already off — refusing there would leave the
+    /// uninstaller stuck on a machine where the user has already switched it
+    /// off — and otherwise opens Settings and explains what to do.
+    private func switchOffInSystemSettings() async -> String? {
+        guard await Self.isEnabled() else { return nil }
+        ExtensionStatus.openSettings()
+        return "this macOS build only turns the extension off in System Settings — switch it off there, then press Try Again"
     }
 
     private static func removeFromEnabledList() throws {
