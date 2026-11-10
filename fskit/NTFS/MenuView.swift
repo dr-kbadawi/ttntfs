@@ -189,7 +189,13 @@ struct MenuView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                enableButtons(title: "Open System Settings")
+                // Already waiting for the user; a second `enable()` would only
+                // be refused, so this reopens the pane instead.
+                HStack {
+                    Button("Open System Settings") { ExtensionStatus.openSettings() }
+                    Button("Re-check") { status.refresh() }
+                }
+                .controlSize(.small)
             }
         case .blocked(let why), .failed(let why):
             VStack(alignment: .leading, spacing: 6) {

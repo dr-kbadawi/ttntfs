@@ -36,6 +36,7 @@
 		C2A57306E42C69D67937E131 /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3315E373241BC5A5359B9759 /* Errors.swift */; };
 		D0E786488A63C7C27B539FD0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EDE4FF55DC86B5614ECCE4EC /* Assets.xcassets */; };
 		D16A3E6461DFA2F3C812AC47 /* NTFSVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = B389C0EB1D9C689FA426953F /* NTFSVolume.swift */; };
+		D4A3F78A4FD0D3D3D2E8C73A /* ExtensionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */; };
 		D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */; };
 		DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
 		F0989E06E6B8D261A2BE925E /* ntfs_bdev_fskit.m in Sources */ = {isa = PBXBuildFile; fileRef = 3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */; settings = {COMPILER_FLAGS = "-fno-modules"; }; };
@@ -325,6 +326,7 @@
 			files = (
 				DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */,
 				69C51FCF74DDC791DF9FB88B /* Errors.swift in Sources */,
+				D4A3F78A4FD0D3D3D2E8C73A /* ExtensionStatus.swift in Sources */,
 				50638278315C30661B0EB14E /* ModuleEnabler.swift in Sources */,
 				B9A9FCB9074172A708781239 /* MountOptionsTests.swift in Sources */,
 				9A6F914F0B807B9FE9107F45 /* MountStatus.swift in Sources */,

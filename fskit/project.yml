@@ -204,6 +204,7 @@ targets:
       - path: NTFSExtension/Errors.swift          # defines `log`, which Options uses
       - path: NTFS/DiskInventory.swift
       - path: NTFS/ModuleEnabler.swift            # DiskInventory.refresh() calls into it
+      - path: NTFS/ExtensionStatus.swift          # ModuleEnabler opens the Settings pane through it
       - path: NTFS/SharedSettings.swift
       - path: ../core/stub/ntfscore_stub.c
         group: Stub

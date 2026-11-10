@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2026 TechTag GmbH
 //
-// Turns the FSKit module on without System Settings.
+// Turns the FSKit module on, from the app.
 //
-// The switch in System Settings → General → Login Items & Extensions → File
-// System Extensions cannot enable a third-party module on macOS 26 (verified on
-// 26.3 and 26.6.2): its host, LoginItems.appex, talks to fskitd as an
-// unentitled FSClient and fskitd answers EPERM. Asking it to enable one of
+// There are two paths, chosen by what the OS allows rather than by version
+// alone.
+//
+// Up to macOS 26 the switch in System Settings → General → Login Items &
+// Extensions → File System Extensions cannot enable a third-party module
+// (verified on 26.3 and 26.6.2): its host, LoginItems.appex, talks to fskitd as
+// an unentitled FSClient and fskitd answers EPERM. Asking it to enable one of
 // Apple's own modules fails the same way, so this is not about our signature.
 //
-// What actually decides the matter is fskit_agent's list, which it loads once at
-// start and never re-reads:
+// What actually decides the matter there is fskit_agent's list, which it loads
+// once at start and never re-reads:
 //
 //     ~/Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist
 //
@@ -26,12 +29,17 @@
 // Apple-restricted app group a sandboxed process cannot touch, and signalling
 // another of the user's processes is likewise out of reach under the sandbox.
 //
-// It is also undocumented, so nothing here assumes success: the result is read
-// back from FSClient and reported honestly.
+// macOS 27 closes that path: the plist can no longer be read or written by an
+// app without Apple's private entitlement, so the only supported route is to
+// open System Settings and wait for FSClient to report the module enabled. The
+// same fallback is taken on 26 when the read fails with a permission error,
+// since Apple could extend the protection to a 26.x update.
+//
+// Neither path is documented, so nothing here assumes success: the result is
+// read back from FSClient and reported honestly.
 
 import Foundation
 import FSKit
-import AppKit
 import Darwin
 
 @MainActor
@@ -62,6 +70,10 @@ final class ModuleEnabler: ObservableObject {
 
     static let systemSettingsHint = "macOS 27 enables third-party file systems only in System Settings → General → Login Items & Extensions → File System Extensions. Turn the extension on there; this app will notice when it is enabled."
 
+    /// True while a poll loop is waiting for the user to finish in System
+    /// Settings, which is not `.working` but still must not be re-entered.
+    private var isWaitingForSettings = false
+
     private static var listURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist")
@@ -70,14 +82,13 @@ final class ModuleEnabler: ObservableObject {
     // MARK: Enable
 
     func enable() async {
+        // A second press while enabling, or while waiting in System Settings,
+        // would start a second poll loop.
+        guard outcome != .working, !isWaitingForSettings else { return }
         outcome = .working
 
         if Self.usesSystemSettingsOnly {
-            Self.openSystemSettings()
-            outcome = .needsSettings(Self.systemSettingsHint)
-            if await Self.waitUntilEnabled(timeout: .seconds(300)) {
-                outcome = .succeeded
-            }
+            await requireSystemSettings()
             return
         }
 
@@ -94,6 +105,13 @@ final class ModuleEnabler: ObservableObject {
         do {
             try Self.addToEnabledList()
         } catch {
+            // A permission error means Apple has protected the list on this
+            // build too, whatever the version says; the Settings route is then
+            // the only one left.
+            if Self.isPermissionDenied(error) {
+                await requireSystemSettings()
+                return
+            }
             outcome = .failed("Could not update the FSKit module list: \(error.localizedDescription)")
             return
         }
@@ -118,11 +136,15 @@ final class ModuleEnabler: ObservableObject {
     /// would keep the module listed in System Settings after the app is gone.
     func disable() async -> String? {
         if Self.usesSystemSettingsOnly {
-            Self.openSystemSettings()
-            return "macOS 27 only turns the extension off in System Settings. Switch it off there, then remove the app."
+            // Nothing to do if it is already off; on 27 the app cannot switch
+            // it off, so refusing here would leave the uninstaller permanently
+            // stuck on a machine where the user has already done it.
+            guard await Self.isEnabled() else { return nil }
+            ExtensionStatus.openSettings()
+            return "macOS 27 only turns the extension off in System Settings — switch it off there, then remove the app"
         }
         if Self.moduleIsServingAVolume() {
-            return "a volume this driver is serving is still mounted"
+            return "a volume this driver is serving is still mounted; eject it and try again"
         }
         do {
             try Self.removeFromEnabledList()
@@ -180,26 +202,45 @@ final class ModuleEnabler: ObservableObject {
         return agents.count
     }
 
-    private static func waitUntilEnabled(timeout: Duration) async -> Bool {
+    /// The macOS 27 route: open System Settings, then wait for the user to flip
+    /// the switch there and for FSClient to report it.
+    private func requireSystemSettings() async {
+        isWaitingForSettings = true
+        defer { isWaitingForSettings = false }
+
+        ExtensionStatus.openSettings()
+        outcome = .needsSettings(Self.systemSettingsHint)
+
+        // Polling is cheap but not free — each round asks the FSKit service —
+        // and the user has to find the pane and click, so two seconds is often
+        // enough resolution.
+        if await Self.waitUntilEnabled(timeout: .seconds(300), interval: .seconds(2)) {
+            outcome = .succeeded
+        }
+    }
+
+    /// Whether the failure is the OS refusing access to the list, which means
+    /// the Settings route is the only one left.
+    private static func isPermissionDenied(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        switch nsError.domain {
+        case NSPOSIXErrorDomain:
+            return nsError.code == EPERM || nsError.code == EACCES
+        case NSCocoaErrorDomain:
+            return nsError.code == NSFileReadNoPermissionError
+                || nsError.code == NSFileWriteNoPermissionError
+        default:
+            return false
+        }
+    }
+
+    private static func waitUntilEnabled(timeout: Duration, interval: Duration = .milliseconds(500)) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
             if await isEnabled() { return true }
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await Task.sleep(for: interval)
         }
         return false
-    }
-
-    /// Opens the Login Items pane, where the File System Extensions list lives
-    /// behind its (i) button. The URL is available on 26 and 27; on 27 it is the
-    /// only supported way to change the switch.
-    private static func openSystemSettings() {
-        let urls = [
-            "x-apple.systempreferences:com.apple.LoginItems-Settings.extension?ExtensionItems",
-            "x-apple.systempreferences:com.apple.LoginItems-Settings.extension",
-        ]
-        for string in urls {
-            if let url = URL(string: string), NSWorkspace.shared.open(url) { return }
-        }
     }
 
     static func isEnabled() async -> Bool {
