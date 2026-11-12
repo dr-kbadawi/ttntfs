@@ -416,10 +416,10 @@ extension NTFSVolume: FSVolume.Operations {
             return
         }
         var ino: OpaquePointer?
-        let rc = ntfs_lookup(dir.inode, cname, &ino)
+        let (rc, stored) = lookupAnyForm(dir.inode, cname, &ino)
         guard rc == 0, let ino else { reply(nil, nil, posixError(rc, "lookup")); return }
         let it = item(adopting: ino, parent: dir.id, type: coreType(of: ino))
-        reply(it, name, nil)
+        reply(it, stored == cname ? name : FSFileName(string: stored), nil)
     }
 
     func reclaimItem(_ item: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
@@ -538,7 +538,8 @@ extension NTFSVolume: FSVolume.Operations {
         guard let it = ntfsItem(item), let dir = ntfsItem(directory) else { reply(fsError(EINVAL)); return }
         guard let cname = name.string else { reply(fsError(EILSEQ)); return }
         guard writable else { reply(fsError(EROFS)); return }
-        let rc = it.itemType == .directory ? ntfs_rmdir(dir.inode, cname) : ntfs_unlink(dir.inode, cname)
+        let target = storedName(dir.inode, cname)
+        let rc = it.itemType == .directory ? ntfs_rmdir(dir.inode, target) : ntfs_unlink(dir.inode, target)
         guard rc == 0 else { reply(posixError(rc, "remove")); return }
         dir.dirVersion &+= 1
         reply(nil)
@@ -563,7 +564,7 @@ extension NTFSVolume: FSVolume.Operations {
             if it.itemType == .directory && over.itemType != .directory { reply(nil, fsError(ENOTDIR)); return }
             if it.itemType != .directory && over.itemType == .directory { reply(nil, fsError(EISDIR)); return }
         }
-        let rc = ntfs_rename(src.inode, sname, dst.inode, dname)
+        let rc = ntfs_rename(src.inode, storedName(src.inode, sname), dst.inode, dname)
         guard rc == 0 else { reply(nil, posixError(rc, "rename")); return }
         it.parentID = dst.id
         src.dirVersion &+= 1
@@ -835,4 +836,28 @@ extension NTFSVolume: FSVolume.RenameOperations {
         if ntfs_volume_get_info(vol, &info) == 0 { publishStatus(info) }
         reply(name, nil)
     }
+}
+
+// MARK: - Unicode forms
+
+/// NTFS stores names verbatim, but macOS callers (Finder via Cocoa) hand us NFD
+/// (が as か+U+3099) for names Windows stored as NFC, and vice versa. Try the
+/// name as given, then NFC, then NFD; return the core rc and the form that hit.
+private func lookupAnyForm(_ dir: OpaquePointer, _ name: String, _ ino: inout OpaquePointer?) -> (Int32, String) {
+    var rc = ntfs_lookup(dir, name, &ino)
+    guard rc == -ENOENT else { return (rc, name) }
+    for alt in [name.precomposedStringWithCanonicalMapping, name.decomposedStringWithCanonicalMapping] where alt != name {
+        rc = ntfs_lookup(dir, alt, &ino)
+        if rc != -ENOENT { return (rc, alt) }
+    }
+    return (rc, name)
+}
+
+/// The spelling of `name` actually on disk, for calls that take a name
+/// rather than an inode; falls back to `name` so the core reports the error.
+private func storedName(_ dir: OpaquePointer, _ name: String) -> String {
+    var ino: OpaquePointer?
+    let (rc, stored) = lookupAnyForm(dir, name, &ino)
+    if let ino { ntfs_inode_put(ino) }
+    return rc == 0 ? stored : name
 }
