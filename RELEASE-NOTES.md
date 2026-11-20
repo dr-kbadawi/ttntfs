@@ -1,5 +1,42 @@
 # TT NTFS Native — release notes
 
+## 0.4.2 — 2026-11-20
+
+### macOS 27: the extension is turned on in System Settings
+
+macOS 27 no longer lets the app turn its own extension on: reading FSKit's list
+of enabled modules fails with a permission error, which is what the Enable
+button reported there (#2). The switch in System Settings, which never worked
+for a third-party file system on macOS 26, does work on 27. So on 27 the button
+reads **Open System Settings**, opens the pane, and the app notices as soon as
+the extension is on. In System Settings choose **By Category → File System
+Extensions** and turn TT NTFS Native on; the switch in the By App list does not
+stay on. Removing the app from Settings takes the same route on 27. Nothing
+changes on macOS 26. (#4, by @MaiwulanjiangMaiming)
+
+
+### Accented and non-Latin names written by Windows open from Mac apps
+
+Windows stores a name in the composed Unicode form, with é as one character.
+Mac apps ask for names in the decomposed form, e followed by an accent, and the
+driver compared the two byte for byte. So Mac apps could not open, save over,
+rename or delete such files -- names like `café.txt`, Korean, Greek, Cyrillic,
+or Japanese with voiced kana -- though Terminal could. A lookup that finds no
+exact match now tries the other form. Saving over such a file replaces it and
+keeps its original spelling, where before it added a second entry beside it.
+Names are still stored exactly as given; nothing already on the disk is
+rewritten. (#6, by @hanzhs)
+
+
+### The commit in Settings → About is a public one
+
+0.4.1 was built just before the repository was published, and its About section
+named a commit that does not exist in the public history; its source is
+identical to the public `v0.4.1` tag (#5). This build is made from the public
+history, so the commit it names can be looked up.
+
+---
+
 ## 0.4.1 — 2026-09-19
 
 ### The app and the disk image have an icon
