@@ -11,14 +11,12 @@
 #   build/libntfscore.a   the two merged, what fskit/ and tools/ link
 #   tests          platform/tests, platform/pagecache/tests (ctest)
 cmake_minimum_required(VERSION 3.20)
-# Build for the real host CPU even when cmake itself runs under Rosetta
-# (Intel Homebrew cmake spawns x86_64 compilers by default).
+# Build one universal artifact (arm64 + x86_64) on both Apple Silicon and
+# Intel. The Xcode targets are universal too (fskit/Config/Shared.xcconfig),
+# and an x86_64 link cannot resolve a symbol from an arm64-only archive. Pass
+# -DCMAKE_OSX_ARCHITECTURES=arm64 (or x86_64) for a single-slice tree.
 if(APPLE AND NOT CMAKE_OSX_ARCHITECTURES)
-  execute_process(COMMAND sysctl -n hw.optional.arm64 OUTPUT_VARIABLE _ntfs_has_arm64
-                  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-  if(_ntfs_has_arm64 STREQUAL "1")
-    set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "Target architecture" FORCE)
-  endif()
+  set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Target architecture" FORCE)
 endif()
 project(ntfsport C)
 
