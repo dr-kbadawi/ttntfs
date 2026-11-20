@@ -201,6 +201,7 @@ targets:
       - path: NTFSTests
       - path: Shared
       - path: NTFSExtension/Options.swift
+      - path: NTFSExtension/UnicodeNameAlternatives.swift
       - path: NTFSExtension/Errors.swift          # defines `log`, which Options uses
       - path: NTFS/DiskInventory.swift
       - path: NTFS/ModuleEnabler.swift            # DiskInventory.refresh() calls into it

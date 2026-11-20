@@ -20,6 +20,7 @@
 		6E876ED46A85A8404A455361 /* Options.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A89785ABD0C6A5D4BE75297 /* Options.swift */; };
 		70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D88AB6F444249E71E139018 /* VolumeMonitor.swift */; };
 		72C3503AE9116F41E484B5D4 /* MountStatusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59E35CFA95134137ACE993DB /* MountStatusTests.swift */; };
+		2083108A0772CF7D896F6004 /* UnicodeNameAlternativesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2083108A0772CF7D896F6005 /* UnicodeNameAlternativesTests.swift */; };
 		747947B10E65D12D8E36C4F3 /* NTFSExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = 8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		8A10B01A7F509E33D0A02754 /* NTFSExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE2682EA100F44295076F7DE /* NTFSExtension.swift */; };
 		9A6F914F0B807B9FE9107F45 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
@@ -36,6 +37,8 @@
 		C2A57306E42C69D67937E131 /* Errors.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3315E373241BC5A5359B9759 /* Errors.swift */; };
 		D0E786488A63C7C27B539FD0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = EDE4FF55DC86B5614ECCE4EC /* Assets.xcassets */; };
 		D16A3E6461DFA2F3C812AC47 /* NTFSVolume.swift in Sources */ = {isa = PBXBuildFile; fileRef = B389C0EB1D9C689FA426953F /* NTFSVolume.swift */; };
+		2083108A0772CF7D896F6001 /* UnicodeNameAlternatives.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2083108A0772CF7D896F6003 /* UnicodeNameAlternatives.swift */; };
+		2083108A0772CF7D896F6002 /* UnicodeNameAlternatives.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2083108A0772CF7D896F6003 /* UnicodeNameAlternatives.swift */; };
 		D4A3F78A4FD0D3D3D2E8C73A /* ExtensionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */; };
 		D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */; };
 		DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
@@ -81,6 +84,7 @@
 		49CC0869C89E4C38774395AC /* MountStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountStatus.swift; sourceTree = "<group>"; };
 		58F792F8227F5EA72F72433B /* Confirm.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Confirm.swift; sourceTree = "<group>"; };
 		59E35CFA95134137ACE993DB /* MountStatusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MountStatusTests.swift; sourceTree = "<group>"; };
+		2083108A0772CF7D896F6005 /* UnicodeNameAlternativesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnicodeNameAlternativesTests.swift; sourceTree = "<group>"; };
 		67642D3967176F0F3848BF48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7A89785ABD0C6A5D4BE75297 /* Options.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Options.swift; sourceTree = "<group>"; };
 		7D80DAAE4977838464ED6255 /* NTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSApp.swift; sourceTree = "<group>"; };
@@ -95,6 +99,7 @@
 		B26FF508F1A90A37416CBD99 /* DiskInventory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiskInventory.swift; sourceTree = "<group>"; };
 		B382EF12119CB428297CCB7B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		B389C0EB1D9C689FA426953F /* NTFSVolume.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSVolume.swift; sourceTree = "<group>"; };
+		2083108A0772CF7D896F6003 /* UnicodeNameAlternatives.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnicodeNameAlternatives.swift; sourceTree = "<group>"; };
 		C0F30CB423189222B7D3898A /* SharedSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedSettings.swift; sourceTree = "<group>"; };
 		CC4CCF9F76F32BAC5EB46CBC /* Uninstaller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Uninstaller.swift; sourceTree = "<group>"; };
 		DE2682EA100F44295076F7DE /* NTFSExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSExtension.swift; sourceTree = "<group>"; };
@@ -115,6 +120,7 @@
 				22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */,
 				EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */,
 				B389C0EB1D9C689FA426953F /* NTFSVolume.swift */,
+				2083108A0772CF7D896F6003 /* UnicodeNameAlternatives.swift */,
 				7A89785ABD0C6A5D4BE75297 /* Options.swift */,
 			);
 			path = NTFSExtension;
@@ -146,6 +152,7 @@
 			children = (
 				9F0EECD48947D4F9073B01BC /* MountOptionsTests.swift */,
 				59E35CFA95134137ACE993DB /* MountStatusTests.swift */,
+				2083108A0772CF7D896F6005 /* UnicodeNameAlternativesTests.swift */,
 				AF94786F3FEE8A7680967946 /* NoteExpiryTests.swift */,
 			);
 			path = NTFSTests;
@@ -331,6 +338,8 @@
 				B9A9FCB9074172A708781239 /* MountOptionsTests.swift in Sources */,
 				9A6F914F0B807B9FE9107F45 /* MountStatus.swift in Sources */,
 				72C3503AE9116F41E484B5D4 /* MountStatusTests.swift in Sources */,
+				2083108A0772CF7D896F6004 /* UnicodeNameAlternativesTests.swift in Sources */,
+				2083108A0772CF7D896F6002 /* UnicodeNameAlternatives.swift in Sources */,
 				0FE932E71F3172D65C517356 /* NoteExpiryTests.swift in Sources */,
 				6E876ED46A85A8404A455361 /* Options.swift in Sources */,
 				26B443FBBC3143E710CDD55F /* SharedSettings.swift in Sources */,
@@ -367,6 +376,7 @@
 				D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */,
 				3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */,
 				D16A3E6461DFA2F3C812AC47 /* NTFSVolume.swift in Sources */,
+				2083108A0772CF7D896F6001 /* UnicodeNameAlternatives.swift in Sources */,
 				A91E3637C8414C21A3AA8901 /* Options.swift in Sources */,
 				F0989E06E6B8D261A2BE925E /* ntfs_bdev_fskit.m in Sources */,
 				A47E2521C83A6E5A365131F8 /* ntfscore_stub.c in Sources */,

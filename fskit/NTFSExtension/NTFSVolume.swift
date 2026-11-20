@@ -416,10 +416,10 @@ extension NTFSVolume: FSVolume.Operations {
             return
         }
         var ino: OpaquePointer?
-        let rc = ntfs_lookup(dir.inode, cname, &ino)
+        let (rc, stored) = lookupUnicodeName(dir.inode, cname, inode: &ino)
         guard rc == 0, let ino else { reply(nil, nil, posixError(rc, "lookup")); return }
         let it = item(adopting: ino, parent: dir.id, type: coreType(of: ino))
-        reply(it, name, nil)
+        reply(it, stored.utf8.elementsEqual(cname.utf8) ? name : FSFileName(string: stored), nil)
     }
 
     func reclaimItem(_ item: FSItem, replyHandler reply: @escaping (Error?) -> Void) {
@@ -538,7 +538,9 @@ extension NTFSVolume: FSVolume.Operations {
         guard let it = ntfsItem(item), let dir = ntfsItem(directory) else { reply(fsError(EINVAL)); return }
         guard let cname = name.string else { reply(fsError(EILSEQ)); return }
         guard writable else { reply(fsError(EROFS)); return }
-        let rc = it.itemType == .directory ? ntfs_rmdir(dir.inode, cname) : ntfs_unlink(dir.inode, cname)
+        let (lookupRC, stored) = resolveSourceName(dir.inode, cname, item: it)
+        guard lookupRC == 0 else { reply(posixError(lookupRC, "remove source")); return }
+        let rc = it.itemType == .directory ? ntfs_rmdir(dir.inode, stored) : ntfs_unlink(dir.inode, stored)
         guard rc == 0 else { reply(posixError(rc, "remove")); return }
         dir.dirVersion &+= 1
         reply(nil)
@@ -557,18 +559,28 @@ extension NTFSVolume: FSVolume.Operations {
         }
         guard let sname = sourceName.string, let dname = destinationName.string else { reply(nil, fsError(EILSEQ)); return }
         guard writable else { reply(nil, fsError(EROFS)); return }
-        if let overItem, let over = ntfsItem(overItem) {
+        var targetName = dname
+        if let overItem {
+            guard let over = ntfsItem(overItem) else { reply(nil, fsError(EINVAL)); return }
             // Type compatibility is the core's business, but a directory over a
             // file (or vice versa) is a cheap early EISDIR/ENOTDIR here.
             if it.itemType == .directory && over.itemType != .directory { reply(nil, fsError(ENOTDIR)); return }
             if it.itemType != .directory && over.itemType == .directory { reply(nil, fsError(EISDIR)); return }
+            // Safe saves must replace the entry that lookup found, even when
+            // the requested destination uses a different Unicode spelling.
+            let (rc, stored) = resolveMutationName(dst.inode, dname, item: over)
+            guard rc == 0 else { reply(nil, posixError(rc, "rename destination")); return }
+            targetName = stored
         }
-        let rc = ntfs_rename(src.inode, sname, dst.inode, dname)
+        let (lookupRC, storedSource) = resolveSourceName(src.inode, sname, item: it)
+        guard lookupRC == 0 else { reply(nil, posixError(lookupRC, "rename source")); return }
+        let rc = ntfs_rename(src.inode, storedSource, dst.inode, targetName)
         guard rc == 0 else { reply(nil, posixError(rc, "rename")); return }
         it.parentID = dst.id
         src.dirVersion &+= 1
         if dst !== src { dst.dirVersion &+= 1 }
-        reply(destinationName, nil)
+        let result = targetName.utf8.elementsEqual(dname.utf8) ? destinationName : FSFileName(string: targetName)
+        reply(result, nil)
     }
 
     func enumerateDirectory(_ directory: FSItem, startingAt cookie: FSDirectoryCookie,
@@ -835,4 +847,37 @@ extension NTFSVolume: FSVolume.RenameOperations {
         if ntfs_volume_get_info(vol, &info) == 0 { publishStatus(info) }
         reply(name, nil)
     }
+}
+
+/// Try the supplied bytes first, retrying only when the name was not found.
+private func lookupUnicodeName(
+    _ dir: OpaquePointer, _ name: String, alternatives: [String]? = nil, inode: inout OpaquePointer?
+) -> (Int32, String) {
+    var rc = ntfs_lookup(dir, name, &inode)
+    guard rc == -ENOENT else { return (rc, name) }
+    for candidate in alternatives ?? unicodeNameAlternatives(name) {
+        rc = ntfs_lookup(dir, candidate, &inode)
+        if rc != -ENOENT { return (rc, candidate) }
+    }
+    return (rc, name)
+}
+
+/// Only names with another Unicode spelling need a source lookup before writing.
+private func resolveSourceName(_ dir: OpaquePointer, _ name: String, item: NTFSItem) -> (Int32, String) {
+    let alternatives = unicodeNameAlternatives(name)
+    guard !alternatives.isEmpty else { return (0, name) }
+    return resolveMutationName(dir, name, item: item, alternatives: alternatives)
+}
+
+/// Resolve spellings with read-only lookups so a failed write is never retried.
+private func resolveMutationName(
+    _ dir: OpaquePointer, _ name: String, item: NTFSItem, alternatives: [String]? = nil
+) -> (Int32, String) {
+    var inode: OpaquePointer?
+    let (rc, stored) = lookupUnicodeName(dir, name, alternatives: alternatives, inode: &inode)
+    guard rc == 0 else { return (rc, name) }
+    guard let inode else { return (-EIO, name) }
+    defer { ntfs_inode_put(inode) }
+    guard ntfs_inode_number(inode) == item.inodeNumber else { return (-ENOENT, name) }
+    return (0, stored)
 }
