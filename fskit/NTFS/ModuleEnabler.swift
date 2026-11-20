@@ -68,7 +68,7 @@ final class ModuleEnabler: ObservableObject {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
 
-    static let systemSettingsHint = "This version of macOS enables third-party file systems only in System Settings → General → Login Items & Extensions → File System Extensions. Turn the extension on there; this app will notice when it is enabled."
+    static let systemSettingsHint = "This version of macOS enables third-party file systems only in System Settings → General → Login Items & Extensions. Under Extensions, choose By Category, then File System Extensions, and turn TT NTFS Native on there; the switch in the By App list does not stay on. This app will notice when it is enabled."
 
     /// True while a poll loop is waiting for the user to finish in System
     /// Settings, which is not `.working` but still must not be re-entered.
@@ -162,7 +162,7 @@ final class ModuleEnabler: ObservableObject {
     private func switchOffInSystemSettings() async -> String? {
         guard await Self.isEnabled() else { return nil }
         ExtensionStatus.openSettings()
-        return "this macOS build only turns the extension off in System Settings — switch it off there, then press Try Again"
+        return "this macOS build only turns the extension off in System Settings, under Login Items & Extensions → By Category → File System Extensions — switch it off there, then press Try Again"
     }
 
     private static func removeFromEnabledList() throws {

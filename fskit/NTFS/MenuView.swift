@@ -207,7 +207,7 @@ struct MenuView: View {
         case .idle:
             VStack(alignment: .leading, spacing: 6) {
                 Text(ModuleEnabler.usesSystemSettingsOnly
-                     ? "Turn the extension on in System Settings; this app will notice when it is enabled."
+                     ? "Turn the extension on in System Settings, under Login Items & Extensions → By Category → File System Extensions. This app will notice when it is enabled."
                      : "Turn it on here — the switch in System Settings cannot enable third-party file system extensions on this version of macOS.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -193,6 +193,9 @@ documentation (Russon & Fledel), and behavior observed from Windows.
   `LoginItems.appex` does not hold. The host app therefore enables itself, which
   is why it ships unsandboxed with Developer ID. Once enabled, recognized volumes
   do auto-mount like Apple's own FSKit exFAT. See fskit/README.md "Known issues".
+  macOS 27 reverses this: the app may no longer edit the list, and the switch
+  works (under By Category; the By App switch does not stay on), so on 27 the app
+  opens System Settings and waits for FSClient to report the module enabled.
 - Measured on this machine (M-series, macOS 26.3): Apple's FSKit exFAT does
   1.0–1.5 GB/s sequential write and 0.8–1.6 GB/s cold read on an internal
   NVMe-backed image — same as in-kernel APFS. Metadata ops cost ~0.3–0.6 ms

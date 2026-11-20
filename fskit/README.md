@@ -119,7 +119,11 @@ load an extension whose provisioning profile does not carry it.
    `fskit_agent` keeps the old UUID until it is restarted (step 5 does that).
 5. **Enable.** Open the app and press **Enable Extension** in the menu-bar
    panel (`ModuleEnabler.swift`), or run `fskit/scripts/enable-module.sh` for the
-   same thing from a terminal. The System Settings switch
+   same thing from a terminal. On macOS 27 neither can edit the list (reading it
+   fails with a permission error, issue #2); the button becomes **Open System
+   Settings** and the app waits for FSClient to report the module enabled. There
+   the switch works under Extensions → By Category → File System Extensions; the
+   one in the By App list does not stay on (reported on #2, 2026-11-20). The System Settings switch
    (General → Login Items & Extensions → File System Extensions ⓘ) does **not**
    work on macOS 26.3 or 26.6.2: LoginItems.appex calls fskitd as an unentitled
    `FSClient` (it lacks `com.apple.private.LiveFS.connection`, which only the
@@ -238,7 +242,8 @@ before yanking a disk immediately after a large copy.
   the same work in-process (`ModuleEnabler.swift`); `scripts/enable-module.sh`
   is the development equivalent. Settings will keep showing the module as off
   even while it is enabled and mounting — `FSClient` and the menu-bar app
-  report the true state.
+  report the true state. (macOS 27 reverses this: the switch works and the
+  app's route is refused; see step 5 above.)
 - The **first** launch of a freshly installed app bundle re-registers the
   extension, which kills the running module and unmounts its volumes
   (`launchd: remove all extension instances: caller = pkd`). Later launches of

@@ -130,7 +130,10 @@ Install from the DMG, open the app, and press **Enable Extension**. The System
 Settings switch for File System Extensions does not work for any third-party
 FSKit module on macOS 26 — `fskitd` refuses the call from every caller lacking a
 private Apple entitlement — which is why the app is unsandboxed and enables
-itself. `fskit/README.md` has the detail, the evidence, and the known issues,
+itself. On macOS 27 it is the other way round: the app may no longer enable
+itself, and the switch works. There the button reads **Open System Settings**;
+choose **By Category → File System Extensions** and turn TT NTFS Native on (the
+switch in the **By App** list does not stay on). `fskit/README.md` has the detail, the evidence, and the known issues,
 including what every switch in Settings actually does.
 
 ## Building
