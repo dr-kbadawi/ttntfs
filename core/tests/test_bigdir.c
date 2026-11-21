@@ -20,6 +20,9 @@
  *   index_root_boundary   the move out of the resident $INDEX_ROOT into an
  *                         $INDEX_ALLOCATION (ntfs_ir_reparent), found by
  *                         watching the on-disk MFT record rather than assumed.
+ *   full_index_root       expand a small index with only 16 bytes left in
+ *                         the base MFT record, then recheck all directory
+ *                         names after a remount.
  *   multilevel_growth     a few thousand entries: many ntfs_ib_split() calls,
  *                         a root that itself has to be reparented, and the
  *                         resulting tree read back after a remount.
@@ -291,6 +294,8 @@ struct idx_shape {
 				 * on the leftmost root-to-leaf path */
 	int nblocks;		/* $INDEX_ALLOCATION size / index block size */
 	uint32_t ib_size;
+	uint32_t root_size;
+	uint32_t record_free;
 };
 
 /* Layout constants used below, from core/ntfs/layout.h: attribute types
@@ -325,6 +330,7 @@ static int read_shape(const char *path, uint64_t mft_no, struct idx_shape *out)
 
 	{
 	uint32_t used = g32(rec + 0x18);
+	out->record_free = g32(rec + 0x1c) - used;
 	uint8_t *a = rec + g16(rec + 0x14);
 	uint8_t *root = NULL, *ia = NULL;
 
@@ -333,9 +339,10 @@ static int read_shape(const char *path, uint64_t mft_no, struct idx_shape *out)
 
 		if (type == 0xffffffffu || !len)
 			break;
-		if (type == 0x90)
+		if (type == 0x90) {
 			root = a + g16(a + 0x14);	/* resident value */
-		else if (type == 0xa0)
+			out->root_size = g32(a + 0x10);
+		} else if (type == 0xa0)
 			ia = a;
 		a += len;
 	}
@@ -763,6 +770,86 @@ out:
 	nameset_free(set);
 	cleanup_image(scratch);
 	printf("test_index_root_boundary\n");
+}
+
+/* The fixture is built with libntfs-3g, whose test-only writer lets the
+ * resident root grow beyond the usual headroom limit. */
+static void test_full_index_root(void)
+{
+	const char *fixture = tool_path("NTFS_FULL_INDEX_FIXTURE",
+			"core/tests/fixtures/full-index-root.img.bz2");
+	struct nameset *set;
+	struct session s;
+	struct idx_shape sh;
+	ntfs_inode_t *dir = NULL;
+	char cmd[2048];
+	int err;
+
+	scratch_path("full-root");
+	snprintf(cmd, sizeof(cmd), "(bzip2 -dc < '%s' > '%s')", fixture, scratch);
+	err = run_quiet(cmd);
+	CHECKF(err == 0, "cannot unpack full index fixture %s (rc=%d)", fixture, err);
+	if (err)
+		goto out;
+
+	set = nameset_new(8);
+	CHECK(set != NULL);
+	if (!set)
+		goto out;
+	for (int i = 0; i < 7; i++)
+		snprintf(set->names[i], NAME_MAX_LEN, "%03d%s", i,
+			 i < 4 ? "xxxx" : "xxxxxxxx");
+	strcpy(set->names[7], "regression-child");
+	nameset_seal(set);
+
+	err = session_open(&s, scratch);
+	CHECKF(err == 0, "cannot mount full index fixture: %d", err);
+	if (err)
+		goto free_set;
+	err = ntfs_lookup(s.root, "lab", &dir);
+	CHECKF(err == 0, "cannot look up /lab: %d", err);
+	if (err)
+		goto close;
+	err = read_shape(scratch, ntfs_inode_number(dir), &sh);
+	CHECKF(err == 0, "cannot read full index fixture shape: %d", err);
+	if (err)
+		goto close;
+	CHECKF(!sh.has_alloc && !sh.large_index &&
+	       sh.root_size == 744 && sh.record_free == 16,
+	       "unexpected fixture shape: root=%u free=%u large=%d allocation=%d",
+	       sh.root_size, sh.record_free, sh.large_index, sh.has_alloc);
+
+	err = ntfs_mkdir(dir, set->names[7], 0040755, NULL);
+	CHECKF(err == 0, "mkdir in nearly full resident index failed: %d", err);
+	if (err)
+		goto close;
+	ntfs_inode_put(dir);
+	dir = NULL;
+	session_close(&s);
+
+	err = session_open(&s, scratch);
+	CHECKF(err == 0, "cannot remount converted directory image: %d", err);
+	if (err)
+		goto free_set;
+	err = ntfs_lookup(s.root, "lab", &dir);
+	CHECKF(err == 0, "cannot look up /lab after remount: %d", err);
+	if (!err) {
+		for (int i = 0; i < set->n; i++)
+			set->live[i] = true;
+		set->nlive = set->n;
+		verify_lookup(dir, set, "full root/remounted");
+		verify_readdir(dir, set, "full root/remounted");
+	}
+close:
+	if (dir)
+		ntfs_inode_put(dir);
+	session_close(&s);
+	fsck_ok(scratch, "expanding nearly full resident index");
+free_set:
+	nameset_free(set);
+out:
+	cleanup_image(scratch);
+	printf("test_full_index_root\n");
 }
 
 /* ---- 2. several thousand entries: splits, and a root that reparents --- */
@@ -1267,21 +1354,23 @@ int main(void)
 {
 	const char *mk = tool_path("NTFS_MKNTFS", "tools/.local/sbin/mkntfs");
 
-	if (!have_tool(mk)) {
-		fprintf(stderr, "SKIP test_bigdir: no mkntfs at %s "
-			"(build it with tools/build-ntfsprogs.sh)\n", mk);
-		return 0;
-	}
 	if (!fsck_available())
 		fprintf(stderr, "WARNING test_bigdir: no ntfsck at %s -- the "
 			"structural checks, which are the valuable half of this "
 			"file, will not run (tools/build-ntfsprogs-plus.sh)\n",
 			tool_path("NTFS_NTFSCK", "tools/.local-plus/sbin/ntfsck"));
 
+	test_full_index_root();
+	if (!have_tool(mk)) {
+		fprintf(stderr, "SKIP test_bigdir: no mkntfs at %s "
+			"(build it with tools/build-ntfsprogs.sh)\n", mk);
+		return failures ? 1 : 0;
+	}
+
 	snprintf(base_img, sizeof(base_img), "/tmp/ttntfs-bigdir-%d-base.img", (int)getpid());
 	if (make_image(base_img, 64) != 0) {
 		fprintf(stderr, "SKIP test_bigdir: mkntfs failed on %s\n", base_img);
-		return 0;
+		return failures ? 1 : 0;
 	}
 	if (!fsck_ok(base_img, "mkntfs")) {
 		unlink(base_img);
