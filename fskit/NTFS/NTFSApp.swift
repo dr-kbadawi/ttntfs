@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         Task { @MainActor in LoginItem.shared.registerOnFirstRun() }
+        // At most once a day, and not at all with "Check for updates" off.
+        Task { @MainActor in UpdateCheck.shared.start() }
     }
 }
 

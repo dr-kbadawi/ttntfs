@@ -44,6 +44,7 @@ final class Uninstaller: ObservableObject {
         Self.unregisterFromLaunchServices()
 
         state = .working("Deleting settings…")
+        UpdateCheck.shared.stop()       // or a check finishing late writes some back
         Self.removeSupportFiles()
 
         state = .working("Moving to the Trash…")

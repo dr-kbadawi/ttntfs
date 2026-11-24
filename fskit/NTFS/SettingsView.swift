@@ -7,6 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject private var loginItem: LoginItem
     @EnvironmentObject private var uninstaller: Uninstaller
     @State private var confirmRemove = false
+    @ObservedObject private var updates = UpdateCheck.shared
     @AppStorage(SharedSettings.readOnly, store: SharedSettings.store) private var readOnly = false
     @AppStorage(SharedSettings.showHidden, store: SharedSettings.store) private var showHidden = true
     @AppStorage(SharedSettings.showSystem, store: SharedSettings.store) private var showSystem = false
@@ -30,6 +31,13 @@ struct SettingsView: View {
                     Text("Only the menu-bar status needs the app; volumes mount without it.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+                // The app's only network request; see UpdateCheck.swift.
+                Toggle("Check for updates", isOn: Binding(get: { updates.isEnabled },
+                                                          set: { updates.setEnabled($0) }))
+                Text("Once a day, asks GitHub for the latest version number. Nothing about "
+                     + "you or your disks is sent. Off: the app makes no network requests.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("Mounting") {
                 Toggle("Mount volumes read-only", isOn: $readOnly)
@@ -82,6 +90,7 @@ struct SettingsView: View {
              */
             Section("About") {
                 LabeledContent("TT NTFS Native", value: BuildInfo.versionLine)
+                UpdateNotice()
                 LabeledContent("Build", value: BuildInfo.commit)
                     .font(.caption).foregroundStyle(.secondary)
                 Text(BuildInfo.copyright)

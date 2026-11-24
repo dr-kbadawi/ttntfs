@@ -207,6 +207,7 @@ targets:
       - path: NTFS/ModuleEnabler.swift            # DiskInventory.refresh() calls into it
       - path: NTFS/ExtensionStatus.swift          # ModuleEnabler opens the Settings pane through it
       - path: NTFS/SharedSettings.swift
+      - path: NTFS/UpdateCheck.swift              # makes no request unless start() is called
       - path: ../core/stub/ntfscore_stub.c
         group: Stub
     settings:

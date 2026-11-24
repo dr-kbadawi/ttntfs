@@ -13,6 +13,7 @@ struct MenuView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             header
+            UpdateNotice()      // empty unless a newer version is out (UpdateCheck.swift)
             Divider()
             // Every NTFS partition, mounted or not, so nothing is hidden: a
             // partition macOS declined to mount, a recovery partition, or a

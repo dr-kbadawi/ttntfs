@@ -121,6 +121,7 @@
     <a href="#tested">How it was tested</a>
     <a href="#features">What works</a>
     <a href="#install">Install</a>
+    <a href="#update">Updating</a>
     <a href="#faq">FAQ</a>
   </nav>
 </header>
@@ -158,7 +159,7 @@
     </div>
     <div class="card">
       <h3>Small and native</h3>
-      <p>1.6 MB. A menu-bar app and a system extension, written in C and Swift. No background daemons, no telemetry, no account.</p>
+      <p>1.6 MB. A menu-bar app and a system extension, written in C and Swift. No background daemons, no telemetry, no account. Its only network request is a once-a-day check for a new version, which you can turn off.</p>
     </div>
   </div>
 </section>
@@ -243,6 +244,18 @@
   </ol>
   <p class="note" style="margin-top:14px">The app lives in the menu bar. It shows each NTFS volume, whether it mounted read/write, and — if it didn’t — the reason and the one action that fixes it.</p>
   <p class="note">Working? <a href="https://github.com/dr-kbadawi/ttntfs">A star on GitHub</a> helps other Mac users find&nbsp;it.</p>
+</section>
+
+<section id="update">
+  <h2>Updating</h2>
+  <p>Once a day the app asks GitHub for the latest version number, and when a newer one is out, its menu-bar panel and Settings say so. That is the app’s only network request. It sends nothing about you or your disks, though like any request it reaches GitHub from your IP address. <b>Check for updates</b> in Settings turns it off.</p>
+  <ol>
+    <li>Eject your NTFS disks. The first launch of the new copy restarts the file system extension, which unmounts every disk it serves.</li>
+    <li>Quit TT NTFS Native from its menu-bar panel.</li>
+    <li>Drag it from the <a href="https://github.com/dr-kbadawi/ttntfs/releases/latest/download/TT-NTFS-Native.dmg">new DMG</a> to Applications and replace the old copy — or, if you installed it with Homebrew, run <code>brew update &amp;&amp; brew upgrade --cask ttntfs</code>.</li>
+    <li>Open it.</li>
+  </ol>
+  <p class="note" style="margin-top:14px">To get an email for every release, choose <b>Watch → Custom → Releases</b> on the <a href="https://github.com/dr-kbadawi/ttntfs">GitHub page</a>. Feed readers can follow <a href="https://github.com/dr-kbadawi/ttntfs/releases.atom">releases.atom</a>.</p>
 </section>
 
 <section id="faq">

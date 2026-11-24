@@ -290,6 +290,10 @@ volumes mounted from then on.
 | Write symlinks in WSL format | `WSL_SYMLINKS` | `wsl_symlinks` | `__ntfs_create`: tag choice |
 | TRIM freed space | `DISCARD` | `discard` | `NVolDiscard` in `lcnalloc.c` -- **and stops there** |
 | Open at login | -- | -- | `SMAppService.mainApp` |
+| Check for updates | -- | -- | `UpdateCheck.swift`: at most one request a day to GitHub's API, none when off |
+
+Check for updates came later and was not part of that live run; `UpdateCheckTests`
+covers it, including that it sends nothing while off.
 
 Two platform limits the switches cannot get past:
 

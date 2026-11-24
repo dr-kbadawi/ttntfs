@@ -48,7 +48,8 @@ improved by anyone.
 - **Open source, all of it.** The driver, the app, the tests, and the engineering
   notes — including every bug found along the way and how it was found.
 - **Small and native.** A menu-bar app and a system extension, in C and Swift.
-  No background daemons, no telemetry, no account.
+  No background daemons, no telemetry, no account. Its only network request is
+  a once-a-day check for a new version, which you can turn off ([Updating](#updating)).
 
 ## Compared with the alternatives
 
@@ -137,6 +138,29 @@ itself, and the switch works. There the button reads **Open System Settings**;
 choose **By Category → File System Extensions** and turn TT NTFS Native on (the
 switch in the **By App** list does not stay on). `fskit/README.md` has the detail, the evidence, and the known issues,
 including what every switch in Settings actually does.
+
+## Updating
+
+Once a day the app asks GitHub for the latest version number, and when a newer
+version is out, the menu-bar panel and Settings → About say so. This is the
+app's only network request. It sends nothing about you or your disks, only the
+app's name and version, though like any request it reaches GitHub from your IP
+address. **Check for updates** in Settings turns it off. All of it is in
+`fskit/NTFS/UpdateCheck.swift`.
+
+To update:
+
+1. Eject your NTFS disks. The first launch of the new copy restarts the file
+   system extension, which unmounts every disk it serves.
+2. Quit TT NTFS Native from its menu-bar panel.
+3. Drag the app from the [new DMG](https://github.com/dr-kbadawi/ttntfs/releases/latest/download/TT-NTFS-Native.dmg)
+   to Applications and replace the old copy, or, if you installed it with
+   Homebrew, run `brew update && brew upgrade --cask ttntfs`.
+4. Open it.
+
+To get an email for every release, choose **Watch → Custom → Releases** on this
+repository's GitHub page. The release feed is
+<https://github.com/dr-kbadawi/ttntfs/releases.atom>.
 
 ## Building
 

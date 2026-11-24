@@ -47,6 +47,9 @@
 		DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
 		F0989E06E6B8D261A2BE925E /* ntfs_bdev_fskit.m in Sources */ = {isa = PBXBuildFile; fileRef = 3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */; settings = {COMPILER_FLAGS = "-fno-modules"; }; };
 		F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 223EFAF44C74CB35E5902EFC /* SettingsView.swift */; };
+		93ACA0F59C44D98FF3CA648A /* UpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B57C3F642751B567DA78DD5B /* UpdateCheck.swift */; };
+		B9C9B2775E9B928955AED624 /* UpdateCheck.swift in Sources */ = {isa = PBXBuildFile; fileRef = B57C3F642751B567DA78DD5B /* UpdateCheck.swift */; };
+		A6AF277C05D8C9DE289BDE65 /* UpdateCheckTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D90F81482791E8F29B80DB9 /* UpdateCheckTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -113,6 +116,8 @@
 		EDE4FF55DC86B5614ECCE4EC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F0994252735E8DC1C493157B /* NTFS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NTFS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionStatus.swift; sourceTree = "<group>"; };
+		B57C3F642751B567DA78DD5B /* UpdateCheck.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCheck.swift; sourceTree = "<group>"; };
+		1D90F81482791E8F29B80DB9 /* UpdateCheckTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpdateCheckTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -148,6 +153,7 @@
 				223EFAF44C74CB35E5902EFC /* SettingsView.swift */,
 				C0F30CB423189222B7D3898A /* SharedSettings.swift */,
 				CC4CCF9F76F32BAC5EB46CBC /* Uninstaller.swift */,
+				B57C3F642751B567DA78DD5B /* UpdateCheck.swift */,
 				1D88AB6F444249E71E139018 /* VolumeMonitor.swift */,
 			);
 			path = NTFS;
@@ -161,6 +167,7 @@
 				9F0EECD48947D4F9073B01BC /* MountOptionsTests.swift */,
 				59E35CFA95134137ACE993DB /* MountStatusTests.swift */,
 				2083108A0772CF7D896F6005 /* UnicodeNameAlternativesTests.swift */,
+				1D90F81482791E8F29B80DB9 /* UpdateCheckTests.swift */,
 				AF94786F3FEE8A7680967946 /* NoteExpiryTests.swift */,
 				EA5D8258D4CB0AA5C26901E7 /* StarLineTests.swift */,
 			);
@@ -355,6 +362,8 @@
 				7D5CF7FE4E7C9D94B13DDC03 /* StarLineTests.swift in Sources */,
 				6E876ED46A85A8404A455361 /* Options.swift in Sources */,
 				26B443FBBC3143E710CDD55F /* SharedSettings.swift in Sources */,
+				B9C9B2775E9B928955AED624 /* UpdateCheck.swift in Sources */,
+				A6AF277C05D8C9DE289BDE65 /* UpdateCheckTests.swift in Sources */,
 				4888F91B5969DE5DA1D96C3D /* ntfscore_stub.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -374,6 +383,7 @@
 				F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */,
 				B971CE42F874331618BF0199 /* SharedSettings.swift in Sources */,
 				67A44AFE5BD1D0652DBBF55A /* Uninstaller.swift in Sources */,
+				93ACA0F59C44D98FF3CA648A /* UpdateCheck.swift in Sources */,
 				70BE7DD5C6A239D7D7A3471A /* VolumeMonitor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
