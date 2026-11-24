@@ -141,6 +141,8 @@ final class DiskInventory: ObservableObject {
     /// Physical disks with at least one volume still mounted, counting volumes
     /// that are not NTFS. Nothing to eject when a disk is not in here.
     @Published private(set) var disksWithMountedVolumes: Set<String> = []
+    /// The menu's one-time line asking for a GitHub star is due. See StarLine.
+    @Published private(set) var starLineDue = StarLine.isDue()
 
     private var session: DASession?
     private var timer: Timer?
@@ -211,6 +213,10 @@ final class DiskInventory: ObservableObject {
         }
         found.sort { $0.bsdName.localizedStandardCompare($1.bsdName) == .orderedAscending }
         if found != partitions { partitions = found }
+        // Counts towards the star line, and notices when the link in
+        // Settings › About has retired it. See StarLine.
+        let due = StarLine.poll(found)
+        if due != starLineDue { starLineDue = due }
 
         let mountedDisks = Set(mounts.keys.compactMap { bsd -> String? in
             guard let r = bsd.range(of: "^disk[0-9]+", options: .regularExpression) else { return nil }
@@ -265,6 +271,14 @@ final class DiskInventory: ObservableObject {
         // such a note is the lenient choice, and the only one available: with
         // nothing to compare, "same disk" cannot be decided.
         return attachmentID != 0 && current.attachmentID != attachmentID
+    }
+
+    // MARK: Star line
+
+    /// The link was clicked or the line dismissed: either way it is gone for good.
+    func retireStarLine() {
+        StarLine.retire()
+        starLineDue = false
     }
 
     // MARK: Actions
@@ -625,4 +639,107 @@ final class DiskInventory: ObservableObject {
         }
         return table
     }
+}
+
+/*
+ * The menu's one request for a GitHub star.
+ *
+ * Most people who use this never see the repository: the site's Download button
+ * and Homebrew both fetch the DMG directly. So the menu shows one quiet line
+ * once disks have mounted read/write through this driver on three separate
+ * occasions -- by then the user knows whether it works for them. Clicking the
+ * link or dismissing the line retires it for good, and so does following the
+ * permanent link in Settings › About. There is no reminder and nothing
+ * depends on it.
+ *
+ * Nothing here touches the network. The link opens in the browser, and what
+ * is counted stays in the app group's defaults, beside the login-item flag,
+ * which the uninstaller removes with the rest.
+ */
+enum StarLine {
+    static let repository = URL(string: "https://github.com/dr-kbadawi/ttntfs")!
+
+    /// Occasions to see before the line appears.
+    static let threshold = 3
+    /// New mounts this soon after the last occasion counted belong to it: a
+    /// dock full of disks, the partitions of one disk mounting one after
+    /// another, an eject and remount while sorting something out.
+    static let occasionGap: TimeInterval = 60 * 60
+
+    private static let occasionsKey = "starLineOccasions"
+    private static let lastOccasionKey = "starLineLastOccasion"
+    private static let countedKey = "starLineCountedMounts"
+    private static let bootKey = "starLineBootSession"
+    private static let retiredKey = "starLineRetired"
+
+    static func isDue(_ store: UserDefaults = SharedSettings.store) -> Bool {
+        !store.bool(forKey: retiredKey) && store.integer(forKey: occasionsKey) >= threshold
+    }
+
+    static func retire(_ store: UserDefaults = SharedSettings.store) {
+        store.set(true, forKey: retiredKey)
+    }
+
+    /// One poll of the inventory: count what is new, remember what has been
+    /// counted, and say whether the line is due.
+    static func poll(_ partitions: [Partition], now: Date = Date(),
+                     store: UserDefaults = SharedSettings.store,
+                     boot: String = StarLine.bootSession) -> Bool {
+        guard !store.bool(forKey: retiredKey),
+              store.integer(forKey: occasionsKey) < threshold else { return isDue(store) }
+
+        // What was counted outlives a relaunch, so a volume that stayed
+        // mounted is not counted again when the app starts. It does not
+        // outlive a restart: attachment IDs are only unique within one boot.
+        let sameBoot = store.string(forKey: bootKey) == boot
+        let before: Set<String> = sameBoot ? Set(store.stringArray(forKey: countedKey) ?? []) : []
+        let step = newMounts(partitions, counted: before)
+        if step.counted != before || !sameBoot {
+            store.set(step.counted.sorted(), forKey: countedKey)
+            store.set(boot, forKey: bootKey)
+        }
+
+        guard step.fresh > 0 else { return false }
+        if let last = store.object(forKey: lastOccasionKey) as? Date,
+           now >= last, now.timeIntervalSince(last) < occasionGap {
+            return false                                // part of the last occasion
+        }
+        store.set(now, forKey: lastOccasionKey)
+        store.set(store.integer(forKey: occasionsKey) + 1, forKey: occasionsKey)
+        return isDue(store)
+    }
+
+    /// Volumes mounted read/write by this driver that `counted` has not seen.
+    /// The inventory sees a state every two seconds, not mount events, so:
+    ///
+    /// - A volume is new when it is first seen mounted read/write by this
+    ///   driver. One mounted read-only is new when it becomes writable.
+    /// - It is forgotten only once it is unmounted, so mounting it again
+    ///   makes it new again; a status that flickers while it stays mounted
+    ///   does not.
+    ///
+    /// `counted` holds the volumes already counted and still mounted, keyed
+    /// by name and attachment because BSD names are recycled (see
+    /// Partition.attachmentID). Pure, so NTFSTests can drive it.
+    static func newMounts(_ partitions: [Partition], counted: Set<String>)
+        -> (fresh: Int, counted: Set<String>) {
+        func key(_ p: Partition) -> String { "\(p.bsdName)#\(p.attachmentID)" }
+        var kept = counted.intersection(partitions.filter(\.isMounted).map(key))
+        var fresh = 0
+        for p in partitions where p.isMounted && p.servedByOurDriver && !p.mountedReadOnly
+                                  && !kept.contains(key(p)) {
+            kept.insert(key(p))
+            fresh += 1
+        }
+        return (fresh, kept)
+    }
+
+    /// A UUID the kernel makes up at every boot.
+    static let bootSession: String = {
+        var size = 0
+        guard sysctlbyname("kern.bootsessionuuid", nil, &size, nil, 0) == 0, size > 0 else { return "" }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname("kern.bootsessionuuid", &buffer, &size, nil, 0) == 0 else { return "" }
+        return String(cString: buffer)
+    }()
 }

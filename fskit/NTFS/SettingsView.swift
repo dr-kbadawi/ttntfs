@@ -97,6 +97,16 @@ struct SettingsView: View {
                      "and others, used under the GPL.")
                     .font(.caption2).foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+                // The permanent home of the menu's one-time line (StarLine).
+                // Opens in the browser; the app sends nothing anywhere. Someone
+                // who has been to the page from here is not asked in the menu.
+                Link(destination: StarLine.repository) {
+                    Label("Star TT NTFS Native on GitHub", systemImage: "star")
+                }
+                .environment(\.openURL, OpenURLAction { _ in
+                    StarLine.retire()
+                    return .systemAction
+                })
             }
             // Dragging the app to the Trash would leave the module in FSKit's
             // enabled list, the bundle registered with LaunchServices, and the

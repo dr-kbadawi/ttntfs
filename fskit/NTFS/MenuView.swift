@@ -55,6 +55,9 @@ struct MenuView: View {
                     }
                 }
             }
+            if showStarLine {
+                StarLineRow(retire: { inventory.retireStarLine() })
+            }
             Divider()
             HStack {
                 Button("Settings…") { showSettings() }
@@ -166,6 +169,16 @@ struct MenuView: View {
             byDisk[partition.wholeDisk, default: []].append(partition)
         }
         return order.map { ($0, byDisk[$0] ?? []) }
+    }
+
+    /// The star line is for someone whose disks are working: not while the
+    /// extension is off, and not while a volume or a note shows a problem.
+    private var showStarLine: Bool {
+        guard inventory.starLineDue, status.state == .enabled else { return false }
+        let troubled = inventory.partitions.contains {
+            $0.isMounted && ($0.mountedReadOnly || $0.heldByAnotherDriver)
+        }
+        return !troubled && inventory.note?.kind != .problem && inventory.noteForDisk?.kind != .problem
     }
 
     @ViewBuilder private var header: some View {
@@ -421,5 +434,46 @@ struct PartitionRow: View {
         if !partition.isMounted { return "" }
         if partition.heldByAnotherDriver { return "Mounted by the system, not by this driver." }
         return partition.mountedReadOnly ? reason : ""
+    }
+}
+
+/// The one-time request for a GitHub star; when it appears is StarLine's
+/// business (DiskInventory.swift). Following the link or pressing the cross
+/// retires it for good.
+struct StarLineRow: View {
+    let retire: () -> Void
+
+    private var message: AttributedString {
+        var link = AttributedString("A star on GitHub")
+        link.link = StarLine.repository
+        // The site says "helps other Mac users find it"; that wraps here.
+        return AttributedString("Working? ") + link + AttributedString(" helps others find it.")
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "star")
+                .accessibilityHidden(true)
+            Text(message)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button(action: retire) {
+                Image(systemName: "xmark")
+                    .padding(2)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Don't show this again")
+            .accessibilityLabel("Don't show this again")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        // Open the page in the browser as any link would, and retire the line
+        // on the way: a click is as final as the cross.
+        .environment(\.openURL, OpenURLAction { url in
+            NSWorkspace.shared.open(url)
+            retire()
+            return .handled
+        })
     }
 }
