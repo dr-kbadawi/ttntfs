@@ -233,6 +233,8 @@ static int ntfs_sd_add_everyone(struct ntfs_inode *ni)
 	return ret;
 }
 
+static int ntfs_test_inode_attr(struct inode *vi, void *data);	/* PORT */
+
 static struct ntfs_inode *__ntfs_create(struct mnt_idmap *idmap, struct inode *dir,
 		__le16 *name, u8 name_len, mode_t mode, dev_t dev,
 		__le16 *target, int target_len,
@@ -678,6 +680,26 @@ err_out:
 
 	if (rollback_reparse)
 		ntfs_delete_reparse_index(ni);
+	/*
+	 * PORT: evict the attribute inodes this create opened -- $EA and
+	 * $EA_INFORMATION in ntfs_write_ea(), $SECURITY_DESCRIPTOR and $DATA in
+	 * the ntfs_attr_remove() calls above -- as ntfs_delete() does when a
+	 * file's last name goes, and while the record is still ours. Each holds
+	 * a reference on @vi. Left cached, they kept @vi alive past the iput()
+	 * below, and the next sync wrote its freed copy of the record over
+	 * whichever file had been given the record since. They also stayed
+	 * hashed under the record number, so that file's own EA writes found
+	 * them and went into @ni. Finding 27 (U12).
+	 */
+	{
+		struct inode *attr_vi;
+
+		while ((attr_vi = ilookup5(sb, ni->mft_no, ntfs_test_inode_attr,
+					   (void *)(uintptr_t)ni->mft_no)) != NULL) {
+			clear_nlink(attr_vi);
+			iput(attr_vi);
+		}
+	}
 	/*
 	 * Free extent MFT records (should not exist any with current
 	 * ntfs_create implementation, but for any case if something will be

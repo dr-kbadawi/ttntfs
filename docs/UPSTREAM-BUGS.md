@@ -2,10 +2,10 @@
 
 Two ledgers, two numbering schemes, because they need different actions:
 
-* **U1-U11** are bugs in the vendored Linux 7.1 `fs/ntfs` source. They are worth
+* **U1-U12** are bugs in the vendored Linux 7.1 `fs/ntfs` source. They are worth
   reporting upstream once reduced to kernel reproducers, and each is worked
   around or fixed here behind a `PORT:` comment marking the divergence.
-* **5-26** are defects in this port, its ABI or its tooling, found mostly by the
+* **5-27** are defects in this port, its ABI or its tooling, found mostly by the
   test suites written on 2026-09-14. The sequence starts at 5 because these two
   lists were one list until the upstream table grew past four rows; the numbers
   are referenced from commit messages and test comments, so they stay as they
@@ -29,6 +29,7 @@ fixing one means updating the test that documents it.
 | U9 | `ntfs_sync_mft_mirror()` (`mft.c`) | Builds the mirror offset from the record's offset *inside its folio* and drops `folio->index` entirely. Invisible while several records share a page, which is every volume with 1024-byte MFT records; on 4Kn, `mkntfs` makes 4096-byte records, one per page, so the in-folio offset is 0 for all of them and every mirror copy is written onto slot 0. | Offset includes `(u64)folio->index << PAGE_SHIFT`. `PORT:` comment. |
 | U10 | `ntfs_enlarge_attribute()` (`inode.c`) | Drops the error from `ntfs_attr_truncate()` and returns -1. `ntfs_ib_write()` passes that on verbatim, so when a directory's `$INDEX_ALLOCATION` cannot grow on a full volume, `create()`, `mkdir()` and `link()` fail with EPERM. Nothing is logged above debug level. | Backport of upstream 5cd6692db272 (mainline, 2026-10-20), identical apart from a `PORT:` comment. Finding 26. |
 | U11 | `ntfs_mft_data_extend_allocation_nolock()`, `ntfs_mft_record_alloc()` and `ntfs_mft_bitmap_extend_allocation_nolock()` (`mft.c`) | When there is no cluster left for `$MFT` or its bitmap to grow into, the code reports it through `ntfs_error()`, whose errors=remount-ro handling sets the whole volume read-only. That create gets ENOSPC and every write after it EROFS, unlinks included. On a disk full of data, the first few names in a new folder are enough. Still in mainline as of 8d7fe988 (2026-11). | -ENOSPC is returned without `ntfs_error()`; any other error still goes through it. Nothing has been changed when the allocation fails, so there is nothing to roll back. `PORT:` comments. Finding 26. |
+| U12 | `__ntfs_create()` (`namei.c`) | When a create fails after the new file's EAs are written -- on a full disk, when the folder's index cannot grow -- the error path frees the MFT record but leaves the attribute inodes the create opened in the inode cache. Each holds a reference on the file's inode, so `discard_new_inode()` does not evict it. When the record is next given to a file, that file's EA writes find the cached attribute inodes (`ntfs_test_inode()` matches them by record number, type and name) and go into the dead inode, and the next writeback writes the dead inode's freed copy of the record over the new file's. The new name then points at a record not in use: the file is gone. Same code in mainline as of 68271fbe7d14 (2026-11-14); not reproduced on a Linux kernel. | The error path evicts the record's attribute inodes before freeing it, as `ntfs_delete()` does when a file's last name goes. `PORT:` comment. Finding 27. |
 
 U5-U7 were confirmed present verbatim in `upstream/linux-v7.1/fs/ntfs/compress.c`: the only differences between it and `core/ntfs/compress.c` are folio and bio accessors. They are Linux bugs, not porting bugs.
 
@@ -778,11 +779,82 @@ Not covered here, and not pinned by a test:
   `ntfs_error()`. If a directory's first index block cannot get a cluster, a
   full disk could still set the volume read-only. None of the scenarios tried
   reached it: the folder's records or index always ran out first.
-* A one-record leak, the same on 0.4.2. Fill a 2 MB volume's root with names to
-  ENOSPC, unlink 40 of them, `mkdir d`, and fill `d` to ENOSPC. The `$MFT`
-  bitmap bit for record 910 stays set although the record is not in use, and
-  `ntfsck -n` exits 4. It is a leak only: no record in use has its bit clear.
-  chkdsk reclaims it.
+
+A one-record `$MFT` bitmap leak was also noted here at first. It was not a
+leak but a lost file: finding 27.
+
+## Finding 27 **FIXED**: a create that failed on a full folder lost the next file given its record
+
+Found 2026-11-24, following up the leak noted under finding 26, and found
+independently the same day by the review of PR #8. Present in 0.4.2.
+
+The sequence: fill a 2 MB volume's root with empty names until a create fails
+because the root's index cannot grow (846 names). That create had already taken
+MFT record 910 and written the new file's attributes, and it freed the record
+again. Unlink 40 names, `mkdir d`, and fill `d`. Its 40th name, `n00039xx`, is
+given record 910 and created without error. After the next sync and a remount,
+`n00039xx` is still listed in `d` but cannot be opened, and looking it up sets
+the volume read-only (`ntfs_iget()` fails through `ntfs_error()`). `ntfsck -n`
+exits 4: first the dangling index entry, then the `$MFT` bitmap bit set for a
+record not in use. The bitmap line is the last one printed, which is why it was
+first read as a leak.
+
+The review's form is shorter, and the file had data in it. Free three names
+instead of forty, `mkdir d`, and create `z0`, `z1` and `z2` in it with 30
+bytes each. `ntfs_volume_sync()` and the unmount both return 0. After a
+remount `z0` and `z1` read back intact; `z2`, which was given record 910, is
+the one that is gone.
+
+The device writes to record 910 at that sync show the cause: `n00039xx`'s record
+(in use), then the failed create's (`e00846xx`, not in use), then the page around
+them with the same stale bytes. The failed create's inode was still alive:
+
+* `__ntfs_create()` writes `$LXUID`, `$LXGID` and `$LXMOD` through
+  `ntfs_write_ea()`, which uses attribute inodes for `$EA` and
+  `$EA_INFORMATION`; the error path's own `ntfs_attr_remove()` calls add two
+  more, for `$SECURITY_DESCRIPTOR` and `$DATA`. An attribute inode stays cached
+  after its last `iput()`, since it is hashed and has the file's link count, and
+  holds a reference on its base inode until it is evicted.
+* So the error path's final `iput()` did not evict the failed file's inode. It
+  stayed on the dirty list with its freed copy of the record.
+* When record 910 was reused, `n00039xx`'s EA writes asked for record 910's
+  `$EA` and `$EA_INFORMATION` and got the cached ones, which are matched by
+  record number, type and name only. The writes went into the dead inode,
+  re-dirtying it, and the sync wrote it after the new file.
+
+The misrouted EA writes damage the new file even when the overwrite does not
+happen. With the dead inode's write suppressed by hand, `n00039xx`'s record has
+an `$EA_INFORMATION` of all zeroes beside an `$EA` holding only `$LXUID`. Every
+other file's `$EA_INFORMATION` gives 60 bytes, the size of its three entries.
+ntfsck does not compare the two and the ABI does not show EAs, so nothing
+reported it.
+
+FSKit syncs about every second operation, which might have hidden this behind an
+early, harmless write of the freed record. It does not: with a sync after every
+create the file is still lost, because the reused file's EA writes re-dirty the
+dead inode in the same window.
+
+The allocator, the first suspect, is not involved: instrumenting
+`ntfs_mft_record_alloc()` showed no undo path running, and record 910 was
+allocated and freed correctly both times.
+
+The fix evicts the record's attribute inodes in the error path before the record
+is freed. It is the loop `ntfs_delete()` runs when a file's last name goes, where
+the record is likewise freed only after its attribute inodes are gone. Running
+it before the free also means no other create can be given the record while
+they still match it.
+
+The test is `test_failed_create_record_reuse` in `core/tests/test_faults.c`. It
+runs both sequences, as `reuse_fill()` and `reuse_data()`, and requires, after
+each: `ntfsck -n` clean; every in-use record's `$EA_INFORMATION` query length
+equal to its `$EA` size (`ea_disagreements()`, a scan of the unmounted image,
+since ntfsck does not check it); and, after a remount, every name present and
+every file's bytes intact. Before the fix, ntfsck exits 4 in both, `n00039xx`
+and `z2` are gone, and `z0`/`z1` read back. With only the dead inode's write
+suppressed, ntfsck is clean and every name survives, and the EA check alone
+fails, on record 910. On a 0.4.2 tree both sequences fail the same way, and
+with the fix applied the only failures left there are the root fills stopping
+with EPERM (U10).
 
 ## Phase 2 compressed round trip: CLOSED (2026-09-18)
 

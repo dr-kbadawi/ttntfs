@@ -50,9 +50,11 @@ tools/ci.sh --list       # what it will run
 * **`crash`** (217) — the write ordering, asserted by mapping a sync's device
   writes back to `$MFT`/`$Bitmap`, then 55 interrupted operations checked with
   `ntfsck`.
-* **`faults`** (190) — injected read, write and flush failures at fourteen
+* **`faults`** (221) — injected read, write and flush failures at fourteen
   points, plus volumes filled to `ENOSPC`: one with data, and two with names,
-  which must stay writable afterwards (finding 26).
+  which must stay writable afterwards (finding 26); and a create that fails on
+  a full folder, whose MFT record must be safe to give to the next file
+  (finding 27).
 * **`geometry`** (672) — 4Kn sectors, cluster sizes either side of the sector
   size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
   and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this
@@ -199,7 +201,8 @@ extraction moved the comment with it and changed nothing else.
 * **`ntfsck -n` does not catch everything.** Measured, not assumed: it reports a
   dangling index entry and a `$Bitmap` that calls allocated clusters free, both
   exit 4. It does **not** catch a zeroed MFT record with no index entry pointing
-  at it. Keep the in-test assertions as well as the structural check.
+  at it, or an `$EA_INFORMATION` that disagrees with its `$EA` (finding 27).
+  Keep the in-test assertions as well as the structural check.
 * **A cached read proves nothing.** Several bugs this week passed a read-back and
   failed only after a remount: a truncated symlink target served from
   `ni->target`, and a compressed extension served from the page cache. Every
