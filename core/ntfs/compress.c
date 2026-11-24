@@ -1317,6 +1317,47 @@ static bool cb_is_allocated(struct ntfs_inode *ni, s64 cb_vcn)
 	return allocated;
 }
 
+/*
+ * ntfs_write_cb_runs - write @len bytes of a compression block to its clusters
+ *
+ * PORT: upstream writes the block in one bio from the first allocated
+ * cluster. The port writes it a run at a time, looking each run up in the run
+ * list from @vcn on, because the block's clusters need not be contiguous (see
+ * the allocation in ntfs_write_cb()).
+ */
+static int ntfs_write_cb_runs(struct ntfs_inode *ni, s64 vcn, const void *data, u32 len)
+{
+	struct ntfs_volume *vol = ni->vol;
+	const u8 *buf = data;
+
+	while (len) {
+		struct runlist_element *rl;
+		s64 lcn, count;
+		u32 n;
+		int err;
+
+		down_read(&ni->runlist.lock);
+		rl = __ntfs_attr_find_vcn_nolock(&ni->runlist, vcn);
+		if (IS_ERR(rl)) {
+			up_read(&ni->runlist.lock);
+			return PTR_ERR(rl);
+		}
+		lcn = ntfs_rl_vcn_to_lcn(rl, vcn);
+		count = rl->length - (vcn - rl->vcn);
+		up_read(&ni->runlist.lock);
+		if (lcn < 0 || count <= 0)
+			return -EIO;
+		n = min_t(u64, len, ntfs_cluster_to_bytes(vol, count));
+		err = ntfs_bdev_write(vol->sb, buf, ntfs_cluster_to_bytes(vol, lcn), n);
+		if (err)
+			return err;
+		buf += n;
+		len -= n;
+		vcn += count;
+	}
+	return 0;
+}
+
 static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 		int pages_per_cb)
 {
@@ -1333,7 +1374,7 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 	/* more compressed zeroes, to be followed by some count */
 	static char morezeroes[] = {0x03, 0xb0, 0x02, 0x00};
 	struct page **pages_disk = NULL, *pg;
-	s64 bio_lcn;
+	s64 got = 0, rlc_length = 0;
 	struct runlist_element *rlc, *rl;
 	int i, err;
 	int pages_count = (round_up(ni->itype.compressed.block_size + 2 *
@@ -1445,43 +1486,74 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 	if (err < 0)
 		goto out;
 
-	rlc = ntfs_cluster_alloc(vol, new_vcn, new_length, -1, DATA_ZONE,
-			false, true, true);
-	if (IS_ERR(rlc)) {
-		err = PTR_ERR(rlc);
-		goto out;
-	}
+	/*
+	 * PORT: upstream (7.1 and mainline) asks once for new_length contiguous
+	 * clusters and writes the whole block from rlc->lcn. A contiguous
+	 * request comes back short when a cluster in use ends the longest free
+	 * range the allocator found, and in two runs when that range reaches
+	 * the end of a bitmap page or a zone. The rest of the block then went
+	 * onto clusters the file does not own, over another file's data, and
+	 * the block itself, left short of clusters, read back as a corrupt
+	 * compressed block. Ask again for whatever is still missing, and write
+	 * each run its own part of the block: a compression block may lie in
+	 * several runs, and the reader maps it a cluster at a time.
+	 */
+	for (got = 0; got < new_length; got += rlc_length) {
+		rlc = ntfs_cluster_alloc(vol, new_vcn + got, new_length - got, -1,
+				DATA_ZONE, false, true, true);
+		if (IS_ERR(rlc)) {
+			err = PTR_ERR(rlc);
+			goto undo;
+		}
+		for (rlc_length = 0, rl = rlc; rl->length; rl++)
+			rlc_length += rl->length;
 
-	bio_lcn = rlc->lcn;
-	down_write(&ni->runlist.lock);
-	rl = ntfs_runlists_merge(&ni->runlist, rlc, 0, &new_rl_count);
-	if (IS_ERR(rl)) {
+		down_write(&ni->runlist.lock);
+		rl = ntfs_runlists_merge(&ni->runlist, rlc, 0, &new_rl_count);
+		if (IS_ERR(rl)) {
+			up_write(&ni->runlist.lock);
+			ntfs_error(vol->sb, "Failed to merge runlists");
+			err = PTR_ERR(rl);
+			if (ntfs_cluster_free_from_rl(vol, rlc))
+				ntfs_error(vol->sb, "Failed to free hot clusters.");
+			kvfree(rlc);
+			goto undo;
+		}
+		ni->runlist.count = new_rl_count;
+		ni->runlist.rl = rl;
 		up_write(&ni->runlist.lock);
-		ntfs_error(vol->sb, "Failed to merge runlists");
-		err = PTR_ERR(rl);
-		if (ntfs_cluster_free_from_rl(vol, rlc))
-			ntfs_error(vol->sb, "Failed to free hot clusters.");
-		kvfree(rlc);
-		goto out;
 	}
 
-	ni->runlist.count = new_rl_count;
-	ni->runlist.rl = rl;
-
+	down_write(&ni->runlist.lock);
 	err = ntfs_attr_update_mapping_pairs(ni, 0);
 	up_write(&ni->runlist.lock);
 	if (err) {
 		err = -EIO;
-		goto out;
+		goto undo;
 	}
 
 	/*
-	 * PORT: no bio in user space. The clusters were allocated as one run
-	 * above and the data already sits in a contiguous vmap of @pages
-	 * (@outbuf for compressed, @inbuf otherwise), so write it directly.
+	 * PORT: no bio in user space. The data already sits in a contiguous
+	 * vmap of @pages (@outbuf for compressed, @inbuf otherwise).
 	 */
-	err = ntfs_bdev_write(vol->sb, pages == pages_disk ? outbuf : inbuf,
-			      ntfs_cluster_to_bytes(vol, bio_lcn), bio_size);
+	err = ntfs_write_cb_runs(ni, new_vcn, pages == pages_disk ? outbuf : inbuf,
+				 bio_size);
+	if (!err)
+		goto out;
+undo:
+	/*
+	 * PORT: leave the block a hole, as the punch above did, rather than
+	 * holding clusters with nothing of it written to them, which would read
+	 * as whatever they held before.
+	 */
+	if (got) {
+		int err2 = ntfs_non_resident_attr_punch_hole(ni, new_vcn,
+				ni->itype.compressed.block_clusters);
+
+		if (err2 < 0)
+			ntfs_error(vol->sb, "Failed to release a compression block's clusters (%d).",
+				   err2);
+	}
 out:
 	vunmap(outbuf);
 	for (i = 0; i < pages_count; i++) {

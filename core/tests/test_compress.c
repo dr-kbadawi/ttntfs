@@ -1348,6 +1348,216 @@ static void test_encrypted_refused(void)
 	unlink(scratch);
 }
 
+/* ---- 9. a compression block that cannot have contiguous clusters ------ */
+
+/*
+ * Finding 30 (= U18) in docs/UPSTREAM-BUGS.md. ntfs_write_cb() asks the
+ * allocator for the block's clusters as one contiguous run and wrote the whole
+ * block from the first of them. Where the free space is in pieces smaller than
+ * the block, the allocator returns the longest piece it finds, short, and the
+ * rest of the block went onto the clusters after it, which belong to another
+ * file. Measured before the fix: the write returned 65536, the block then read
+ * back -EILSEQ (it had 8 of its 16 clusters, so it read as compressed), the
+ * file next to the free piece had its 8 clusters replaced by the block's
+ * second half, and ntfsck -n was clean.
+ *
+ * The free space is made of 8-cluster gaps between 8-cluster files: the small
+ * files first, the rest of the volume filled, then every other small file
+ * deleted. A block of random bytes does not compress, so it is stored raw and
+ * needs 16 clusters. The free count is checked before the write: anything free
+ * beyond the gaps should be fewer clusters than a gap. And after it, the
+ * block's clusters are found on the image and must lie in two runs at least:
+ * a block that got 16 contiguous clusters tested nothing.
+ */
+#define FRAG_FILES	64
+#define FRAG_CLUSTERS	8
+#define FRAG_CS		4096u	/* the fixture's cluster size, checked below */
+
+/* The cluster number on the scratch image of each 4 KiB piece of @blk, or -1. */
+static void frag_find_clusters(const unsigned char *blk, int n, long long *lcn)
+{
+	unsigned char c[FRAG_CS];
+	off_t off;
+	int fd, k;
+
+	for (k = 0; k < n; k++)
+		lcn[k] = -1;
+	fd = open(scratch, O_RDONLY);
+	if (fd < 0)
+		return;
+	for (off = 0; pread(fd, c, FRAG_CS, off) == (ssize_t)FRAG_CS; off += FRAG_CS)
+		for (k = 0; k < n; k++)
+			if (lcn[k] < 0 && !memcmp(c, blk + (size_t)k * FRAG_CS, FRAG_CS)) {
+				lcn[k] = (long long)(off / FRAG_CS);
+				break;
+			}
+	close(fd);
+}
+
+static void frag_pattern(unsigned char *p, size_t n, int k)
+{
+	for (size_t i = 0; i < n; i++)
+		p[i] = (unsigned char)('A' + (k * 7 + (int)(i >> 12)) % 26);
+}
+
+static void test_fragmented_rewrite(void)
+{
+	const size_t small = FRAG_CLUSTERS * FRAG_CS, mib = 1u << 20;
+	unsigned char *buf = malloc(mib), *rb = malloc(mib), *orig = malloc(mib);
+	unsigned char *blk = malloc(CB_SIZE);
+	ntfs_inode_t *root = NULL, *dir = NULL, *f;
+	struct ntfs_volume_info info;
+	char name[32];
+	int i, damaged = 0;
+
+	if (!buf || !rb || !orig || !blk) {
+		CHECK(!"out of memory");
+		goto free;
+	}
+	if (copy_fixture("compressed-sparse.img") != 0) {
+		fprintf(stderr, "SKIP test_fragmented_rewrite: no fixture\n");
+		goto free;
+	}
+	if (mount_scratch()) { failures++; checks++; unlink(scratch); goto free; }
+	ntfs_volume_get_info(g_vol, &info);
+	CHECK_EQ(info.cluster_size, FRAG_CS, "the fixture's cluster size");
+	if (info.cluster_size != FRAG_CS) goto out;
+
+	f = open_file("compressed", "text-1m.txt");
+	CHECK(f != NULL);
+	if (!f) goto out;
+	CHECK_EQ(read_exact(f, orig, mib, 0), 0, "read text-1m.txt");
+	ntfs_inode_put(f);
+
+	CHECK_EQ(ntfs_volume_root(g_vol, &root), 0, "root");
+	CHECK_EQ(ntfs_mkdir(root, "frag", 0755, &dir), 0, "mkdir /frag");
+	if (!root || !dir) goto out;
+	for (i = 0; i < FRAG_FILES; i++) {
+		snprintf(name, sizeof(name), "s%02d", i);
+		if (ntfs_create(dir, name, 0100644, &f)) { CHECK(!"create a small file"); break; }
+		frag_pattern(buf, small, i);
+		CHECK_EQ(ntfs_write(f, buf, small, 0), small, "write a small file");
+		ntfs_inode_put(f);
+	}
+	/* The rest of the volume, a file at a time: one file's extension can
+	 * be refused while clusters are free elsewhere, a fresh file's first
+	 * cluster cannot. */
+	memset(buf, 'Z', mib);
+	for (i = 0; i < 16; i++) {
+		size_t chunk = mib;
+		uint64_t off = 0;
+
+		snprintf(name, sizeof(name), "fill%02d", i);
+		if (ntfs_create(dir, name, 0100644, &f))
+			break;
+		for (;;) {
+			ssize_t w = ntfs_write(f, buf, chunk, off);
+
+			if (w == (ssize_t)chunk) { off += chunk; continue; }
+			if (chunk == 4096) break;
+			chunk = 4096;
+		}
+		ntfs_inode_put(f);
+		if (!off)
+			break;
+	}
+	ntfs_inode_put(dir);
+	dir = NULL;
+	ntfs_inode_put(root);
+	root = NULL;
+	CHECK_EQ(ntfs_volume_sync(g_vol), 0, "sync after the fill");
+	umount_scratch();
+
+	CHECK_EQ(mount_scratch(), 0, "remount");
+	if (!g_vol) goto out;
+	CHECK_EQ(ntfs_volume_root(g_vol, &root), 0, "root");
+	CHECK_EQ(ntfs_lookup(root, "frag", &dir), 0, "lookup /frag");
+	if (!dir) goto out;
+	for (i = 0; i < FRAG_FILES; i += 2) {
+		snprintf(name, sizeof(name), "s%02d", i);
+		CHECK_EQ(ntfs_unlink(dir, name), 0, "unlink every other small file");
+	}
+	ntfs_inode_put(dir);
+	dir = NULL;
+	ntfs_inode_put(root);
+	root = NULL;
+	CHECK_EQ(ntfs_volume_sync(g_vol), 0, "sync after the unlinks");
+	ntfs_volume_get_info(g_vol, &info);
+	checks++;
+	if (info.free_clusters < (FRAG_FILES / 2) * FRAG_CLUSTERS ||
+	    info.free_clusters >= (FRAG_FILES / 2 + 1) * FRAG_CLUSTERS) {
+		failures++;
+		fprintf(stderr, "FAIL fragmented_rewrite: %llu clusters free after the "
+			"unlinks, expected %d gaps of %d and less than one gap more: "
+			"16 contiguous clusters may be free, and the case untested\n",
+			(unsigned long long)info.free_clusters, FRAG_FILES / 2,
+			FRAG_CLUSTERS);
+	}
+	umount_scratch();
+
+	/* The rewrite, on a fresh mount: random bytes over block 1. */
+	CHECK_EQ(mount_scratch(), 0, "remount");
+	f = g_vol ? open_file("compressed", "text-1m.txt") : NULL;
+	CHECK(f != NULL);
+	if (!f) goto out;
+	fill_random(blk, CB_SIZE, 30);
+	CHECK_EQ(ntfs_write(f, blk, CB_SIZE, CB_SIZE), CB_SIZE, "rewrite block 1 raw");
+	ntfs_inode_put(f);
+	CHECK_EQ(ntfs_volume_sync(g_vol), 0, "sync after the rewrite");
+	umount_scratch();
+	fsck("fragmented_rewrite");
+	{
+		long long lcn[CB_SIZE / FRAG_CS];
+		int n = (int)(CB_SIZE / FRAG_CS), found = 0, runs = 1;
+
+		frag_find_clusters(blk, n, lcn);
+		for (i = 0; i < n; i++)
+			found += lcn[i] >= 0;
+		for (i = 1; i < n; i++)
+			runs += lcn[i] != lcn[i - 1] + 1;
+		CHECK_EQ(found, n, "clusters of the rewritten block found on the image");
+		checks++;
+		if (found == n && runs < 2) {
+			failures++;
+			fprintf(stderr, "FAIL fragmented_rewrite: the block's %d clusters are "
+				"contiguous on the disk (from LCN %lld): either it was given 16 "
+				"free clusters in a row and this tested nothing, or it was "
+				"written past the run it was given\n", n, lcn[0]);
+		}
+	}
+
+	/* After a remount: the block, the rest of the file, and the neighbours. */
+	CHECK_EQ(mount_scratch(), 0, "remount");
+	f = g_vol ? open_file("compressed", "text-1m.txt") : NULL;
+	CHECK(f != NULL);
+	if (f) {
+		memcpy(orig + CB_SIZE, blk, CB_SIZE);
+		CHECK_EQ(read_exact(f, rb, mib, 0), 0, "read text-1m.txt back");
+		compare("text-1m.txt after a fragmented rewrite", rb, orig, mib);
+		ntfs_inode_put(f);
+	}
+	for (i = 1; g_vol && i < FRAG_FILES; i += 2) {
+		snprintf(name, sizeof(name), "s%02d", i);
+		f = open_file("frag", name);
+		frag_pattern(buf, small, i);
+		if (!f || read_exact(f, rb, small, 0) || memcmp(rb, buf, small))
+			damaged++;
+		if (f)
+			ntfs_inode_put(f);
+	}
+	CHECK_EQ(damaged, 0, "small files damaged by the rewrite");
+out:
+	if (dir) ntfs_inode_put(dir);
+	if (root) ntfs_inode_put(root);
+	umount_scratch();
+	unlink(scratch);
+free:
+	free(buf);
+	free(rb);
+	free(orig);
+	free(blk);
+}
+
 int main(void)
 {
 	static const struct { void (*fn)(void); const char *name; } groups[] = {
@@ -1362,6 +1572,7 @@ int main(void)
 		{ test_sparse_fixtures,		 "sparse_fixtures" },
 		{ test_sparse_write,		 "sparse_write" },
 		{ test_encrypted_refused,	 "encrypted_refused" },
+		{ test_fragmented_rewrite,	 "fragmented_rewrite" },
 	};
 
 	/* Per-group counts, so a group that silently stopped checking anything

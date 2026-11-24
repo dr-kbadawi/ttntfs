@@ -43,8 +43,9 @@ tools/ci.sh --list       # what it will run
 * **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
   Windows-illegal names refused, case-insensitive and case-preserving lookup
   through a real `$UpCase` table, and xattrs as alternate data streams.
-* **`compress`** (327) — compressed writes, including appending across
-  compression-block boundaries, and the sparse read, seek and `fallocate` paths.
+* **`compress`** (505) — compressed writes, including appending across
+  compression-block boundaries and a block rewritten where no free run can hold
+  it (finding 30), and the sparse read, seek and `fallocate` paths.
 * **`bigdir`** (480) — the index B-tree: growth to four levels, deletion in
   creation, reverse and shuffled order, and six collation shapes.
 * **`crash`** (217) — the write ordering, asserted by mapping a sync's device
@@ -241,6 +242,15 @@ extraction moved the comment with it and changed nothing else.
   (entry 1 is at `RT_HEADER_SIZE + OA1_SIZE`); and an all-zero payload makes an
   update-sequence test vacuous, because the sector tails then trivially match a
   zero USN. Both cost an afternoon.
+* **`ntfsck -n` cannot tell whose bytes a file holds.** Two cases were clean:
+  a file reading back a deleted file's data around a write into a hole
+  (finding 29), and a compressed block written over the clusters of the file
+  next to it (finding 30). A stale-data test must also show that the clusters
+  it lands on held something, because a fill that never reached them passes
+  against the bug. `test_hole_write_zeroes` finds each write on the image and
+  checks what its cluster held before. `test_fragmented_rewrite` finds the
+  rewritten block on the image and requires it in two runs at least, because a
+  free count cannot rule out 16 free clusters in a row.
 * **A sandboxed extension reads the app-group container, not `~/Library/Preferences`.**
   `defaults write group.ch.techtag.ntfs …` from a shell lands in
   `~/Library/Preferences/group.ch.techtag.ntfs.plist`; the extension reads
