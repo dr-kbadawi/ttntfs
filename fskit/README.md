@@ -128,11 +128,11 @@ load an extension whose provisioning profile does not carry it.
    opens System Settings and waits for FSClient to report the module enabled.
    On 27 that switch works under Extensions → By Category → File System
    Extensions; the one in the By App list does not stay on (reported on #2,
-   2026-11-20). The System Settings switch
-   (General → Login Items & Extensions → File System Extensions ⓘ) does **not**
-   work on macOS 26.3 or 26.6.2: LoginItems.appex calls fskitd as an unentitled
-   `FSClient` (it lacks `com.apple.private.LiveFS.connection`, which only the
-   never-consulted FSKitModuleManagement.appex holds) and fskitd answers
+   2026-11-20). The System Settings switch (General → Login Items & Extensions →
+   File System Extensions ⓘ) does **not** work on macOS 26.3 or 26.6.2:
+   LoginItems.appex calls fskitd as an unentitled `FSClient` (it lacks
+   `com.apple.private.LiveFS.connection`, which only the never-consulted
+   FSKitModuleManagement.appex holds) and fskitd answers
    EPERM — `log show` shows `Failed to enabled FSExtension:
    NSPOSIXErrorDomain Code=1` one millisecond after every click, with no
    `fskit_agent` activity. Any third-party client gets the same EPERM, team ID

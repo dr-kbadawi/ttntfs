@@ -212,7 +212,9 @@ final class ModuleEnabler: ObservableObject {
             // data in a form we do not understand, and writing our one entry
             // over it would drop every other module.
             guard let existing = plist as? [String] else {
-                throw CocoaError(.propertyListReadCorrupt)
+                throw CocoaError(.propertyListReadCorrupt, userInfo: [
+                    NSLocalizedDescriptionKey: "it is not in the format this app knows, so it was left unchanged",
+                ])
             }
             modules = existing
         } else {
