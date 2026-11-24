@@ -1263,42 +1263,55 @@ static void test_enospc(void)
 }
 
 /*
- * ENOSPC from metadata: a volume that runs out of room for names, not data
- * (finding 26). The root directory is filled with empty 8-character names,
- * which use MFT records and index space but never a data cluster. On the
- * pinned mkntfs that reaches two different walls, measured:
+ * ENOSPC from metadata (finding 26): the wall is hit by new names, not by
+ * data. Every case first fills all clusters with 4 KiB files and asserts
+ * that none is left. The first version of this test reached its wall on a
+ * 2 MB volume with 70 of 511 clusters still free. That ENOSPC came from an
+ * allocator bug (upstream 18d4d2a3ce75, not in this port), not from a full
+ * disk. Two walls, both on 4 MB volumes:
  *
- *   2 MB: the directory's $INDEX_ALLOCATION cannot grow. Upstream's
- *     ntfs_enlarge_attribute() dropped ntfs_attr_truncate()'s -ENOSPC and
- *     returned -1, so create() failed with EPERM on a full disk (U10).
- *   4 MB: $MFT runs out of records with no cluster left to grow into.
+ *   index: 300 tiny resident files are created before the fill and deleted
+ *     after it, which leaves MFT records free but no clusters. New names in
+ *     the root then fill an index block, and splitting it needs a cluster.
+ *     Upstream's ntfs_enlarge_attribute() dropped that -ENOSPC and returned
+ *     -1, so create() failed with EPERM (U10).
+ *   mft: a directory gets 400 names, which are then deleted, so it keeps
+ *     index blocks with room in them. New names there use up $MFT's records,
+ *     and there is no cluster for it to grow into.
  *     ntfs_mft_data_extend_allocation_nolock() and ntfs_mft_record_alloc()
- *     reported that through ntfs_error(), which sets the volume read-only:
- *     that create got ENOSPC and every write after it EROFS (U11).
+ *     reported that through ntfs_error(), which sets the volume read-only.
+ *     That create got ENOSPC, and every write after it EROFS (U11).
  *
- * The requirements are test_enospc's plus one. The create fails with ENOSPC
- * and nothing else. The file from before the wall is intact, and ntfsck is
- * clean. And the volume stays writable: free a few names and the same create
- * succeeds. A full disk is an ordinary condition; it must not cost the user
- * the volume.
+ * Requirements, test_enospc's plus one:
+ *   - the create fails with ENOSPC and nothing else;
+ *   - the volume stays writable: free the last eight names, and the same
+ *     create succeeds;
+ *   - after a remount, the file from before the fill and the re-created name
+ *     are both there (a cached read would prove nothing);
+ *   - ntfsck is clean.
+ * A full disk is an ordinary condition and must not cost the user the volume.
  */
-static void enospc_names(const char *tag, unsigned mb)
+static void enospc_names(const char *tag, bool mft)
 {
 	static const char keep[] = "written before the wall";
+	static uint8_t block[4096];
 	struct ntfs_bdev *dev;
 	ntfs_volume_t *vol;
-	ntfs_inode_t *root, *f;
+	ntfs_inode_t *root = NULL, *dir = NULL, *f;
 	struct ntfs_volume_info info;
-	char name[64], rbuf[sizeof(keep)];
-	int err, i, created = 0, last_err = 0;
+	char name[64], again[64] = "", rbuf[sizeof(keep)];
+	int err, i, bad = 0, created = 0, last_err = 0;
 
-	if (make_image(tag, mb) != 0)
+	if (make_image(tag, 4) != 0)
 		return;
 	fault_clear();
 	err = mount_rw(&dev, &vol);
 	CHECK(err == 0);
 	if (err) { drop_image(); return; }
-	CHECK(ntfs_volume_root(vol, &root) == 0);
+	err = ntfs_volume_root(vol, &root);
+	CHECK(err == 0);
+	if (err)
+		goto unmount;
 
 	err = ntfs_create(root, "keep.txt", 0100644, &f);
 	CHECK(err == 0);
@@ -1307,9 +1320,78 @@ static void enospc_names(const char *tag, unsigned mb)
 		ntfs_inode_put(f);
 	}
 
-	for (i = 0; i < 20000; i++) {
-		snprintf(name, sizeof(name), "e%05dxx", i);
+	if (mft) {
+		err = ntfs_mkdir(root, "d", 040755, &dir);
+		CHECK(err == 0);
+		if (err)
+			goto put;
+		for (i = 0; i < 400; i++) {
+			snprintf(name, sizeof(name), "p%05d", i);
+			if (ntfs_create(dir, name, 0100644, &f)) {
+				bad++;
+				continue;
+			}
+			ntfs_inode_put(f);
+		}
+		for (i = 0; i < 400; i++) {
+			snprintf(name, sizeof(name), "p%05d", i);
+			bad += ntfs_unlink(dir, name) != 0;
+		}
+		CHECK_MSG(bad == 0, "%s: %d of 800 setup operations in d failed", tag, bad);
+	} else {
+		dir = root;
+		ntfs_inode_ref(dir);
+		for (i = 0; i < 300; i++) {
+			snprintf(name, sizeof(name), "t%03d", i);
+			if (ntfs_create(root, name, 0100644, &f)) {
+				bad++;
+				continue;
+			}
+			bad += ntfs_write(f, "x", 1, 0) != 1;
+			ntfs_inode_put(f);
+		}
+		CHECK_MSG(bad == 0, "%s: %d of 300 tiny files failed", tag, bad);
+	}
+
+	/* Fill every cluster. */
+	memset(block, 0x11, sizeof(block));
+	for (i = 0; i < 100000; i++) {
+		ssize_t wn;
+
+		snprintf(name, sizeof(name), "fill%05d", i);
 		err = ntfs_create(root, name, 0100644, &f);
+		if (err)
+			break;
+		wn = ntfs_write(f, block, sizeof(block), 0);
+		if (wn == (ssize_t)sizeof(block))
+			err = ntfs_fsync(f, false);
+		else
+			err = wn < 0 ? (int)wn : -ENOSPC;
+		ntfs_inode_put(f);
+		if (err)
+			break;
+	}
+	CHECK_MSG(err == -ENOSPC, "%s: filling the clusters ended with %d (%s)",
+		  tag, err, strerror(-err));
+	if (!mft) {
+		for (i = 0, bad = 0; i < 300; i++) {
+			snprintf(name, sizeof(name), "t%03d", i);
+			bad += ntfs_unlink(root, name) != 0;
+		}
+		CHECK_MSG(bad == 0, "%s: %d of 300 tiny files could not be unlinked",
+			  tag, bad);
+	}
+	err = ntfs_volume_get_info(vol, &info);
+	CHECK(err == 0);
+	if (!err)
+		CHECK_MSG(info.free_clusters == 0,
+			  "%s: %" PRIu64 " clusters still free after the fill; "
+			  "the wall below would not be a full volume",
+			  tag, info.free_clusters);
+
+	for (i = 0; i < 5000; i++) {
+		snprintf(name, sizeof(name), "z%05dxx", i);
+		err = ntfs_create(dir, name, 0100644, &f);
 		if (err) {
 			last_err = err;
 			break;
@@ -1317,57 +1399,87 @@ static void enospc_names(const char *tag, unsigned mb)
 		ntfs_inode_put(f);
 		created++;
 	}
-	printf("  %s: %d names created, then %d (%s)\n", tag, created, last_err,
-	       last_err ? strerror(-last_err) : "none");
-	CHECK_MSG(last_err != 0,
-		  "%s: %d names fitted in a %u MB volume; the wall was never hit",
-		  tag, created, mb);
+	printf("  %s: %d names created on a full volume, then %d (%s)\n", tag,
+	       created, last_err, last_err ? strerror(-last_err) : "none");
+	CHECK_MSG(last_err != 0, "%s: the wall was never hit", tag);
 	CHECK_MSG(last_err == -ENOSPC,
-		  "%s: a volume full of names reported %d (%s), expected -ENOSPC",
+		  "%s: a full volume reported %d (%s), expected -ENOSPC",
 		  tag, last_err, strerror(-last_err));
+	err = ntfs_volume_get_info(vol, &info);
+	CHECK(err == 0);
+	if (!err)
+		CHECK_MSG(!info.read_only,
+			  "%s: running out of space set the volume read-only (ro_reason %d)",
+			  tag, info.ro_reason);
 
-	CHECK(ntfs_volume_get_info(vol, &info) == 0);
-	CHECK_MSG(!info.read_only,
-		  "%s: running out of space set the volume read-only (ro_reason %d)",
-		  tag, info.ro_reason);
-
-	/* Still writable: free the last eight names and create one again. */
+	/* Still writable: free the last eight names and create one of them again. */
 	for (i = created - 1; i >= 0 && i >= created - 8; i--) {
-		snprintf(name, sizeof(name), "e%05dxx", i);
-		err = ntfs_unlink(root, name);
+		snprintf(name, sizeof(name), "z%05dxx", i);
+		err = ntfs_unlink(dir, name);
 		CHECK_MSG(err == 0, "%s: unlink %s after ENOSPC: %d (%s)",
 			  tag, name, err, strerror(-err));
 	}
-	snprintf(name, sizeof(name), "e%05dxx", created > 8 ? created - 8 : 0);
-	err = ntfs_create(root, name, 0100644, &f);
+	snprintf(again, sizeof(again), "z%05dxx", created > 8 ? created - 8 : 0);
+	err = ntfs_create(dir, again, 0100644, &f);
 	CHECK_MSG(err == 0, "%s: create %s after freeing eight names: %d (%s)",
-		  tag, name, err, strerror(-err));
+		  tag, again, err, strerror(-err));
 	if (!err)
 		ntfs_inode_put(f);
 
-	err = ntfs_lookup(root, "keep.txt", &f);
-	CHECK_MSG(err == 0, "%s: keep.txt was lost when the volume filled: %d",
-		  tag, err);
-	if (!err) {
-		memset(rbuf, 0, sizeof(rbuf));
-		CHECK(ntfs_read(f, rbuf, sizeof(rbuf), 0) == (ssize_t)sizeof(rbuf));
-		CHECK_MSG(memcmp(rbuf, keep, sizeof(keep)) == 0,
-			  "%s: keep.txt came back with different bytes", tag);
-		ntfs_inode_put(f);
-	}
-
+put:
+	if (dir)
+		ntfs_inode_put(dir);
 	ntfs_inode_put(root);
-	ntfs_volume_sync(vol);
-	ntfs_unmount(vol);
+unmount:
+	CHECK(ntfs_volume_sync(vol) == 0);
+	CHECK(ntfs_unmount(vol) == 0);
 	ntfs_bdev_close(dev);
+
+	/* Read back after a remount, not from the cache. */
+	err = mount_rw(&dev, &vol);
+	CHECK_MSG(err == 0, "%s: remount failed: %d", tag, err);
+	if (!err) {
+		ntfs_inode_t *r = NULL, *d = NULL;
+
+		if (ntfs_volume_root(vol, &r) == 0) {
+			err = ntfs_lookup(r, "keep.txt", &f);
+			CHECK_MSG(err == 0, "%s: keep.txt lost when the volume filled: %d",
+				  tag, err);
+			if (!err) {
+				memset(rbuf, 0, sizeof(rbuf));
+				CHECK(ntfs_read(f, rbuf, sizeof(rbuf), 0) == (ssize_t)sizeof(rbuf));
+				CHECK_MSG(memcmp(rbuf, keep, sizeof(keep)) == 0,
+					  "%s: keep.txt came back with different bytes", tag);
+				ntfs_inode_put(f);
+			}
+			if (mft)
+				CHECK(ntfs_lookup(r, "d", &d) == 0);
+			else
+				ntfs_inode_ref(d = r);
+			if (d && again[0]) {
+				err = ntfs_lookup(d, again, &f);
+				CHECK_MSG(err == 0, "%s: %s, created after ENOSPC, is gone "
+					  "after a remount: %d", tag, again, err);
+				if (!err)
+					ntfs_inode_put(f);
+			}
+			if (d)
+				ntfs_inode_put(d);
+			ntfs_inode_put(r);
+		} else {
+			CHECK(0);
+		}
+		CHECK(ntfs_unmount(vol) == 0);
+		ntfs_bdev_close(dev);
+	}
 	check_image(tag);
 	drop_image();
 }
 
 static void test_enospc_names(void)
 {
-	enospc_names("enospc-index", 2);
-	enospc_names("enospc-mft", 4);
+	enospc_names("enospc-index", false);
+	enospc_names("enospc-mft", true);
 	printf("test_enospc_names\n");
 }
 

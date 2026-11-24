@@ -28,7 +28,7 @@ fixing one means updating the test that documents it.
 | U8 | `NTFS_B_TO_SECTOR()` and `ntfs_bytes_to_sector()` (`ntfs.h`) | Shift by `sb->s_blocksize_bits`. Both results only ever reach `bio->bi_iter.bi_sector`, which the block layer defines in **512-byte units** whatever the device's logical block size is. `parse_ntfs_boot_sector()` raises `s_blocksize` to `vol->sector_size`, so on a volume whose sector size is not 512 the writer shifts by more than the reader and every metadata bio lands at `offset / (s_blocksize / 512)` -- one eighth of its intended place on 4Kn, straight over `$MFT` records 0-5. Upstream contradicts itself two functions later: `ntfs_write_mft_block()` compares `bio_end_sector(bio) >> (cluster_size_bits - 9)` against an LCN, which is only right in 512-byte units. | Both shift by `SECTOR_SHIFT`. `PORT:` comments. |
 | U9 | `ntfs_sync_mft_mirror()` (`mft.c`) | Builds the mirror offset from the record's offset *inside its folio* and drops `folio->index` entirely. Invisible while several records share a page, which is every volume with 1024-byte MFT records; on 4Kn, `mkntfs` makes 4096-byte records, one per page, so the in-folio offset is 0 for all of them and every mirror copy is written onto slot 0. | Offset includes `(u64)folio->index << PAGE_SHIFT`. `PORT:` comment. |
 | U10 | `ntfs_enlarge_attribute()` (`inode.c`) | Drops the error from `ntfs_attr_truncate()` and returns -1. `ntfs_ib_write()` passes that on verbatim, so when a directory's `$INDEX_ALLOCATION` cannot grow on a full volume, `create()`, `mkdir()` and `link()` fail with EPERM. Nothing is logged above debug level. | Backport of upstream 5cd6692db272 (mainline, 2026-10-20), identical apart from a `PORT:` comment. Finding 26. |
-| U11 | `ntfs_mft_data_extend_allocation_nolock()`, `ntfs_mft_record_alloc()` and `ntfs_mft_bitmap_extend_allocation_nolock()` (`mft.c`) | When there is no cluster left for `$MFT` or its bitmap to grow into, the code reports it through `ntfs_error()`, whose errors=remount-ro handling sets the whole volume read-only. That create gets ENOSPC and every write after it EROFS, unlinks included. On a disk full of data, the first few names in a new folder are enough. Still in mainline as of 8d7fe988 (2026-11). | -ENOSPC is returned without `ntfs_error()`; any other error still goes through it. Nothing has been changed when the allocation fails, so there is nothing to roll back. `PORT:` comments. Finding 26. |
+| U11 | `ntfs_mft_data_extend_allocation_nolock()`, `ntfs_mft_record_alloc()` and `ntfs_mft_bitmap_extend_allocation_nolock()` (`mft.c`) | When there is no cluster left for `$MFT` or its bitmap to grow into, the code reports it through `ntfs_error()`, whose errors=remount-ro handling sets the whole volume read-only. That create gets ENOSPC and every write after it EROFS, unlinks included. On a disk full of data, the first few names in a new folder are enough. Still in mainline as of 8d7fe988 (2026-11). | -ENOSPC is returned without `ntfs_error()`; any other error still goes through it. The failing allocations change nothing themselves, and `ntfs_mft_record_alloc()` clears the record's bit again. A `$MFT` bitmap that was extended earlier in the same call stays extended, which is valid on disk. A side effect: reaching the 2^32-record limit no longer sets the volume read-only either. The `ntfs_mft_bitmap_extend_allocation_nolock()` site has no test, because reaching it needs `$MFT` to outgrow its first bitmap cluster (32768 records) when no cluster is free. `PORT:` comments. Finding 26. |
 | U12 | `__ntfs_create()` (`namei.c`) | When a create fails after the new file's EAs are written -- on a full disk, when the folder's index cannot grow -- the error path frees the MFT record but leaves the attribute inodes the create opened in the inode cache. Each holds a reference on the file's inode, so `discard_new_inode()` does not evict it. When the record is next given to a file, that file's EA writes find the cached attribute inodes (`ntfs_test_inode()` matches them by record number, type and name) and go into the dead inode, and the next writeback writes the dead inode's freed copy of the record over the new file's. The new name then points at a record not in use: the file is gone. Same code in mainline as of 68271fbe7d14 (2026-11-14); not reproduced on a Linux kernel. | The error path evicts the record's attribute inodes before freeing it, as `ntfs_delete()` does when a file's last name goes. `PORT:` comment. Finding 27. |
 
 U5-U7 were confirmed present verbatim in `upstream/linux-v7.1/fs/ntfs/compress.c`: the only differences between it and `core/ntfs/compress.c` are folio and bio accessors. They are Linux bugs, not porting bugs.
@@ -750,38 +750,67 @@ from the Mac. Feature gap. Implementing it means setting the flag and the
 compression unit at create and routing the first write through the compressed
 path, which exists and is now verified (below).
 
-## Finding 26 **FIXED**: a full volume made create() fail with EPERM, or set the volume read-only
+## Finding 26 (one path open): a full volume made create() fail with EPERM, or set the volume read-only
 
 Found 2026-11-24, during the review of PR #8. How a create fails on a full disk
-depends on which runs out first: room in the directory's index, or room for new
-`$MFT` records. Both were wrong on 0.4.2. Measured by filling the root
-directory of fresh `make_image()` volumes with empty 8-character names:
+depends on what it needs that the disk no longer has. Measured on 4 MB
+`make_image()` volumes whose clusters were all filled with 4 KiB files first.
+`free_clusters` was 0 before the names:
 
-| volume | first failure on 0.4.2 | cause |
-|---|---|---|
-| 2 MB | after 845 names, -1 (EPERM, "Operation not permitted"), nothing logged | U10 |
-| 4 MB | after 2130 names, ENOSPC; the volume is then set read-only and every later write, unlinks included, gets EROFS | U11 |
-| 6 MB, filled with data first, then a new folder | the 11th name in the folder: ENOSPC, then read-only | U11 |
+| what the create needs | 0.4.2 | now | cause |
+|---|---|---|---|
+| a cluster to split a full index block (MFT records still free) | EPERM after 277 names, nothing logged | ENOSPC, still writable | U10, fixed |
+| an `$MFT` record, with no cluster for `$MFT` to grow into | ENOSPC after 11 names, then read-only: every later write, unlinks included, gets EROFS | ENOSPC, still writable | U11, fixed |
+| a new folder's first index block (6 MB volume, 4th name in the folder) | EPERM, then read-only | **ENOSPC, then still read-only** | `ntfs_ir_make_space()`, open (below) |
 
 `ntfsck -n` was clean every time. The bug was in what the user is told and in
 losing write access, not in what was written.
 
-The test is `test_enospc_names` in `core/tests/test_faults.c`, which runs on the
-2 MB and 4 MB volumes. It requires ENOSPC; that the volume stays writable (free
-the last eight names and the same create succeeds); that a file from before the
-wall is intact; and that `ntfsck -n` is clean. On 0.4.2 it fails in both ways.
-Each fix was then reverted on its own, with the binary checked to have changed,
-and only its own case failed.
+The test is `test_enospc_names` in `core/tests/test_faults.c`, which covers the
+first two rows. It asserts that no cluster is free before the names are
+created. It then requires:
+* ENOSPC, and no other error;
+* that the volume stays writable: free the last eight names, and the same
+  create succeeds;
+* that after a remount, the file written before the fill and the re-created
+  name are both there;
+* that `ntfsck -n` is clean.
 
-Not covered here, and not pinned by a test:
+On 0.4.2 it fails in both ways. With only one of the two fixes, only the other
+case fails. With upstream's allocator fix 18d4d2a3ce75 added, both cases hit
+the same walls and pass.
 
-* `ntfs_ir_make_space()` still reports a failed `ntfs_ir_reparent()` through
-  `ntfs_error()`. If a directory's first index block cannot get a cluster, a
-  full disk could still set the volume read-only. None of the scenarios tried
-  reached it: the folder's records or index always ran out first.
+The first version of this test filled a 2 MB volume with names alone. It
+reported ENOSPC there with 70 of 511 clusters still free. That wall was the
+allocator, not a full disk; see the last item below.
 
 A one-record `$MFT` bitmap leak was also noted here at first. It was not a
-leak but a lost file: finding 27.
+leak but a lost file: finding 27, below.
+
+Still open, not pinned by a test:
+
+* **A new folder on a disk with no free cluster still sets the volume
+  read-only.** `ntfs_ir_make_space()` (`index.c`) reports any failed
+  `ntfs_ir_reparent()` through `ntfs_error()`. It is the commonest full-disk
+  shape, and it is not silenced here on purpose. When the root has to grow,
+  v7.1's `ntfs_ir_reparent()` rewrites the root header before it resizes. It
+  can then return -ENOSPC with that rewritten, inconsistent root still in
+  memory, and treating -ENOSPC as harmless would hide a corrupted directory.
+  Upstream 0bb508fb (in PR #8) resizes first. Once that is in, an -ENOSPC from
+  `ntfs_ir_reparent()` no longer comes back with the root rewritten. Each such
+  return path should be checked again then, before this call treats -ENOSPC
+  like the two fixed above.
+* **The allocator can report ENOSPC with clusters free.** `ntfs_cluster_alloc()`
+  gives up when its hint lies at or past the end of the volume (upstream
+  18d4d2a3ce75, not in this port). The same upstream commit stops a contiguous
+  request from getting a second run. Upstream reports that such a second run
+  let `fallocate()` over a hole read back a deleted file's data. b05a67615b98 is
+  related. Neither is backported, and the data exposure has not been
+  reproduced here. Finding 27's test (`reuse_fill()` and `reuse_data()`)
+  reaches its failed create at the same 2 MB wall. Backporting
+  18d4d2a3ce75 moves that wall, so it must keep the test reaching a create
+  that fails after it has taken its MFT record.
+* `ntfs_mft_bitmap_extend_allocation_nolock()`'s change has no test (see U11).
 
 ## Finding 27 **FIXED**: a create that failed on a full folder lost the next file given its record
 

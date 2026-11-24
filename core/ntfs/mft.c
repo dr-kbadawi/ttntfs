@@ -1697,7 +1697,10 @@ static int ntfs_mft_data_extend_allocation_nolock(struct ntfs_volume *vol)
 			 * reports it here and in ntfs_mft_record_alloc() through
 			 * ntfs_error(), which sets the whole volume read-only
 			 * (U11). Nothing has been changed yet, so -ENOSPC is all
-			 * the caller needs, as for the 2^32 limit above.
+			 * the caller needs. The 2^32-record limit above already
+			 * returns it with only a warning, although on 0.4.2 the
+			 * caller's ntfs_error() set the volume read-only for that
+			 * too.
 			 */
 			if (PTR_ERR(rl2) == -ENOSPC)
 				ntfs_debug("No free clusters for the mft data attribute (%lli).",
