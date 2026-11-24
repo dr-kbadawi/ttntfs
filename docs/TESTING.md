@@ -61,17 +61,18 @@ tools/ci.sh --list       # what it will run
   size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
   and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this
   is what found finding 15 and what pins it fixed.
-* **`alloc`** (94) — the cluster allocator and upstream's fixes to it (U13-U15).
+* **`alloc`** (104) — the cluster allocator and upstream's fixes to it (U13-U16).
   A 2 MB root folder filled with names, which must not stop while clusters the
   allocator could use are free. Four requests made straight to
   `ntfs_cluster_alloc()` over a `$Bitmap` crafted on the image, because a
   contiguous request's second run cannot be seen through the ABI. A
   `fallocate()` over a hole whose clusters hold a deleted file's bytes, read
   back after a remount: a guard that passes on 0.4.2 too (U14 explains why).
-  And two crafted images: a file whose run points past the end of the volume,
-  which a write must not reach through, and a `$Bitmap` longer than the
-  volume, whose out-of-bounds read a guard page catches. That case runs last,
-  because a fault ends the run.
+  Freeing two runs while `$Bitmap` cannot be read, which must leave the free
+  count alone. And two crafted images: a file whose run points past the end
+  of the volume, which a write must not reach through, and a `$Bitmap` longer
+  than the volume, whose out-of-bounds read a guard page catches. That case
+  runs last, because a fault ends the run.
 * **`logfile_unit`** (243 checks) — the replay engine against synthetic logs.
 * **`logfile_images`** — `ntfslog` over every fixture.
 * **`enable_module_script`** — the enable script's two silent-failure modes.

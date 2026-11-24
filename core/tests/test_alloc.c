@@ -41,8 +41,12 @@
  *   test_run_past_volume_end and test_bitmap_longer_than_volume reach each
  *   half of it through a crafted image.
  *
+ * One more from that month follows (U16), in the error path that frees
+ * clusters. be9e89ccb8e5 is reached by test_free_with_unreadable_bitmap, with
+ * $Bitmap made unreadable.
+ *
  * Every case ends with ntfsck -n on the image, except the crafted images of
- * section 4, which are corrupt by construction.
+ * section 5, which are corrupt by construction.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -904,7 +908,143 @@ out:
 }
 
 /* ====================================================================== */
-/* 4. crafted images: upstream 19cac7902a8a                               */
+/* 4. freeing clusters when $Bitmap cannot be read                        */
+/* ====================================================================== */
+
+/* A device whose reads of one byte range fail while armed. */
+static const struct ntfs_bdev_ops *real_ops;
+static struct ntfs_bdev_ops faulty_ops;
+static struct {
+	bool armed;
+	uint64_t lo, hi;
+	int fired;
+} rfault;
+
+static ssize_t faulty_pread(struct ntfs_bdev *d, void *b, size_t c, u64 o)
+{
+	if (rfault.armed && o < rfault.hi && o + c > rfault.lo) {
+		rfault.fired++;
+		return -EIO;
+	}
+	return real_ops->pread(d, b, c, o);
+}
+
+static int mount_faulty(struct ntfs_bdev **dev, ntfs_volume_t **vol)
+{
+	int err;
+
+	memset(&rfault, 0, sizeof(rfault));
+	*dev = ntfs_bdev_open_path(img, false);
+	if (!*dev)
+		return -ENOENT;
+	real_ops = (*dev)->ops;
+	faulty_ops = *real_ops;
+	faulty_ops.pread = faulty_pread;
+	(*dev)->ops = &faulty_ops;
+	err = ntfs_mount(*dev, &RW_OPTS, vol);
+	if (err)
+		ntfs_bdev_close(*dev);
+	return err;
+}
+
+/*
+ * be9e89ccb8e5, "ntfs: only count successfully cleared runs when freeing
+ * clusters" (U16). ntfs_cluster_free_from_rl_nolock() added a run's length to
+ * the free count whenever its error bookkeeping did not record the failure,
+ * and a second failure with the same errno is not recorded. Two runs of four
+ * clusters are allocated over a crafted $Bitmap. The volume is synced so the
+ * bitmap page is clean, and the page is dropped from the cache. With reads of
+ * $Bitmap failing, freeing both runs fails twice with -EIO, and the free count
+ * must not move, because no bit was cleared. 0.4.2 counted the second run.
+ * Once the device reads again, the same free succeeds and the count follows
+ * the bitmap.
+ */
+static void test_free_with_unreadable_bitmap(void)
+{
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *h;
+	struct runlist_element *rl = NULL;
+	struct address_space *bmap;
+	uint8_t *orig = NULL, *a = NULL;
+	s64 before, after, done;
+	int err, nruns = 0;
+
+	if (make_image("freefail", 8) != 0)
+		return;
+	if (locate_bitmap() != 0) {
+		CHECK_MSG(false, "could not find $Bitmap on the image");
+		goto out;
+	}
+	orig = malloc(bmp.len);
+	a = malloc(bmp.len);
+	if (!orig || !a || bitmap_io(orig, false) != 0) {
+		CHECK_MSG(false, "could not read $Bitmap");
+		goto out;
+	}
+	memcpy(a, orig, bmp.len);
+	mark_used(a, 0, bmp.nr_clusters);
+	if (!mark_free(a, orig, 600, 604) || !mark_free(a, orig, 700, 704))
+		goto restore;
+	CHECK(bitmap_io(a, true) == 0);
+
+	if ((err = mount_faulty(&dev, &h)) != 0) {
+		CHECK_MSG(false, "mount: %d", err);
+		goto restore;
+	}
+	/* From the hint at 600, four clusters; then the zone search finds 700. */
+	rl = ntfs_cluster_alloc(h->vol, 0, 8, 600, DATA_ZONE, false, false, false);
+	CHECK_MSG(!IS_ERR(rl), "allocating two runs: %ld", IS_ERR(rl) ? PTR_ERR(rl) : 0L);
+	if (IS_ERR(rl)) {
+		rl = NULL;
+		goto unmount;
+	}
+	for (struct runlist_element *r = rl; r->length; r++)
+		nruns++;
+	CHECK_MSG(nruns == 2, "the allocation came back as %d runs, not 2", nruns);
+
+	/* Write the bitmap page out, then drop it, so the free has to read it. */
+	CHECK(ntfs_volume_sync(h) == 0);
+	bmap = h->vol->lcnbmp_ino->i_mapping;
+	invalidate_mapping_pages(bmap, 0, ~(pgoff_t)0);
+	CHECK_MSG(bmap->nrpages == 0, "$Bitmap still has %lu pages cached",
+		  (unsigned long)bmap->nrpages);
+
+	rfault.lo = bmp.off;
+	rfault.hi = bmp.off + bmp.cluster_size;
+	rfault.armed = true;
+	before = atomic64_read(&h->vol->free_clusters);
+	err = ntfs_cluster_free_from_rl(h->vol, rl);
+	after = atomic64_read(&h->vol->free_clusters);
+	rfault.armed = false;
+	CHECK_MSG(err < 0 && rfault.fired >= 2, "freeing two runs with $Bitmap unreadable "
+		  "returned %d after %d failed reads", err, rfault.fired);
+	CHECK_MSG(after == before, "the free count went from %lld to %lld, though "
+		  "neither run could be freed (be9e89ccb8e5)", (long long)before,
+		  (long long)after);
+
+	/* The device reads again: the same free works and the count is right. */
+	CHECK(ntfs_cluster_free_from_rl(h->vol, rl) == 0);
+	done = atomic64_read(&h->vol->free_clusters);
+	CHECK_MSG(done == before + 8, "after the retry the free count is %lld, not %lld",
+		  (long long)done, (long long)(before + 8));
+unmount:
+	kvfree(rl);
+	umount_vol(dev, h);
+restore:
+	/* Put mkntfs's bitmap back: nothing else on the volume was touched. */
+	if (bitmap_io(orig, true) == 0)
+		check_image("freefail");
+	else
+		CHECK_MSG(false, "could not restore $Bitmap");
+out:
+	free(orig);
+	free(a);
+	drop_image();
+	printf("test_free_with_unreadable_bitmap\n");
+}
+
+/* ====================================================================== */
+/* 5. crafted images: upstream 19cac7902a8a                               */
 /* ====================================================================== */
 
 /*
@@ -1184,6 +1324,7 @@ int main(void)
 	test_names_wall();
 	test_alloc_cases();
 	test_fallocate_hole_zeroes();
+	test_free_with_unreadable_bitmap();
 	test_run_past_volume_end();
 	test_bitmap_longer_than_volume();	/* last: a fault ends the run */
 	printf("%d checks, %d failures\n", checks, failures);
