@@ -41,9 +41,10 @@
  *   test_run_past_volume_end and test_bitmap_longer_than_volume reach each
  *   half of it through a crafted image.
  *
- * One more from that month follows (U16), in the error path that frees
+ * Two more from that month follow (U16, U17), both in error paths that free
  * clusters. be9e89ccb8e5 is reached by test_free_with_unreadable_bitmap, with
- * $Bitmap made unreadable.
+ * $Bitmap made unreadable. 5f2a22b36fe3 has no test: U17 says why its path
+ * cannot be reached on demand.
  *
  * Every case ends with ntfsck -n on the image, except the crafted images of
  * section 5, which are corrupt by construction.

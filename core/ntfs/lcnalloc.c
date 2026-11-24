@@ -1078,8 +1078,10 @@ err_out:
 			"Failed to rollback (error %i).  Leaving inconsistent metadata!  Unmount and run chkdsk.",
 			(int)delta);
 		NVolSetErrors(vol);
+	} else {
+		/* PORT: backport of upstream 5f2a22b36fe3 (U17). */
+		ntfs_dec_free_clusters(vol, delta);
 	}
-	ntfs_dec_free_clusters(vol, delta);
 	up_write(&vol->lcnbmp_lock);
 	memalloc_nofs_restore(memalloc_flags);
 	ntfs_error(vol->sb, "Aborting (error %i).", err);
