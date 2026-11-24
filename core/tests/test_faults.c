@@ -1483,8 +1483,12 @@ static void test_enospc_names(void)
 	printf("test_enospc_names\n");
 }
 
-/* Create empty files named @fmt % 0, 1, ... in @dir until a create fails. */
-static int fill_names(ntfs_inode_t *dir, const char *fmt, int *last_err)
+/*
+ * Create files named @fmt % 0, 1, ... in @dir until a create fails, writing
+ * @payload (with its NUL) into each unless it is NULL. Returns how many.
+ */
+static int fill_names(ntfs_inode_t *dir, const char *fmt, const char *payload,
+		      int *last_err)
 {
 	ntfs_inode_t *f;
 	char name[64];
@@ -1495,30 +1499,77 @@ static int fill_names(ntfs_inode_t *dir, const char *fmt, int *last_err)
 		err = ntfs_create(dir, name, 0100644, &f);
 		if (err)
 			break;
+		if (payload && ntfs_write(f, payload, strlen(payload) + 1, 0) !=
+				(ssize_t)strlen(payload) + 1)
+			err = -EIO;
 		ntfs_inode_put(f);
+		if (err)
+			break;
 	}
 	*last_err = err;
 	return i;
 }
 
-/* After a remount: every name @fmt % [0, @n) is still in @dir. */
-static void check_names(const char *tag, ntfs_inode_t *dir, const char *fmt, int n)
+/* After a remount: @fmt % [0, @n) are all still in @dir, each holding
+ * @payload unless it is NULL. */
+static void check_names(const char *tag, ntfs_inode_t *dir, const char *fmt, int n,
+			const char *payload)
 {
 	ntfs_inode_t *f;
-	char name[64], first[64] = "";
-	int i, lost = 0;
+	char name[64], first[64] = "", rbuf[64];
+	int i, lost = 0, changed = 0;
 
 	for (i = 0; i < n; i++) {
 		snprintf(name, sizeof(name), fmt, i);
 		if (ntfs_lookup(dir, name, &f) != 0) {
-			if (!lost++)
+			if (!lost++ && !changed)
 				snprintf(first, sizeof(first), "%s", name);
 			continue;
 		}
+		if (payload) {
+			ssize_t len = (ssize_t)strlen(payload) + 1;
+			bool same = false;
+
+			memset(rbuf, 0, sizeof(rbuf));
+			if (len <= (ssize_t)sizeof(rbuf))
+				same = ntfs_read(f, rbuf, (size_t)len, 0) == len &&
+				       !memcmp(rbuf, payload, (size_t)len);
+			if (!same && !changed++ && !lost)
+				snprintf(first, sizeof(first), "%s", name);
+		}
 		ntfs_inode_put(f);
 	}
-	CHECK_MSG(lost == 0, "%s: %d of %d names gone after a remount, the first %s",
-		  tag, lost, n, first);
+	CHECK_MSG(lost == 0 && changed == 0,
+		  "%s: after a remount %d of %d names are gone and %d hold other bytes, the first %s",
+		  tag, lost, n, changed, first);
+}
+
+/* Fill every free cluster with 4 KiB files in @dir. Returns what stopped it. */
+static int fill_clusters(ntfs_inode_t *dir)
+{
+	static uint8_t block[4096];
+	ntfs_inode_t *f;
+	char name[64];
+	int i, err = 0;
+
+	memset(block, 0x11, sizeof(block));
+	for (i = 0; i < 100000; i++) {
+		ssize_t wn;
+
+		snprintf(name, sizeof(name), "fill%05d", i);
+		err = ntfs_create(dir, name, 0100644, &f);
+		if (err)
+			break;
+		wn = ntfs_write(f, block, sizeof(block), 0);
+		if (wn == (ssize_t)sizeof(block))
+			err = ntfs_fsync(f, false);
+		else
+			err = wn < 0 ? (int)wn : -ENOSPC;
+		ntfs_inode_put(f);
+		if (err)
+			break;
+	}
+	return err;
 }
 
 /*
@@ -1552,14 +1603,15 @@ static int ea_disagreements(uint32_t *first)
 		if (memcmp(rec, "FILE", 4) || !(le16_at(rec + 0x16) & 1) ||
 		    usa + 2u * usa_n > g.mft_record_size || used > g.mft_record_size)
 			continue;
-		/* Undo the update sequence: each sector's last two bytes. */
-		for (uint16_t i = 1; i < usa_n && i * g.sector_size <= g.mft_record_size; i++)
-			memcpy(rec + i * g.sector_size - 2, rec + usa + 2 * i, 2);
+		/* Undo the update sequence: the last two bytes of each 512-byte
+		 * block, NTFS's stride whatever the sector size. */
+		for (uint16_t i = 1; i < usa_n && i * 512u <= g.mft_record_size; i++)
+			memcpy(rec + i * 512u - 2, rec + usa + 2 * i, 2);
 		for (a = le16_at(rec + 0x14); a + 24 <= used; a += len) {
 			uint32_t type = le32_at(rec + a);
 
 			len = le32_at(rec + a + 4);
-			if (type == 0xffffffff || len < 24 || a + len > used)
+			if (type == 0xffffffff || len < 24 || len > used - a)
 				break;
 			if (type == 0xd0 && !rec[a + 8] &&	/* $EA_INFORMATION, resident */
 			    le16_at(rec + a + 0x14) + 8u <= len) {
@@ -1567,7 +1619,10 @@ static int ea_disagreements(uint32_t *first)
 				query = le32_at(rec + a + le16_at(rec + a + 0x14) + 4);
 			} else if (type == 0xe0) {		/* $EA */
 				has_ea = true;
-				ea = rec[a + 8] ? le64_at(rec + a + 0x30) : le32_at(rec + a + 0x10);
+				if (!rec[a + 8])
+					ea = le32_at(rec + a + 0x10);
+				else	/* data_size; a short record cannot match */
+					ea = len >= 0x40 ? le64_at(rec + a + 0x30) : UINT64_MAX;
 			}
 		}
 		if ((has_info || has_ea) && (has_info != has_ea || query != ea) && !n++)
@@ -1576,6 +1631,18 @@ static int ea_disagreements(uint32_t *first)
 	free(rec);
 	close(fd);
 	return n;
+}
+
+/* The unmounted image: ntfsck clean, and every EA summary matching its EAs. */
+static void check_reuse_image(const char *tag)
+{
+	uint32_t first = 0;
+	int bad;
+
+	check_image(tag);
+	bad = ea_disagreements(&first);
+	CHECK_MSG(bad == 0, "%s: %d records whose $EA_INFORMATION disagrees with $EA, the first %u",
+		  tag, bad, first);
 }
 
 /*
@@ -1597,54 +1664,46 @@ static int ea_disagreements(uint32_t *first)
  *     $EA_INFORMATION stayed zero beside a one-entry $EA. ntfsck does not see
  *     that; ea_disagreements() does.
  *
- * Two sequences, each on a 2 MB volume whose root is first filled to ENOSPC:
- * the failing create takes the next free record and gives it back. Then
- * reuse_fill() frees 40 names and fills a new folder, as when it was found;
- * reuse_data() frees 3 and writes three small files, the shortest form. After
- * each, ntfsck must be clean, every record's EA summary must match its EAs,
- * and every file must still be there after a remount, with its bytes.
+ * The bug needs a create that fails after it has taken an MFT record, and a
+ * later file given that record. The first version of this test got both from
+ * a 2 MB volume's allocator wall, which upstream 18d4d2a3ce75 (U13) moves: at
+ * the real wall the failing create dies extending $MFT, before it has a
+ * record. reuse_fill() then passed without reaching the bug, and reuse_data()
+ * failed on an unrelated ENOSPC. So the volume is made full first, as in
+ * finding 26's test, and the record is pinned rather than hoped for:
+ *
+ *   1. With MFT records free but no cluster, names go into the root until its
+ *      index needs a new block: that create fails after taking a record.
+ *   2. Names go into d, which has index room, until $MFT has no record left.
+ *   3. One of them is unlinked: its record K is then the only one free. A
+ *      create must be given K (finding 28: the record search used to stop at
+ *      a bit past the end of $MFT and report ENOSPC). It is unlinked again.
+ *      The search reaches such a bit only while $MFT's record count is not a
+ *      multiple of 8 and K lies below the bitmap byte holding its last
+ *      records, so the test checks both first.
+ *   4. The root's failing name again: it must take K, and fail as in 1.
+ *   5. A new file in d must be given K. The test checks that it was, so it
+ *      cannot pass without reaching the bug.
+ *
+ * Every file in d is written 30 bytes. After an unmount, ntfsck must be clean
+ * and every record's EA summary must match its EAs; after a remount, every
+ * name must be there with its bytes. The record pinning is from the review of
+ * PR #8 and its allocator follow-up, which found the first version vacuous.
+ * The sequence is the same with upstream's allocator fixes (U13, U14).
  */
-
-/* Fill @root with e%05dxx to ENOSPC, then free the last @n names. Returns how
- * many names are left. */
-static int fill_root_free_last(const char *tag, ntfs_inode_t *root, int n)
+static void test_failed_create_record_reuse(void)
 {
-	char name[64];
-	int i, in_root, last_err, freed = 0;
-
-	in_root = fill_names(root, "e%05dxx", &last_err);
-	CHECK_MSG(last_err == -ENOSPC, "%s: filling the root ended with %d, expected -ENOSPC",
-		  tag, last_err);
-	for (i = in_root - 1; i >= 0 && i >= in_root - n; i--) {
-		snprintf(name, sizeof(name), "e%05dxx", i);
-		if (ntfs_unlink(root, name) == 0)
-			freed++;
-	}
-	CHECK_MSG(freed == n, "%s: freed %d of the last %d names", tag, freed, n);
-	return in_root - freed;
-}
-
-/* The unmounted image: ntfsck clean, and every EA summary matching its EAs. */
-static void check_reuse_image(const char *tag)
-{
-	uint32_t first = 0;
-	int bad;
-
-	check_image(tag);
-	bad = ea_disagreements(&first);
-	CHECK_MSG(bad == 0, "%s: %d records whose $EA_INFORMATION disagrees with $EA, the first %u",
-		  tag, bad, first);
-}
-
-/* As found: the new folder's 40th name is given the record (measured). */
-static void reuse_fill(void)
-{
+	static const char payload[] = "precious bytes the user saved";
 	struct ntfs_bdev *dev;
 	ntfs_volume_t *vol;
-	ntfs_inode_t *root, *d;
-	int err, in_root, in_d = 0, last_err;
+	ntfs_inode_t *root, *d = NULL, *f;
+	struct ntfs_volume_info info;
+	struct ntfs_attr at;
+	char name[64], wall[64] = "", rbuf[sizeof(payload)];
+	int err, i, bad = 0, in_root = 0, in_d = 0, last_err = 0;
+	uint64_t k = 0, got = 0;
 
-	if (make_image("reuse-fill", 2) != 0)
+	if (make_image("reuse", 4) != 0)
 		return;
 	fault_clear();
 	err = mount_rw(&dev, &vol);
@@ -1652,120 +1711,157 @@ static void reuse_fill(void)
 	if (err) { drop_image(); return; }
 	CHECK(ntfs_volume_root(vol, &root) == 0);
 
-	in_root = fill_root_free_last("reuse-fill", root, 40);
+	/* d: 400 names made and deleted, so it keeps index room without a cluster. */
 	err = ntfs_mkdir(root, "d", 040755, &d);
-	CHECK_MSG(err == 0, "reuse-fill: mkdir d after freeing 40 names: %d", err);
-	if (!err) {
-		in_d = fill_names(d, "n%05dxx", &last_err);
-		CHECK_MSG(last_err == -ENOSPC, "reuse-fill: filling d ended with %d, expected -ENOSPC",
-			  last_err);
-		ntfs_inode_put(d);
+	CHECK(err == 0);
+	if (err)
+		goto unmount;
+	for (i = 0; i < 400; i++) {
+		snprintf(name, sizeof(name), "p%05d", i);
+		if (ntfs_create(d, name, 0100644, &f)) {
+			bad++;
+			continue;
+		}
+		ntfs_inode_put(f);
 	}
-	printf("  reuse-fill: %d names left in the root, %d in d\n", in_root, in_d);
+	for (i = 0; i < 400; i++) {
+		snprintf(name, sizeof(name), "p%05d", i);
+		bad += ntfs_unlink(d, name) != 0;
+	}
+	/* 300 tiny files hold MFT records through the fill, then give them back. */
+	for (i = 0; i < 300; i++) {
+		snprintf(name, sizeof(name), "t%03d", i);
+		if (ntfs_create(root, name, 0100644, &f)) {
+			bad++;
+			continue;
+		}
+		bad += ntfs_write(f, "x", 1, 0) != 1;
+		ntfs_inode_put(f);
+	}
+	err = fill_clusters(root);
+	CHECK_MSG(err == -ENOSPC, "reuse: filling the clusters ended with %d (%s)",
+		  err, strerror(-err));
+	for (i = 0; i < 300; i++) {
+		snprintf(name, sizeof(name), "t%03d", i);
+		bad += ntfs_unlink(root, name) != 0;
+	}
+	CHECK_MSG(bad == 0, "reuse: %d setup operations failed", bad);
+	memset(&info, 0, sizeof(info));
+	err = ntfs_volume_get_info(vol, &info);
+	CHECK_MSG(err == 0 && info.free_clusters == 0,
+		  "reuse: after the fill, get_info %d, %" PRIu64 " clusters free",
+		  err, info.free_clusters);
+
+	/* 1. The root, to its index wall. */
+	in_root = fill_names(root, "z%05dxx", NULL, &last_err);
+	snprintf(wall, sizeof(wall), "z%05dxx", in_root);
+	CHECK_MSG(last_err == -ENOSPC, "reuse: filling the root ended with %d, expected -ENOSPC",
+		  last_err);
+	/* 2. d, until $MFT has no record left. */
+	in_d = fill_names(d, "n%05dxx", payload, &last_err);
+	CHECK_MSG(in_d > 0, "reuse: no MFT record was left after the root's wall");
+	CHECK_MSG(last_err == -ENOSPC, "reuse: filling d ended with %d, expected -ENOSPC",
+		  last_err);
+	/* 3. Free one record, K. */
+	snprintf(name, sizeof(name), "n%05dxx", in_d - 1);
+	err = ntfs_lookup(d, name, &f);
+	if (!err) {
+		memset(&at, 0, sizeof(at));
+		err = ntfs_getattr(f, &at);
+		k = at.inode_no;
+		ntfs_inode_put(f);
+	}
+	if (!err)
+		err = ntfs_unlink(d, name);
+	CHECK_MSG(err == 0 && k, "reuse: freeing %s: %d", name, err);
+	if (!err)
+		in_d--;
+	/* Every record has been handed out, so $MFT's size is its allocation. */
+	memset(&info, 0, sizeof(info));
+	err = ntfs_volume_get_info(vol, &info);
+	CHECK_MSG(err == 0 && info.total_mft_records % 8 != 0 &&
+		  k < (info.total_mft_records & ~7ull),
+		  "reuse: get_info %d, $MFT has %" PRIu64 " records and K is %" PRIu64
+		  "; the probe below reaches finding 28 only if the count is not a "
+		  "multiple of 8 and K is below the byte holding the last records",
+		  err, info.total_mft_records, k);
+	err = ntfs_create(d, "probe", 0100644, &f);
+	memset(&at, 0, sizeof(at));
+	if (!err) {
+		CHECK(ntfs_getattr(f, &at) == 0);
+		ntfs_inode_put(f);
+		CHECK(ntfs_unlink(d, "probe") == 0);
+	}
+	CHECK_MSG(err == 0 && at.inode_no == k,
+		  "reuse: after freeing record %" PRIu64 ", create d/probe: %d, record %" PRIu64
+		  " (finding 28)", k, err, at.inode_no);
+	/* 4. The failing name again: it takes K and cannot split the root's index. */
+	err = ntfs_create(root, wall, 0100644, &f);
+	if (!err)
+		ntfs_inode_put(f);
+	CHECK_MSG(err == -ENOSPC, "reuse: %s at the root's full index: %d, expected -ENOSPC",
+		  wall, err);
+	/* 5. The next file must be given K. */
+	err = ntfs_create(d, "victim", 0100644, &f);
+	CHECK_MSG(err == 0, "reuse: create d/victim with record %" PRIu64 " free: %d", k, err);
+	if (!err) {
+		memset(&at, 0, sizeof(at));
+		CHECK(ntfs_getattr(f, &at) == 0);
+		got = at.inode_no;
+		CHECK_MSG(got == k,
+			  "reuse: d/victim got record %" PRIu64 ", not the failed create's %" PRIu64
+			  "; the test no longer reaches finding 27", got, k);
+		CHECK(ntfs_write(f, payload, sizeof(payload), 0) == (ssize_t)sizeof(payload));
+		ntfs_inode_put(f);
+	}
+	printf("  reuse: %d names in the root, %d in d; d/victim in record %" PRIu64
+	       ", the failed create's %" PRIu64 "\n", in_root, in_d, got, k);
+	ntfs_inode_put(d);
+unmount:
 	ntfs_inode_put(root);
 	CHECK(ntfs_volume_sync(vol) == 0);
-	ntfs_unmount(vol);
+	CHECK(ntfs_unmount(vol) == 0);
 	ntfs_bdev_close(dev);
-	check_reuse_image("reuse-fill");
+	check_reuse_image("reuse");
 
 	/* What reached the disk, not what was cached. */
 	err = mount_rw(&dev, &vol);
 	CHECK(err == 0);
 	if (!err) {
 		CHECK(ntfs_volume_root(vol, &root) == 0);
-		check_names("reuse-fill: root", root, "e%05dxx", in_root);
+		check_names("reuse: root", root, "z%05dxx", in_root, NULL);
+		if (wall[0]) {
+			err = ntfs_lookup(root, wall, &f);
+			if (!err)
+				ntfs_inode_put(f);
+			CHECK_MSG(err == -ENOENT,
+				  "reuse: %s, whose create failed, after a remount: %d", wall, err);
+		}
 		err = ntfs_lookup(root, "d", &d);
-		CHECK_MSG(err == 0, "reuse-fill: d gone after a remount: %d", err);
+		CHECK_MSG(err == 0, "reuse: d gone after a remount: %d", err);
 		if (!err) {
-			check_names("reuse-fill: d", d, "n%05dxx", in_d);
-			ntfs_inode_put(d);
-		}
-		ntfs_inode_put(root);
-		ntfs_unmount(vol);
-		ntfs_bdev_close(dev);
-	}
-	drop_image();
-}
-
-/* The shortest form, found independently by the review of PR #8: mkdir d
- * takes one freed record, z0 and z1 the other two, and z2 the failed
- * create's. */
-static void reuse_data(void)
-{
-	static const char payload[] = "precious bytes the user saved";
-	struct ntfs_bdev *dev;
-	ntfs_volume_t *vol;
-	ntfs_inode_t *root, *d, *f;
-	char name[16], rbuf[sizeof(payload)];
-	int err, i;
-
-	if (make_image("reuse-data", 2) != 0)
-		return;
-	fault_clear();
-	err = mount_rw(&dev, &vol);
-	CHECK(err == 0);
-	if (err) { drop_image(); return; }
-	CHECK(ntfs_volume_root(vol, &root) == 0);
-
-	fill_root_free_last("reuse-data", root, 3);
-	err = ntfs_mkdir(root, "d", 040755, &d);
-	CHECK_MSG(err == 0, "reuse-data: mkdir d after freeing 3 names: %d", err);
-	if (!err) {
-		for (i = 0; i < 3; i++) {
-			ssize_t wn = -1;
-			int cerr;
-
-			snprintf(name, sizeof(name), "z%d", i);
-			cerr = ntfs_create(d, name, 0100644, &f);
-			if (!cerr) {
-				wn = ntfs_write(f, payload, sizeof(payload), 0);
+			check_names("reuse: d", d, "n%05dxx", in_d, payload);
+			err = ntfs_lookup(d, "probe", &f);
+			if (!err)
 				ntfs_inode_put(f);
-			}
-			CHECK_MSG(wn == (ssize_t)sizeof(payload), "reuse-data: create %s: %d, write %zd",
-				  name, cerr, wn);
-		}
-		ntfs_inode_put(d);
-	}
-	ntfs_inode_put(root);
-	CHECK(ntfs_volume_sync(vol) == 0);
-	ntfs_unmount(vol);
-	ntfs_bdev_close(dev);
-	check_reuse_image("reuse-data");
-
-	err = mount_rw(&dev, &vol);
-	CHECK(err == 0);
-	if (!err) {
-		CHECK(ntfs_volume_root(vol, &root) == 0);
-		err = ntfs_lookup(root, "d", &d);
-		CHECK_MSG(err == 0, "reuse-data: d gone after a remount: %d", err);
-		for (i = 0; !err && i < 3; i++) {
-			ssize_t rn = -1;
-			int lerr;
-
-			snprintf(name, sizeof(name), "z%d", i);
+			CHECK_MSG(err == -ENOENT, "reuse: d/probe, unlinked, after a remount: %d", err);
+			err = ntfs_lookup(d, "victim", &f);
 			memset(rbuf, 0, sizeof(rbuf));
-			lerr = ntfs_lookup(d, name, &f);
-			if (!lerr) {
-				rn = ntfs_read(f, rbuf, sizeof(rbuf), 0);
+			if (!err) {
+				if (ntfs_read(f, rbuf, sizeof(rbuf), 0) != (ssize_t)sizeof(rbuf))
+					err = -EIO;
 				ntfs_inode_put(f);
 			}
-			CHECK_MSG(rn == (ssize_t)sizeof(payload) && !memcmp(rbuf, payload, sizeof(payload)),
-				  "reuse-data: %s after a remount: lookup %d, read %zd%s", name, lerr, rn,
-				  rn == (ssize_t)sizeof(payload) ? ", different bytes" : "");
-		}
-		if (!err)
+			CHECK_MSG(err == 0 && !memcmp(rbuf, payload, sizeof(payload)),
+				  "reuse: d/victim, in the failed create's record, after a remount: %d%s",
+				  err, err ? "" : ", other bytes");
 			ntfs_inode_put(d);
+		}
 		ntfs_inode_put(root);
 		ntfs_unmount(vol);
 		ntfs_bdev_close(dev);
 	}
 	drop_image();
-}
-
-static void test_failed_create_record_reuse(void)
-{
-	reuse_fill();
-	reuse_data();
 	printf("test_failed_create_record_reuse\n");
 }
 

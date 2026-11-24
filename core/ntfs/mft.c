@@ -981,7 +981,7 @@ static const char *es = "  Leaving inconsistent metadata.  Unmount and run chkds
 static s64 ntfs_mft_bitmap_find_and_alloc_free_rec_nolock(struct ntfs_volume *vol,
 		struct ntfs_inode *base_ni)
 {
-	s64 pass_end, ll, data_pos, pass_start, ofs, bit;
+	s64 pass_end, ll, data_pos, pass_start, ofs, bit, mft_end;
 	unsigned long flags;
 	struct address_space *mftbmp_mapping;
 	u8 *buf = NULL, *byte;
@@ -1004,6 +1004,7 @@ static s64 ntfs_mft_bitmap_find_and_alloc_free_rec_nolock(struct ntfs_volume *vo
 	read_unlock_irqrestore(&NTFS_I(vol->mftbmp_ino)->size_lock, flags);
 	if (pass_end > ll)
 		pass_end = ll;
+	mft_end = pass_end;	/* PORT: see below */
 	pass = 1;
 	if (!base_ni)
 		data_pos = vol->mft_data_pos;
@@ -1074,6 +1075,19 @@ static s64 ntfs_mft_bitmap_find_and_alloc_free_rec_nolock(struct ntfs_volume *vo
 				b = ffz((unsigned long)*byte);
 				if (b < 8 && b >= (bit & 7)) {
 					ll = data_pos + (bit & ~7ull) + b;
+					/*
+					 * PORT: the bitmap byte that holds $MFT's last
+					 * records can also hold bits for records past its
+					 * end, and those are zero. v7.1 returned one as a
+					 * free record, which sent ntfs_mft_record_alloc()
+					 * to extend $MFT instead of wrapping round to free
+					 * records below the search start. On a full volume
+					 * the extension fails, so a create got ENOSPC with
+					 * records free. Mainline bounds the found bit the
+					 * same way (6d8c197c9992). Finding 28 (U19).
+					 */
+					if (ll >= mft_end)
+						break;
 					if (unlikely(ll >= (1ll << 32))) {
 						folio_unlock(folio);
 						kunmap_local(buf);

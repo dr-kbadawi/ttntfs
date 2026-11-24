@@ -53,9 +53,10 @@ tools/ci.sh --list       # what it will run
 * **`faults`** (242) — injected read, write and flush failures at fourteen
   points, plus volumes filled to `ENOSPC`. One is filled with data. Two are
   filled to their last cluster, then hit by new names, and must stay writable
-  afterwards and pass a check after a remount (finding 26). Two more check that
-  a create which fails on a full folder leaves its MFT record safe to give to
-  the next file (finding 27).
+  afterwards and pass a check after a remount (finding 26). One more, also
+  full, checks that a create which fails on a full folder leaves its MFT
+  record safe to give to the next file (finding 27), and that a record freed
+  on a full volume can be given out again (finding 28).
 * **`geometry`** (672) — 4Kn sectors, cluster sizes either side of the sector
   size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
   and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this

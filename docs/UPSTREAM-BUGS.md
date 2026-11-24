@@ -2,10 +2,12 @@
 
 Two ledgers, two numbering schemes, because they need different actions:
 
-* **U1-U12** are bugs in the vendored Linux 7.1 `fs/ntfs` source. They are worth
-  reporting upstream once reduced to kernel reproducers, and each is worked
-  around or fixed here behind a `PORT:` comment marking the divergence.
-* **5-27** are defects in this port, its ABI or its tooling, found mostly by the
+* **U1-U12 and U19** are bugs in the vendored Linux 7.1 `fs/ntfs` source. They
+  are worth reporting upstream once reduced to kernel reproducers, unless
+  mainline has already fixed them, and each is worked around or fixed here
+  behind a `PORT:` comment marking the divergence. U13-U18 are held by branches
+  not merged yet.
+* **5-28** are defects in this port, its ABI or its tooling, found mostly by the
   test suites written on 2026-09-14. The sequence starts at 5 because these two
   lists were one list until the upstream table grew past four rows; the numbers
   are referenced from commit messages and test comments, so they stay as they
@@ -30,6 +32,7 @@ fixing one means updating the test that documents it.
 | U10 | `ntfs_enlarge_attribute()` (`inode.c`) | Drops the error from `ntfs_attr_truncate()` and returns -1. `ntfs_ib_write()` passes that on verbatim, so when a directory's `$INDEX_ALLOCATION` cannot grow on a full volume, `create()`, `mkdir()` and `link()` fail with EPERM. Nothing is logged above debug level. | Backport of upstream 5cd6692db272 (mainline, 2026-10-20), identical apart from a `PORT:` comment. Finding 26. |
 | U11 | `ntfs_mft_data_extend_allocation_nolock()`, `ntfs_mft_record_alloc()` and `ntfs_mft_bitmap_extend_allocation_nolock()` (`mft.c`) | When there is no cluster left for `$MFT` or its bitmap to grow into, the code reports it through `ntfs_error()`, whose errors=remount-ro handling sets the whole volume read-only. That create gets ENOSPC and every write after it EROFS, unlinks included. On a disk full of data, the first few names in a new folder are enough. Still in mainline as of 8d7fe988 (2026-11). | -ENOSPC is returned without `ntfs_error()`; any other error still goes through it. The failing allocations change nothing themselves, and `ntfs_mft_record_alloc()` clears the record's bit again. A `$MFT` bitmap that was extended earlier in the same call stays extended, which is valid on disk. A side effect: reaching the 2^32-record limit no longer sets the volume read-only either. The `ntfs_mft_bitmap_extend_allocation_nolock()` site has no test, because reaching it needs `$MFT` to outgrow its first bitmap cluster (32768 records) when no cluster is free. `PORT:` comments. Finding 26. |
 | U12 | `__ntfs_create()` (`namei.c`) | When a create fails after the new file's EAs are written -- on a full disk, when the folder's index cannot grow -- the error path frees the MFT record but leaves the attribute inodes the create opened in the inode cache. Each holds a reference on the file's inode, so `discard_new_inode()` does not evict it. When the record is next given to a file, that file's EA writes find the cached attribute inodes (`ntfs_test_inode()` matches them by record number, type and name) and go into the dead inode, and the next writeback writes the dead inode's freed copy of the record over the new file's. The new name then points at a record not in use: the file is gone. Same code in mainline as of 68271fbe7d14 (2026-11-14); not reproduced on a Linux kernel. | The error path evicts the record's attribute inodes before freeing it, as `ntfs_delete()` does when a file's last name goes. `PORT:` comment. Finding 27. |
+| U19 | `ntfs_mft_bitmap_find_and_alloc_free_rec_nolock()` (`mft.c`) | The search for a free MFT record takes the first zero bit in a byte without checking that it is below the end of `$MFT`. When `$MFT`'s allocation is not a multiple of eight records, the bitmap byte that holds its last records also holds zero bits for records past its end, and a search that reaches that byte returns one of them. `ntfs_mft_record_alloc()` then extends `$MFT` instead of wrapping round to the free records below where the search started. On a full volume the extension fails, so a create gets ENOSPC while MFT records are free. Already fixed in mainline: 6d8c197c9992 rewrote the search (`mft_bitmap_alloc_free_rec()`) to check the found bit against the end. | The same check in v7.1's function: a found bit at or past the end ends the pass, so the search wraps round. `PORT:` comment. Finding 28. |
 
 U5-U7 were confirmed present verbatim in `upstream/linux-v7.1/fs/ntfs/compress.c`: the only differences between it and `core/ntfs/compress.c` are folio and bio accessors. They are Linux bugs, not porting bugs.
 
@@ -806,10 +809,10 @@ Still open, not pinned by a test:
   request from getting a second run. Upstream reports that such a second run
   let `fallocate()` over a hole read back a deleted file's data. b05a67615b98 is
   related. Neither is backported, and the data exposure has not been
-  reproduced here. Finding 27's test (`reuse_fill()` and `reuse_data()`)
-  reaches its failed create at the same 2 MB wall. Backporting
-  18d4d2a3ce75 moves that wall, so it must keep the test reaching a create
-  that fails after it has taken its MFT record.
+  reproduced here. Finding 27's first test reached its failed create at the
+  same 2 MB wall, and with 18d4d2a3ce75 applied it no longer reached the bug.
+  It now runs on a full volume and pins the record, and it behaves the same
+  with 18d4d2a3ce75 and b05a67615b98 applied (finding 27).
 * `ntfs_mft_bitmap_extend_allocation_nolock()`'s change has no test (see U11).
 
 ## Finding 27 **FIXED**: a create that failed on a full folder lost the next file given its record
@@ -873,17 +876,68 @@ the record is likewise freed only after its attribute inodes are gone. Running
 it before the free also means no other create can be given the record while
 they still match it.
 
-The test is `test_failed_create_record_reuse` in `core/tests/test_faults.c`. It
-runs both sequences, as `reuse_fill()` and `reuse_data()`, and requires, after
-each: `ntfsck -n` clean; every in-use record's `$EA_INFORMATION` query length
-equal to its `$EA` size (`ea_disagreements()`, a scan of the unmounted image,
-since ntfsck does not check it); and, after a remount, every name present and
-every file's bytes intact. Before the fix, ntfsck exits 4 in both, `n00039xx`
-and `z2` are gone, and `z0`/`z1` read back. With only the dead inode's write
-suppressed, ntfsck is clean and every name survives, and the EA check alone
-fails, on record 910. On a 0.4.2 tree both sequences fail the same way, and
-with the fix applied the only failures left there are the root fills stopping
-with EPERM (U10).
+The test is `test_failed_create_record_reuse` in `core/tests/test_faults.c`.
+Its first version ran both sequences above. Before the fix, ntfsck exited 4 in
+both, `n00039xx` and `z2` were gone, and `z0`/`z1` read back; on a 0.4.2 tree
+they failed the same way. With only the dead inode's write suppressed, ntfsck
+was clean and every name survived, and the EA check alone failed, on record
+910.
+
+Those sequences reach their failed create at the 2 MB allocator wall that
+upstream's 18d4d2a3ce75 moves (U13). The allocator backport's own run found
+that with it applied, the failing create dies extending `$MFT` before it has
+a record. `reuse_fill()` then passed without reaching the bug, and
+`reuse_data()` failed on an unrelated ENOSPC. The test now fills the volume
+first, as finding 26's does, and pins the record:
+
+1. With MFT records free but no cluster, names go into the root until a
+   create takes a record and then fails to split the index.
+2. Names go into a folder with index room until `$MFT` has no record left.
+3. One of them is unlinked. Its record K is then the only one free.
+4. The root's failing name is tried again: it takes K and fails as in 1.
+5. The next file must be given K, and the test checks that it was.
+
+Every file in the folder holds 30 bytes. After an unmount, `ntfsck -n` must be
+clean and every in-use record's `$EA_INFORMATION` query length must equal its
+`$EA` size (`ea_disagreements()`, a scan of the unmounted image, since ntfsck
+does not compare them). After a remount every name must be there with its
+bytes. Without the fix the test fails, with and without U13 and U14 applied:
+ntfsck exits 4, and two files are gone. One is the folder's name that was
+given the record freed in step 1, the other the file given K. With the fix,
+both trees pass. Filling `$MFT` exposed finding 28, without whose fix step 2
+stops early and the test cannot pin a record.
+
+## Finding 28 **FIXED**: on a full volume, a create got ENOSPC while an MFT record was free
+
+Found 2026-11-24, while rebuilding finding 27's test. The search is the same
+in 0.4.2.
+
+The search for a free MFT record starts just above the last record it handed
+out. Take a 4 MB volume with every cluster in use, where every record from that
+start to the end of `$MFT` is in use. Unlink a small file whose record is below
+the start, and not in the bitmap byte that holds `$MFT`'s last records, then
+create another: the create fails with ENOSPC although that record is free. (A
+record in that last byte is found on the search's second pass.) `$MFT` had 780 records allocated, so the bitmap byte that holds
+records 776-779 also holds bits for records 780-783, which do not exist and are
+zero. The search stops at the first zero bit after its start, bit 780.
+`ntfs_mft_record_alloc()` takes it as a new record past the end and extends
+`$MFT`, which needs a cluster, so ENOSPC. The free record below the start (475
+here) is never reached, because the search wraps round only when it finds
+nothing.
+
+With clusters free, the same search grows `$MFT` instead of reusing a free
+record, which wastes space but is harmless. On a full volume, deleting small
+files does not make room for new ones until something frees clusters, or until
+a remount resets where the search starts.
+
+The fix (U19) is the check mainline added in 6d8c197c9992, in v7.1's function:
+a found bit at or past the end ends the pass, and the search wraps round. The
+test is the probe in `test_failed_create_record_reuse`, step 3: with K the only
+free record, a create must be given K. Without the fix it fails with ENOSPC,
+with record 475 free, with and without U13 and U14 applied. The probe reaches
+the bug only while `$MFT`'s record count is not a multiple of 8 and K lies below
+the bitmap byte that holds its last records. The test checks both first, and
+fails if a layout change breaks either.
 
 ## Phase 2 compressed round trip: CLOSED (2026-09-18)
 
