@@ -57,9 +57,11 @@ tools/ci.sh --list       # what it will run
   full, checks that a create which fails on a full folder leaves its MFT
   record safe to give to the next file (finding 27), and that a record freed
   on a full volume can be given out again (finding 28).
-* **`geometry`** (672) — 4Kn sectors, cluster sizes either side of the sector
-  size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
-  and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this
+* **`geometry`** (977) — 4Kn sectors, cluster sizes either side of the sector
+  size, a 16 TiB sparse volume, and writes into holes, which must read back
+  zeroes around them after a remount on every cluster size (finding 29). Runs a
+  full read-write cycle per geometry and compares `$MFT` records 0-5 and
+  `$MFTMirr` byte for byte afterwards; this
   is what found finding 15 and what pins it fixed.
 * **`alloc`** (104) — the cluster allocator and upstream's fixes to it (U13-U16).
   A 2 MB root folder filled with names, which must not stop while clusters the

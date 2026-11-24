@@ -50,7 +50,7 @@
  * for unallocated space, LCN_ENOENT beyond the end of the attribute, or a
  * negative LCN_E* code on error.
  */
-static s64 ntfs_vfs_map_vcn(struct ntfs_inode *ni, s64 vcn, s64 max, s64 *count)
+s64 ntfs_vfs_map_vcn(struct ntfs_inode *ni, s64 vcn, s64 max, s64 *count)
 {
 	struct runlist_element *rl;
 	s64 lcn;

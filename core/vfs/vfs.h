@@ -74,6 +74,14 @@ static inline void ntfs_vfs_mark_new(struct inode *vi)
 /* ---- aops.c ----------------------------------------------------------- */
 
 /*
+ * Map @vcn to an lcn (or LCN_HOLE/LCN_DELALLOC for unallocated space,
+ * LCN_ENOENT past the attribute, a negative LCN_E* on error), and set *@count
+ * to the clusters from @vcn to the end of its run, at most @max. Maps the run
+ * list on demand; takes the run list lock itself.
+ */
+s64 ntfs_vfs_map_vcn(struct ntfs_inode *ni, s64 vcn, s64 max, s64 *count);
+
+/*
  * Zero [start, start + len) of a non-resident attribute on the device:
  * allocated clusters are zeroed (through the page cache for partial pages,
  * directly for whole pages), holes are skipped. Replaces iomap_zero_range().

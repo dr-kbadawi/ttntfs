@@ -1055,35 +1055,113 @@ ssize_t ntfs_read(ntfs_inode_t *h, void *buf, size_t count, uint64_t offset)
 	return ret;
 }
 
+/* Zero the cluster at @vcn on the device. It must be allocated. */
+static int zero_cluster(struct ntfs_inode *ni, s64 vcn)
+{
+	struct ntfs_volume *vol = ni->vol;
+	s64 count, lcn = ntfs_vfs_map_vcn(ni, vcn, 1, &count);
+
+	if (lcn < 0)
+		return lcn == LCN_ENOMEM ? -ENOMEM : -EIO;
+	return ntfs_dio_zero_range(VFS_I(ni), ntfs_cluster_to_bytes(vol, lcn),
+				   vol->cluster_size);
+}
+
+/*
+ * Zero the edges of [vcn, end_vcn), a hole alloc_range() has just filled with
+ * new clusters, for a write of [pos, end): the first cluster when the write
+ * starts inside it, the last when the write ends inside it, and either only
+ * when the part the write leaves lies below @init_size.
+ *
+ * PORT: finding 29. A hole has nothing on the disk, so a new cluster holds
+ * whatever was there before, often a deleted file's data. Upstream takes
+ * buffered writes into a hole as delayed allocation
+ * (ntfs_write_simple_iomap_begin_non_resident()): the mapping is IOMAP_F_NEW,
+ * so iomap zeroes the folio around the write instead of reading it, and
+ * ntfs_zero_range() zeroes the rest of the first and last cluster in the page
+ * cache. Its direct I/O path allocates at once and zeroes those two clusters
+ * on the device (ntfs_write_da_iomap_begin_non_resident()). The port allocates
+ * at once for every write, and cached_write() then reads the edge pages
+ * through the new mapping, so it zeroes as upstream's direct I/O does, before
+ * anything can read the clusters. Bytes past @init_size read as zero and are
+ * cleared by do_write()'s gap zeroing before initialized_size passes them, so
+ * clusters wholly past it are left alone: an append pays nothing. A cluster
+ * the write covers entirely is overwritten and needs nothing either.
+ *
+ * What is new is what was a hole before the allocation, not what
+ * ntfs_attr_map_cluster() reports as allocated: without upstream b05a67615b98
+ * (U14) a contiguous request can come back in two runs, which it merges into
+ * the run list and reports as the first alone.
+ */
+static int zero_new_edges(struct ntfs_inode *ni, s64 vcn, s64 end_vcn,
+			  loff_t pos, loff_t end, loff_t init_size)
+{
+	struct ntfs_volume *vol = ni->vol;
+	loff_t start = ntfs_cluster_to_bytes(vol, vcn);
+	loff_t stop = ntfs_cluster_to_bytes(vol, end_vcn);
+	bool head = start < pos && start < init_size;
+	bool tail = stop > end && end < init_size;
+	int err = 0;
+
+	if (head)
+		err = zero_cluster(ni, vcn);
+	if (!err && tail && !(head && end_vcn - vcn == 1))
+		err = zero_cluster(ni, end_vcn - 1);
+	return err;
+}
+
 /* Allocate real clusters under [pos, pos + len) (upstream's writeback
  * allocation, done up front because the port writes to the device
- * directly). */
+ * directly), a hole at a time, zeroing what each hole's new clusters hold
+ * around the write. */
 static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len)
 {
 	struct ntfs_volume *vol = ni->vol;
 	s64 vcn = ntfs_bytes_to_cluster(vol, pos);
 	s64 end_vcn = ntfs_bytes_to_cluster(vol, pos + len - 1) + 1;
-	int err = 0;
+	unsigned long flags;
+	loff_t init_size;
+	int err;
+
+	read_lock_irqsave(&ni->size_lock, flags);
+	init_size = ni->initialized_size;
+	read_unlock_irqrestore(&ni->size_lock, flags);
 
 	while (vcn < end_vcn) {
-		s64 lcn, count;
-		bool balloc;
+		s64 lcn, count, hole_start, hole_end;
 
-		mutex_lock(&ni->mrec_lock);
-		down_write(&ni->runlist.lock);
-		err = ntfs_attr_map_cluster(ni, vcn, &lcn, &count, end_vcn - vcn,
-					    &balloc, true, false);
-		up_write(&ni->runlist.lock);
-		mutex_unlock(&ni->mrec_lock);
-		if (err)
-			break;
-		if (count <= 0) {
-			err = -EIO;
-			break;
+		lcn = ntfs_vfs_map_vcn(ni, vcn, end_vcn - vcn, &count);
+		if (lcn >= 0) {
+			vcn += count;
+			continue;
 		}
-		vcn += count;
+		if (lcn != LCN_HOLE && lcn != LCN_DELALLOC)
+			return lcn == LCN_ENOMEM ? -ENOMEM :
+			       lcn == LCN_ENOENT ? -ENOENT : -EIO;
+
+		/* Fill the hole, in as many runs as the allocator returns. */
+		hole_start = vcn;
+		hole_end = vcn + count;
+		for (; vcn < hole_end; vcn += count) {
+			bool balloc;
+
+			mutex_lock(&ni->mrec_lock);
+			down_write(&ni->runlist.lock);
+			err = ntfs_attr_map_cluster(ni, vcn, &lcn, &count,
+						    hole_end - vcn, &balloc, true, false);
+			up_write(&ni->runlist.lock);
+			mutex_unlock(&ni->mrec_lock);
+			if (err)
+				return err;
+			if (count <= 0)
+				return -EIO;
+		}
+		err = zero_new_edges(ni, hole_start, hole_end, pos, pos + len,
+				     init_size);
+		if (err)
+			return err;
 	}
-	return err;
+	return 0;
 }
 
 /*

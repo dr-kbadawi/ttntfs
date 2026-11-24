@@ -992,3 +992,89 @@ compressed-write code appended to and overwrote mid-stream, read back by
 Windows byte for byte and still compressed. First independent confirmation of
 that code path.
 
+## Finding 29 **FIXED** (one path open): a write into a hole read back a deleted file's data
+
+Found 2026-11-24 beside the allocator backports. Present in 0.4.2. A
+data exposure, and `ntfsck -n` is clean throughout.
+
+Sparse files have holes inside `initialized_size`: Windows' sparse files, disk
+images and download managers all make them. A write into such a hole that did
+not cover whole clusters got new clusters, and nothing zeroed them. After a
+remount the file read back, around the written bytes, whatever those clusters
+held before. Measured with 4 KiB clusters: 100 bytes written, 3,996 bytes of a
+deleted file around them. With 64 KiB clusters it was 65,436.
+
+Cause, `core/vfs/api.c`: `do_write()` maps the hole with `alloc_range()` and
+zeroes nothing there. The pages at the edges of the write then go through
+`cached_write()`, whose `read_mapping_folio()` reads each page through the new
+mapping, from the disk. The page goes back out with the caller's bytes in the
+middle of the old ones. Where a cluster is larger than a page, the pages of it
+that the write does not touch are never written at all. A page-aligned 4 KiB
+write into a 64 KiB cluster takes the direct path and reads nothing, and still
+left 60 KiB. A write just past an `initialized_size` that a truncate left inside
+a hole exposed the cluster's bytes below it: `do_write()`'s zeroing of the gap
+up to the write had read them off the disk.
+
+Upstream's write path does not read the new clusters. It takes buffered writes
+into a hole as delayed allocation (`ntfs_write_simple_iomap_begin_non_resident()`).
+The mapping is `IOMAP_F_NEW`, so iomap zeroes the folio around the write instead
+of reading it, and `ntfs_zero_range()` zeroes the rest of the first and last
+cluster in the page cache. Its direct I/O path allocates at once and zeroes
+those two clusters on the device with `ntfs_dio_zero_range()`. The port
+allocates at once for every write, so `alloc_range()` now zeroes as upstream's
+direct I/O does. It fills one hole at a time and zeroes the hole's first and
+last cluster when the write leaves part of that cluster below
+`initialized_size`, before anything can read them. `PORT:` comment. Clusters
+wholly past `initialized_size` read as zero, and the gap zeroing clears them
+before `initialized_size` passes them. So an append costs nothing extra. A
+write into a hole costs one more cluster write at each end it leaves unaligned,
+as upstream's does.
+
+What counts as new is what was a hole before the allocation, not what
+`ntfs_attr_map_cluster()` reports. The first version of this fix trusted the
+report, and the independent review found the gap. Without U14, a contiguous
+request can come back in two runs: `ntfs_attr_map_cluster()` merges both into
+the run list and reports the first alone, so the second looked allocated
+already and its cluster was never zeroed. The review's white-box repro asks
+for 6 clusters with the hint 4 before the end of the volume, on 0.4.2's
+allocator. HEAD left 4,006 stale bytes, the first version 3,996, and this
+version none. With the allocator branch the request is not split, so the case
+cannot be reached through the public API once U14 lands. The repro needs the
+allocator branch's crafted-`$Bitmap` setup and is not in the tree.
+
+The test is `test_hole_write_zeroes` in `core/tests/test_geometry.c`. It runs on
+all seven geometries mkntfs can build, because the cluster size decides how the
+old bytes get through:
+
+* Every free cluster is filled with `D` through a file that is then deleted.
+* Five writes go into the hole of a sparse file: inside a cluster, across two,
+  a whole page, from a cluster's start, and just past an `initialized_size` that
+  a truncate left inside the hole.
+* After a remount, every byte outside the writes must read back zero, and
+  `ntfsck -n` must be clean.
+* Each write is found on the image afterwards, and the cluster it landed on must
+  have held something before. A fill that missed it fails instead of passing.
+
+Without the fix there are 37 failures, and every stale byte is a `D`. With it
+there are none. The same holds with the allocator branch's `lcnalloc.c` and
+`runlist.c` (U13-U17): 37 failures without the fix, none with it.
+
+Still open:
+
+* **A write that fails part way leaves the clusters it already mapped exposed.**
+  `alloc_range()` fills every hole in the range before anything is written, and
+  zeroes only the edges. When a later hole cannot be filled (ENOSPC), or the
+  zeroing or the data write fails, `do_write()` rolls back the sizes only. The
+  clusters mapped so far stay under `initialized_size` with their old contents.
+  The review measured it: a write of 299 clusters into two holes on a volume
+  with 200 free clusters returned `-ENOSPC`. After a remount the first hole read
+  back 36,864 bytes of a deleted file. `ntfsck -n` was clean. The same happens
+  with the allocator branch. Pre-existing. Upstream writes each extent before
+  it allocates the next, and buffers through delayed allocation, so it does not
+  have this. The fix is to give back what `alloc_range()` allocated when the
+  write fails. `ntfs_non_resident_attr_punch_hole()` cannot do that for a named
+  stream (`NInoAttr`) as it stands.
+* **From reading the code: `ntfs_attr_fallocate()` drops a failed zeroing.** It
+  tests `if (err > 0)` after `ntfs_dio_zero_range()`, which returns a negative
+  errno, so on an I/O error the clusters it maps under `initialized_size` keep
+  their old contents. Same in v7.1. Mainline checks the error.

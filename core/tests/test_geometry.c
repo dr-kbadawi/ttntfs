@@ -1391,6 +1391,385 @@ static void test_cluster_count_ceiling(void)
 	done("test_cluster_count_ceiling");
 }
 
+/* ---- 10. a write into a hole reads back zeroes around it --------------- */
+
+/*
+ * Finding 29 in docs/UPSTREAM-BUGS.md. A data exposure, present in 0.4.2.
+ *
+ * A write into a hole inside initialized_size gets new clusters from
+ * alloc_range() (core/vfs/api.c), and nothing zeroed them. The pages at the
+ * edges of the write went through cached_write(), whose read_mapping_folio()
+ * read each page through the new mapping, so straight off the disk. The page
+ * then went back out with the caller's bytes in the middle of whatever the
+ * clusters held before. Where a cluster is larger than a page, the pages of
+ * it that the write does not touch were never written at all. After a
+ * remount the file reads back a deleted file's data around what was written,
+ * and ntfsck -n is clean: the volume is consistent, it just hands out bytes
+ * it should not. Measured on 0.4.2 with 4 KiB clusters: 100 bytes written,
+ * 3,996 bytes of a deleted file around them.
+ *
+ * Every geometry mkntfs can build, because the cluster size decides how:
+ *   cluster < page   the page's read-modify-write reads the new cluster; its
+ *                    neighbours in the page are holes or the file's own data
+ *   cluster = page   the same, one cluster per page
+ *   cluster > page   the page read is stale, and so are the pages of the
+ *                    cluster that nothing writes. Case C is one whole,
+ *                    page-aligned page: it goes to the device directly and
+ *                    reads nothing, and still left 60 KiB of the cluster.
+ * Where clusters are no larger than a page, case C covers whole clusters and
+ * is a control: there is nothing around it to leave behind.
+ *
+ * The cases, by which edge of the new clusters the write leaves:
+ *   A  100 bytes inside one cluster: both edges, one cluster
+ *   B  100 bytes across a cluster boundary: the start of the first cluster
+ *      and the end of the second
+ *   C  one whole page (above)
+ *   D  100 bytes just past initialized_size, which a truncate has left inside
+ *      a hole: the cluster's bytes below initialized_size are visible, though
+ *      the write itself lies past it. do_write()'s zeroing of the gap up to
+ *      the write read them off the disk too.
+ *   E  100 bytes from the start of a cluster: the end only
+ *
+ * Every free cluster is filled with 'D' first, through a file that is then
+ * deleted, as on a disk that has been used. Each write carries a tag, and the
+ * image is searched for it afterwards: a case whose cluster held only zeroes
+ * before would pass without testing anything, so that fails too.
+ */
+#define HOLE_IMAGE	(16ull << 20)
+#define HOLE_PAGE	(1u << NTFS_PAGE_SHIFT)	/* the port's page cache slot */
+#define HOLE_TAG	32	/* leading bytes of a write that identify it */
+#define HOLE_CASES	5
+
+struct hole_case {
+	const char *what;
+	u64 pos;
+	size_t len;
+	bool leaves_gap;	/* the clusters it lands in are not all written */
+};
+
+static int hole_mount(const char *path, struct ntfs_bdev **dev, ntfs_volume_t **vol,
+		      ntfs_inode_t **root)
+{
+	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0,
+					.fmask = 022, .dmask = 022 };
+	struct ntfs_volume_info info;
+	int err;
+
+	*dev = ntfs_bdev_open_path(path, false);
+	if (!*dev)
+		return -ENOENT;
+	err = ntfs_mount(*dev, &o, vol);
+	if (err) {
+		ntfs_bdev_close(*dev);
+		return err;
+	}
+	if (ntfs_volume_get_info(*vol, &info) == 0 && info.read_only)
+		err = -EROFS;
+	if (!err)
+		err = ntfs_volume_root(*vol, root);
+	if (err) {
+		ntfs_unmount(*vol);
+		ntfs_bdev_close(*dev);
+	}
+	return err;
+}
+
+/* ntfs_unmount() leaves the device open. */
+static int hole_unmount(struct ntfs_bdev *dev, ntfs_volume_t *vol, ntfs_inode_t *root)
+{
+	int err;
+
+	ntfs_inode_put(root);
+	err = ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+	return err;
+}
+
+static unsigned char *read_image(const char *path, size_t *size)
+{
+	unsigned char *p = NULL;
+	struct stat st;
+	int fd;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return NULL;
+	if (fstat(fd, &st) == 0 && st.st_size > 0)
+		p = malloc((size_t)st.st_size);
+	if (p && pread(fd, p, (size_t)st.st_size, 0) != (ssize_t)st.st_size) {
+		free(p);
+		p = NULL;
+	}
+	close(fd);
+	if (p)
+		*size = (size_t)st.st_size;
+	return p;
+}
+
+/* Byte offset of @tag in @img, or -1. */
+static long long find_bytes(const unsigned char *img, size_t size,
+			    const unsigned char *tag, size_t len)
+{
+	for (size_t i = 0; i + len <= size; i++)
+		if (img[i] == tag[0] && memcmp(img + i, tag, len) == 0)
+			return (long long)i;
+	return -1;
+}
+
+/*
+ * Fill the free clusters with 'D' through one file, then delete it. Returns
+ * the clusters it held, or a negative errno. Stops at the first refusal of a
+ * single cluster, which is whatever the allocator calls full.
+ */
+static long long fill_and_delete(ntfs_volume_t *vol, ntfs_inode_t *root, u32 cs)
+{
+	enum { BIG = 256 << 10 };
+	unsigned char *buf = malloc(BIG);
+	ntfs_inode_t *s;
+	size_t chunk = BIG;
+	u64 off = 0;
+	int err;
+
+	if (!buf)
+		return -ENOMEM;
+	memset(buf, 'D', BIG);
+	err = ntfs_create(root, "deleted.bin", 0100644, &s);
+	if (err) {
+		free(buf);
+		return err;
+	}
+	for (;;) {
+		ssize_t w = ntfs_write(s, buf, chunk, off);
+
+		if (w == (ssize_t)chunk) {
+			off += chunk;
+			continue;
+		}
+		if (w != -ENOSPC) {
+			err = w < 0 ? (int)w : -EIO;
+			break;
+		}
+		if (chunk == cs)
+			break;
+		chunk = cs;
+	}
+	free(buf);
+	/* On the disk before the name goes: a deleted file's dirty pages
+	 * are dropped, not written. */
+	if (!err)
+		err = ntfs_fsync(s, false);
+	ntfs_inode_put(s);
+	if (!err)
+		err = ntfs_unlink(root, "deleted.bin");
+	if (!err)
+		err = ntfs_volume_sync(vol);
+	return err ? err : (long long)(off / cs);
+}
+
+static void test_hole_write_zeroes(void)
+{
+	char path[1024];
+	int any = 0;
+
+	for (size_t i = 0; i < NGEOM; i++) {
+		const struct geom *g = &geoms[i];
+		const u32 cs = g->cluster;
+		/* At least two pages and whole clusters, so that no two cases
+		 * share a page or a cluster. */
+		const u64 unit = cs > 2 * HOLE_PAGE ? cs : 2 * HOLE_PAGE;
+		/* Where the truncate leaves EOF and initialized_size: half way
+		 * into a cluster of the hole. */
+		const u64 trunc = 14 * unit + cs / 2;
+		const struct hole_case cases[HOLE_CASES] = {
+			{ "A, 100 bytes inside a cluster", 4 * unit + cs / 4 + 3, 100, true },
+			{ "B, 100 bytes across two clusters", 8 * unit + cs - 50, 100, true },
+			{ "C, one whole page", 12 * unit + (cs > HOLE_PAGE ? 2 * HOLE_PAGE : 0),
+			  HOLE_PAGE, cs > HOLE_PAGE },
+			{ "D, 100 bytes past initialized_size", trunc + 64, 100, true },
+			{ "E, 100 bytes from a cluster's start", 10 * unit, 100, true },
+		};
+		const u64 flen = cases[3].pos + cases[3].len;
+		unsigned char *fbuf = NULL, *pre = NULL, *post = NULL, *exp = NULL, *rb = NULL;
+		struct ntfs_bdev *dev;
+		ntfs_volume_t *vol;
+		ntfs_inode_t *root, *f;
+		size_t pre_size = 0, post_size = 0, off;
+		long long filled = -1;
+		int err;
+
+		if (!g->mkntfs_can)
+			continue;
+		snprintf(path, sizeof(path), "%s/hole-%s.img", workdir, g->name);
+		if (make_image(path, HOLE_IMAGE, g->sector, cs, NULL) != 0) {
+			CHECK_MSG(0, "%s: mkntfs failed for the hole image", g->name);
+			continue;
+		}
+		any = 1;
+		fbuf = malloc(cs);
+		exp = calloc(1, flen);
+		rb = calloc(1, flen);
+		if (!fbuf || !exp || !rb) {
+			CHECK_MSG(0, "%s: out of memory", g->name);
+			goto next;
+		}
+
+		/*
+		 * The sparse file: one cluster at 0 and one at 16 units, written
+		 * on the fresh volume, so everything between is a hole inside
+		 * initialized_size. Then the fill, on the same mount.
+		 */
+		memset(fbuf, 'F', cs);
+		memcpy(exp, fbuf, cs);
+		err = hole_mount(path, &dev, &vol, &root);
+		CHECK_MSG(err == 0, "%s: mount failed with %d", g->name, err);
+		if (err)
+			goto next;
+		err = ntfs_create(root, "sparse.bin", 0100644, &f);
+		CHECK_MSG(err == 0, "%s: create failed with %d", g->name, err);
+		if (!err) {
+			CHECK_MSG(ntfs_write(f, fbuf, cs, 0) == (ssize_t)cs &&
+				  ntfs_write(f, fbuf, cs, 16 * unit) == (ssize_t)cs,
+				  "%s: the two clusters of the sparse file did not write",
+				  g->name);
+			CHECK(ntfs_fsync(f, false) == 0);
+			ntfs_inode_put(f);
+			filled = fill_and_delete(vol, root, cs);
+			CHECK_MSG(filled > 0, "%s: filling the free clusters failed with %lld",
+				  g->name, filled);
+		}
+		CHECK(hole_unmount(dev, vol, root) == 0);
+		if (err || filled <= 0)
+			goto next;
+		pre = read_image(path, &pre_size);
+		CHECK_MSG(pre != NULL, "%s: cannot read the image back", g->name);
+		if (!pre)
+			goto next;
+
+		/*
+		 * The writes, on a fresh mount's empty page cache. The truncate
+		 * first: it drops the cluster at 16 units and leaves EOF and
+		 * initialized_size inside the hole, for case D.
+		 */
+		err = hole_mount(path, &dev, &vol, &root);
+		CHECK_MSG(err == 0, "%s: remount failed with %d", g->name, err);
+		if (err)
+			goto next;
+		err = ntfs_lookup(root, "sparse.bin", &f);
+		CHECK_MSG(err == 0, "%s: sparse.bin gone after a remount (%d)", g->name, err);
+		if (!err) {
+			CHECK_MSG(ntfs_truncate(f, trunc) == 0, "%s: truncate failed", g->name);
+			for (int c = 0; c < HOLE_CASES; c++) {
+				unsigned char *p = exp + cases[c].pos;
+
+				snprintf((char *)p, HOLE_TAG + 1, "finding 29 %-9s case %c ######",
+					 g->name, 'A' + c);
+				for (off = HOLE_TAG; off < cases[c].len; off++)
+					p[off] = (unsigned char)('a' + (off * 7 + (size_t)c) % 26);
+				CHECK_MSG(ntfs_write(f, p, cases[c].len, cases[c].pos) ==
+					  (ssize_t)cases[c].len,
+					  "%s: write %s failed", g->name, cases[c].what);
+			}
+			ntfs_inode_put(f);
+		}
+		CHECK(ntfs_volume_sync(vol) == 0);
+		CHECK(hole_unmount(dev, vol, root) == 0);
+		if (err)
+			goto next;
+
+		/*
+		 * Where each write landed, and what that cluster held before. A
+		 * case that landed on a cluster of zeroes proves nothing either
+		 * way.
+		 */
+		post = read_image(path, &post_size);
+		CHECK_MSG(post != NULL && post_size == pre_size,
+			  "%s: cannot read the image back", g->name);
+		for (int c = 0; post && c < HOLE_CASES; c++) {
+			long long at = find_bytes(post, post_size, exp + cases[c].pos, HOLE_TAG);
+			const unsigned char *was;
+			size_t k;
+
+			if (!cases[c].leaves_gap)
+				continue;
+			CHECK_MSG(at >= 0, "%s: case %s is not on the image", g->name,
+				  cases[c].what);
+			if (at < 0)
+				continue;
+			was = pre + (size_t)at / cs * cs;
+			for (k = 0; k < cs && !was[k]; k++)
+				;
+			CHECK_MSG(k < cs,
+				  "%s: case %s landed on LCN %llu, which held only zeroes "
+				  "(the fill took %lld clusters): this case tested nothing",
+				  g->name, cases[c].what, (unsigned long long)at / cs, filled);
+		}
+
+		/* What a remount reads back: the first cluster, the writes, and
+		 * zeroes everywhere else. */
+		err = hole_mount(path, &dev, &vol, &root);
+		CHECK_MSG(err == 0, "%s: second remount failed with %d", g->name, err);
+		if (err)
+			goto next;
+		err = ntfs_lookup(root, "sparse.bin", &f);
+		CHECK(err == 0);
+		if (!err) {
+			struct ntfs_attr a = { 0 };
+
+			CHECK_MSG(ntfs_getattr(f, &a) == 0 && a.size == flen,
+				  "%s: sparse.bin is %llu bytes, expected %llu", g->name,
+				  (unsigned long long)a.size, (unsigned long long)flen);
+			CHECK_MSG(ntfs_read(f, rb, flen, 0) == (ssize_t)flen,
+				  "%s: read back short", g->name);
+			for (int c = 0; c < HOLE_CASES; c++) {
+				u64 lo = cases[c].pos / cs * cs;
+				u64 hi = (cases[c].pos + cases[c].len + cs - 1) / cs * cs;
+				size_t stale = 0, deleted = 0;
+
+				if (hi > flen)
+					hi = flen;
+				for (u64 b = lo; b < hi; b++) {
+					if (b >= cases[c].pos && b < cases[c].pos + cases[c].len)
+						continue;
+					stale += rb[b] != 0;
+					deleted += rb[b] == 'D';
+				}
+				CHECK_MSG(stale == 0,
+					  "%s: case %s: %zu of the %llu bytes around the write "
+					  "read back non-zero after a remount (%zu are the "
+					  "deleted file's 'D')", g->name, cases[c].what, stale,
+					  (unsigned long long)(hi - lo - cases[c].len), deleted);
+				CHECK_MSG(memcmp(rb + cases[c].pos, exp + cases[c].pos,
+						 cases[c].len) == 0,
+					  "%s: case %s: the written bytes did not read back",
+					  g->name, cases[c].what);
+			}
+			for (off = 0; off < flen && rb[off] == exp[off]; off++)
+				;
+			CHECK_MSG(off == flen,
+				  "%s: sparse.bin differs at byte %zu (0x%02x, expected 0x%02x)",
+				  g->name, off, off < flen ? rb[off] : 0,
+				  off < flen ? exp[off] : 0);
+			ntfs_inode_put(f);
+		}
+		CHECK(hole_unmount(dev, vol, root) == 0);
+		err = fsck(path);
+		CHECK_MSG(err == 0, "%s: ntfsck -n returned %d after the hole writes",
+			  g->name, err);
+next:
+		free(fbuf);
+		free(pre);
+		free(post);
+		free(exp);
+		free(rb);
+		unlink(path);
+	}
+	if (!any) {
+		fprintf(stderr, "SKIP test_hole_write_zeroes: no images\n");
+		skipped++;
+	}
+	done("test_hole_write_zeroes");
+}
+
 /* ------------------------------------------------------------------------ */
 
 static void cleanup(void)
@@ -1441,6 +1820,7 @@ int main(void)
 	test_sector_smaller_than_device_block();
 	test_large_volume();
 	test_cluster_count_ceiling();
+	test_hole_write_zeroes();
 
 	cleanup();
 	printf("%d checks, %d failures, %d skipped groups\n", checks, failures, skipped);
