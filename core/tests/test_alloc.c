@@ -33,7 +33,16 @@
  * image before the mount, with a case for each way of reaching each defect.
  * test_fallocate_hole_zeroes keeps upstream's symptom as a guard.
  *
- * Every case ends with ntfsck -n on the image.
+ * A third fix, from August 2026, is backported as well (U15):
+ *
+ *   19cac7902a8a, "ntfs: bound the free-cluster bitmap scan to the volume".
+ *   The allocator bounded its scan by $Bitmap's size rather than the volume's,
+ *   and the run-list decoder accepted an LCN past the end of the volume.
+ *   test_run_past_volume_end and test_bitmap_longer_than_volume reach each
+ *   half of it through a crafted image.
+ *
+ * Every case ends with ntfsck -n on the image, except the crafted images of
+ * section 4, which are corrupt by construction.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +51,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <signal.h>
+#include <sys/mman.h>
 
 /*
  * White-box: the allocator is called directly, so this file sees the driver's
@@ -164,10 +175,11 @@ static void umount_vol(struct ntfs_bdev *dev, ntfs_volume_t *vol)
 	ntfs_bdev_close(dev);
 }
 
-/* ---- the image's $Bitmap, read and written raw while unmounted -------- */
+/* ---- the image, read and written raw while it is unmounted ------------ */
 
 static struct {
 	uint32_t cluster_size;
+	uint32_t rec_size;	/* MFT record size */
 	uint64_t nr_clusters;
 	uint64_t mft_lcn;
 	uint64_t off;		/* byte offset of $Bitmap's data on the image */
@@ -183,76 +195,171 @@ static uint64_t le_at(const uint8_t *p, int n)
 	return v;
 }
 
-/*
- * Find $Bitmap's data: boot sector, then MFT record 6, then its unnamed $DATA.
- * The volumes here are small enough that it is one run; anything else is
- * reported rather than guessed at.
- */
-static int locate_bitmap(void)
+static void put_le(uint8_t *p, uint64_t v, int n)
 {
-	uint8_t bs[512], rec[4096];
-	uint32_t rec_size, off;
-	int8_t cpr;
-	int fd = open(img, O_RDONLY);
-
-	if (fd < 0)
-		return -1;
-	if (pread(fd, bs, sizeof(bs), 0) != (ssize_t)sizeof(bs))
-		goto bad;
-	bmp.cluster_size = (uint32_t)le_at(bs + 0x0b, 2) * bs[0x0d];
-	bmp.nr_clusters = le_at(bs + 0x28, 8) * le_at(bs + 0x0b, 2) / bmp.cluster_size;
-	bmp.mft_lcn = le_at(bs + 0x30, 8);
-	cpr = (int8_t)bs[0x40];
-	rec_size = cpr > 0 ? (uint32_t)cpr * bmp.cluster_size : 1u << -cpr;
-	if (rec_size > sizeof(rec) ||
-	    pread(fd, rec, rec_size, (off_t)(bmp.mft_lcn * bmp.cluster_size + 6 * rec_size)) !=
-	    (ssize_t)rec_size)
-		goto bad;
-	close(fd);
-	{	/* undo the update sequence fixups */
-		uint32_t usa = (uint32_t)le_at(rec + 4, 2), n = (uint32_t)le_at(rec + 6, 2);
-
-		for (uint32_t i = 1; i < n && i * 512 <= rec_size; i++)
-			memcpy(rec + i * 512 - 2, rec + usa + 2 * i, 2);
+	while (n--) {
+		*p++ = (uint8_t)v;
+		v >>= 8;
 	}
-	for (off = (uint32_t)le_at(rec + 0x14, 2); off + 0x40 <= rec_size;
-	     off += (uint32_t)le_at(rec + off + 4, 4)) {
-		uint32_t type = (uint32_t)le_at(rec + off, 4);
-		const uint8_t *mp;
-		uint64_t len;
-		int nl, no;
-
-		if (type == 0xffffffff || !le_at(rec + off + 4, 4))
-			break;
-		if (type != 0x80 || !rec[off + 8] || rec[off + 9])
-			continue;
-		mp = rec + off + le_at(rec + off + 0x20, 2);
-		nl = mp[0] & 15;
-		no = mp[0] >> 4;
-		len = le_at(mp + 1, nl);
-		bmp.off = le_at(mp + 1 + nl, no) * bmp.cluster_size;
-		bmp.len = (size_t)le_at(rec + off + 0x30, 8);
-		if (mp[1 + nl + no] || len * bmp.cluster_size < bmp.len)
-			return -1;
-		return 0;
-	}
-	return -1;
-bad:
-	close(fd);
-	return -1;
 }
 
-static int bitmap_io(uint8_t *buf, bool write)
+static int image_io(void *buf, size_t len, uint64_t at, bool write)
 {
-	int fd = open(img, O_RDWR);
+	int fd = open(img, write ? O_RDWR : O_RDONLY);
 	ssize_t n;
 
 	if (fd < 0)
 		return -1;
-	n = write ? pwrite(fd, buf, bmp.len, (off_t)bmp.off)
-		  : pread(fd, buf, bmp.len, (off_t)bmp.off);
+	n = write ? pwrite(fd, buf, len, (off_t)at) : pread(fd, buf, len, (off_t)at);
 	close(fd);
-	return n == (ssize_t)bmp.len ? 0 : -1;
+	return n == (ssize_t)len ? 0 : -1;
+}
+
+/* Boot sector geometry. */
+static int read_boot(void)
+{
+	uint8_t bs[512];
+	int8_t cpr;
+
+	if (image_io(bs, sizeof(bs), 0, false))
+		return -1;
+	bmp.cluster_size = (uint32_t)le_at(bs + 0x0b, 2) * bs[0x0d];
+	bmp.nr_clusters = le_at(bs + 0x28, 8) * le_at(bs + 0x0b, 2) / bmp.cluster_size;
+	bmp.mft_lcn = le_at(bs + 0x30, 8);
+	cpr = (int8_t)bs[0x40];
+	bmp.rec_size = cpr > 0 ? (uint32_t)cpr * bmp.cluster_size : 1u << -cpr;
+	return bmp.rec_size > 4096 ? -1 : 0;
+}
+
+/* The offset of the unnamed attribute of @type in a fixed-up record, or 0. */
+static uint32_t find_attr(const uint8_t *rec, uint32_t type)
+{
+	uint32_t off, len;
+
+	for (off = (uint32_t)le_at(rec + 0x14, 2); off + 0x18 <= bmp.rec_size; off += len) {
+		uint32_t t = (uint32_t)le_at(rec + off, 4);
+
+		len = (uint32_t)le_at(rec + off + 4, 4);
+		if (t == 0xffffffff || len < 0x18 || off + len > bmp.rec_size)
+			break;
+		if (t == type && !rec[off + 9])
+			return off;
+	}
+	return 0;
+}
+
+/*
+ * The LCN behind @vcn in the mapping pairs at @mp, or -1. Signed deltas, as
+ * NTFS writes them; holes have no LCN bytes.
+ */
+static int64_t map_vcn(const uint8_t *mp, const uint8_t *end, uint64_t vcn)
+{
+	uint64_t at = 0;
+	int64_t lcn = 0;
+
+	while (mp < end && *mp) {
+		int nl = *mp & 15, no = *mp >> 4;
+		uint64_t len;
+
+		if (!nl || nl > 8 || no > 8 || mp + 1 + nl + no > end)
+			return -1;
+		len = le_at(mp + 1, nl);
+		if (no) {
+			int64_t d = (int64_t)le_at(mp + 1 + nl, no);
+
+			if (no < 8 && mp[nl + no] & 0x80)
+				d -= (int64_t)1 << (8 * no);
+			lcn += d;
+		}
+		if (vcn < at + len)
+			return no ? lcn + (int64_t)(vcn - at) : -1;
+		at += len;
+		mp += 1 + nl + no;
+	}
+	return -1;
+}
+
+static void undo_fixups(uint8_t *rec)
+{
+	uint32_t usa = (uint32_t)le_at(rec + 4, 2), n = (uint32_t)le_at(rec + 6, 2);
+
+	for (uint32_t i = 1; i < n && i * 512 <= bmp.rec_size; i++)
+		memcpy(rec + i * 512 - 2, rec + usa + 2 * i, 2);
+}
+
+/*
+ * MFT record @no with its update sequence fixups undone. Returns the byte
+ * offset it was read from, which write_record() takes, or -1. The record is
+ * found through $MFT's own run list in record 0.
+ */
+static int64_t read_record(uint64_t no, uint8_t *rec)
+{
+	uint64_t byte = no * bmp.rec_size;
+	uint32_t a;
+	int64_t lcn, at;
+
+	if (image_io(rec, bmp.rec_size, bmp.mft_lcn * bmp.cluster_size, false) ||
+	    memcmp(rec, "FILE", 4))
+		return -1;
+	undo_fixups(rec);
+	a = find_attr(rec, 0x80);
+	if (!a || !rec[a + 8])
+		return -1;
+	lcn = map_vcn(rec + a + le_at(rec + a + 0x20, 2), rec + a + le_at(rec + a + 4, 4),
+		      byte / bmp.cluster_size);
+	if (lcn < 0)
+		return -1;
+	at = lcn * (int64_t)bmp.cluster_size + (int64_t)(byte % bmp.cluster_size);
+	if (image_io(rec, bmp.rec_size, (uint64_t)at, false) || memcmp(rec, "FILE", 4))
+		return -1;
+	undo_fixups(rec);
+	return at;
+}
+
+/* Redo the fixups of a record read by read_record() and write it back. */
+static int write_record(int64_t at, uint8_t *rec)
+{
+	uint32_t usa = (uint32_t)le_at(rec + 4, 2), n = (uint32_t)le_at(rec + 6, 2);
+
+	for (uint32_t i = 1; i < n && i * 512 <= bmp.rec_size; i++) {
+		memcpy(rec + usa + 2 * i, rec + i * 512 - 2, 2);
+		memcpy(rec + i * 512 - 2, rec + usa, 2);
+	}
+	return image_io(rec, bmp.rec_size, (uint64_t)at, true);
+}
+
+/*
+ * Find $Bitmap's data: MFT record 6, its unnamed $DATA. The volumes here are
+ * small enough that it is one run; anything else is reported rather than
+ * guessed at.
+ */
+static int locate_bitmap(void)
+{
+	uint8_t rec[4096];
+	const uint8_t *mp;
+	uint64_t len;
+	uint32_t a;
+	int nl, no;
+
+	if (read_boot() || read_record(6, rec) < 0)
+		return -1;
+	a = find_attr(rec, 0x80);
+	if (!a || !rec[a + 8])
+		return -1;
+	mp = rec + a + le_at(rec + a + 0x20, 2);
+	nl = mp[0] & 15;
+	no = mp[0] >> 4;
+	len = le_at(mp + 1, nl);
+	bmp.off = le_at(mp + 1 + nl, no) * bmp.cluster_size;
+	bmp.len = (size_t)le_at(rec + a + 0x30, 8);
+	if (mp[1 + nl + no] || len * bmp.cluster_size < bmp.len)
+		return -1;
+	return 0;
+}
+
+static int bitmap_io(uint8_t *buf, bool write)
+{
+	return image_io(buf, bmp.len, bmp.off, write);
 }
 
 static bool bit_set(const uint8_t *b, uint64_t lcn)
@@ -796,6 +903,278 @@ out:
 	printf("test_fallocate_hole_zeroes\n");
 }
 
+/* ====================================================================== */
+/* 4. crafted images: upstream 19cac7902a8a                               */
+/* ====================================================================== */
+
+/*
+ * 19cac7902a8a, "ntfs: bound the free-cluster bitmap scan to the volume"
+ * (U15), its runlist.c half: ntfs_mapping_pairs_decompress() accepted an LCN
+ * at or past the end of the volume. Here a file's one run is pointed at LCN
+ * nr_clusters. On these images that cluster is still on the device: it is the
+ * slack after the last cluster, and it holds the backup boot sector. A write
+ * to the file must be refused, and those bytes must stay as they were.
+ * Measured without the fix: the write returned 4096 and overwrote them.
+ */
+static void test_run_past_volume_end(void)
+{
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol;
+	ntfs_inode_t *root, *f;
+	uint8_t rec[4096], *buf = NULL, *before = NULL, *after = NULL;
+	uint64_t ino = 0, cs, end_lcn;
+	const uint8_t *mp_end;
+	uint8_t *mp;
+	ssize_t wn = 0;
+	int64_t at;
+	uint32_t a;
+	int err, nl, no;
+
+	if (make_image("pastend", 8) != 0)
+		return;
+	if (read_boot() != 0) {
+		CHECK_MSG(false, "could not read the boot sector");
+		goto out;
+	}
+	cs = bmp.cluster_size;
+	end_lcn = bmp.nr_clusters;
+	buf = malloc(cs);
+	before = malloc(cs);
+	after = malloc(cs);
+	if (!buf || !before || !after)
+		goto out;
+
+	if ((err = mount_rw(&dev, &vol)) != 0) {
+		CHECK_MSG(false, "mount: %d", err);
+		goto out;
+	}
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	CHECK(ntfs_create(root, "outside.bin", 0100644, &f) == 0);
+	memset(buf, 'O', cs);
+	CHECK(ntfs_write(f, buf, cs, 0) == (ssize_t)cs);
+	ino = ntfs_inode_number(f);
+	ntfs_inode_put(f);
+	ntfs_inode_put(root);
+	umount_vol(dev, vol);
+
+	/* One run of one cluster, its LCN in two bytes: rewrite the LCN in place. */
+	at = read_record(ino, rec);
+	a = at < 0 ? 0 : find_attr(rec, 0x80);
+	CHECK_MSG(a && rec[a + 8], "outside.bin: no non-resident $DATA in record %" PRIu64, ino);
+	if (!a || !rec[a + 8])
+		goto out;
+	mp = rec + a + le_at(rec + a + 0x20, 2);
+	mp_end = rec + a + le_at(rec + a + 4, 4);
+	nl = mp[0] & 15;
+	no = mp[0] >> 4;
+	CHECK_MSG(nl && no == 2 && mp + 2 + nl + no <= mp_end && le_at(mp + 1, nl) == 1 &&
+		  !mp[1 + nl + no] && end_lcn < 0x8000,
+		  "outside.bin: its run list is not the one-run shape this case rewrites");
+	if (!(nl && no == 2 && mp + 2 + nl + no <= mp_end && le_at(mp + 1, nl) == 1 &&
+	      !mp[1 + nl + no] && end_lcn < 0x8000))
+		goto out;
+	put_le(mp + 1 + nl, end_lcn, 2);
+	CHECK(write_record(at, rec) == 0);
+
+	CHECK(image_io(before, cs, end_lcn * cs, false) == 0);
+	CHECK_MSG(!memcmp(before + cs - 512 + 3, "NTFS    ", 8),
+		  "no backup boot sector at the end of LCN %" PRIu64, end_lcn);
+
+	if ((err = mount_rw(&dev, &vol)) != 0) {
+		CHECK_MSG(false, "mount: %d", err);
+		goto out;
+	}
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	memset(buf, 'X', cs);
+	err = ntfs_lookup(root, "outside.bin", &f);
+	if (!err) {
+		wn = ntfs_write(f, buf, cs, 0);
+		ntfs_inode_put(f);
+	} else {
+		wn = err;
+	}
+	ntfs_inode_put(root);
+	umount_vol(dev, vol);
+	CHECK_MSG(wn < 0, "a write through a run at LCN %" PRIu64 ", past the end of the "
+		  "volume, returned %zd", end_lcn, wn);
+	CHECK(image_io(after, cs, end_lcn * cs, false) == 0);
+	CHECK_MSG(!memcmp(before, after, cs), "a write through a run at LCN %" PRIu64
+		  ", past the end of the volume, changed the device there: the backup "
+		  "boot sector", end_lcn);
+	/* No ntfsck: the run list is corrupt by construction. */
+out:
+	free(buf);
+	free(before);
+	free(after);
+	drop_image();
+	printf("test_run_past_volume_end\n");
+}
+
+static void bigbitmap_fault(int sig)
+{
+	static const char msg[] =
+		"FAIL test_alloc.c: test_bitmap_longer_than_volume: ntfs_cluster_alloc() "
+		"read vol->lcn_empty_bits_per_page past its end, into the guard page "
+		"(19cac7902a8a, U15). Ending the run here.\n";
+
+	(void)sig;
+	(void)!write(2, msg, sizeof(msg) - 1);
+	_exit(1);
+}
+
+/*
+ * 19cac7902a8a's lcnalloc.c half. vol->lcn_empty_bits_per_page is sized from
+ * nr_clusters at mount, one entry per page of bitmap. ntfs_cluster_alloc()
+ * bounded its scan by $Bitmap's size instead, and the mount refuses only a
+ * $Bitmap that is too short. Here $Bitmap is moved to two clusters, which
+ * cover 65536 clusters on a 2047-cluster volume, so the array has one entry
+ * and the bitmap two pages. An fallocate far into a sparse file makes
+ * ntfs_attr_map_cluster() extrapolate a hint in the second page, and the scan
+ * reads entry 1. Upstream saw it with KASAN; ASan does not run on this
+ * platform (docs/TESTING.md), so the array is copied to the end of a page with
+ * an inaccessible page after it, and the read faults. The fault handler
+ * reports it and ends the run, which is why this case comes last.
+ */
+static void test_bitmap_longer_than_volume(void)
+{
+	const uint64_t HINT = 32768 + 1000;	/* in the second page of the bitmap */
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *h;
+	ntfs_inode_t *root = NULL, *f = NULL;
+	struct ntfs_volume_info info;
+	struct sigaction sa, old_segv, old_bus;
+	uint8_t rec[4096], *page1 = NULL, *page2 = NULL, *buf = NULL, *mp;
+	unsigned int *orig, *arr;
+	uint64_t cs, nr, old_lcn, new_lcn = 0, p, n;
+	size_t ps;
+	void *base;
+	int64_t at;
+	uint32_t a;
+	int err, nl, no;
+
+	if (make_image("bigbitmap", 8) != 0)
+		return;
+	if (locate_bitmap() != 0) {
+		CHECK_MSG(false, "could not find $Bitmap on the image");
+		goto out;
+	}
+	cs = bmp.cluster_size;
+	nr = bmp.nr_clusters;
+	old_lcn = bmp.off / cs;
+	page1 = malloc(cs);
+	page2 = malloc(cs);
+	buf = malloc(cs);
+	if (!page1 || !page2 || !buf || image_io(page1, cs, bmp.off, false))
+		goto out;
+
+	/* Two free clusters in the data zone to move $Bitmap to. */
+	for (uint64_t c = 400; c + 1 < nr && !new_lcn; c++)
+		if (!bit_set(page1, c) && !bit_set(page1, c + 1))
+			new_lcn = c;
+	CHECK_MSG(new_lcn && new_lcn < 0x8000 && 2 * cs * 8 > HINT,
+		  "no room to move $Bitmap to two clusters");
+	if (!new_lcn || new_lcn >= 0x8000 || 2 * cs * 8 <= HINT)
+		goto out;
+	page1[old_lcn >> 3] &= (uint8_t)~(1u << (old_lcn & 7));
+	mark_used(page1, new_lcn, new_lcn + 2);
+	memset(page2, 0xff, cs);	/* clusters past the end: in use */
+	CHECK(image_io(page1, cs, new_lcn * cs, true) == 0);
+	CHECK(image_io(page2, cs, (new_lcn + 1) * cs, true) == 0);
+
+	at = read_record(6, rec);
+	a = at < 0 ? 0 : find_attr(rec, 0x80);
+	if (!a || !rec[a + 8]) {
+		CHECK_MSG(false, "$Bitmap has no non-resident $DATA");
+		goto out;
+	}
+	mp = rec + a + le_at(rec + a + 0x20, 2);
+	nl = mp[0] & 15;
+	no = mp[0] >> 4;
+	CHECK_MSG(nl && no == 2 && !mp[1 + nl + no], "$Bitmap's run list has moved shape");
+	if (!(nl && no == 2 && !mp[1 + nl + no]))
+		goto out;
+	put_le(mp + 1, 2, nl);			/* two clusters */
+	put_le(mp + 1 + nl, new_lcn, 2);	/* at new_lcn */
+	put_le(rec + a + 0x18, 1, 8);		/* highest VCN */
+	put_le(rec + a + 0x28, 2 * cs, 8);	/* allocated size */
+	put_le(rec + a + 0x30, 2 * cs, 8);	/* data size */
+	put_le(rec + a + 0x38, 2 * cs, 8);	/* initialized size */
+	CHECK(write_record(at, rec) == 0);
+
+	/* A file with its first cluster at LCN p, to extrapolate the hint from. */
+	if ((err = mount_rw(&dev, &h)) != 0) {
+		CHECK_MSG(false, "mount with a $Bitmap longer than the volume: %d", err);
+		goto out;
+	}
+	CHECK(ntfs_volume_root(h, &root) == 0);
+	CHECK(ntfs_create(root, "sparse.bin", 0100644, &f) == 0);
+	memset(buf, 'F', cs);
+	memcpy(buf, "\x7a\x11\x0c\xf1", 4);
+	CHECK(ntfs_write(f, buf, cs, 0) == (ssize_t)cs);
+	ntfs_inode_put(f);
+	ntfs_inode_put(root);
+	umount_vol(dev, h);
+	p = find_tag(0xf10c117a);
+	CHECK_MSG(p < nr, "tagged cluster not found");
+	if (p >= nr)
+		goto out;
+
+	if ((err = mount_rw(&dev, &h)) != 0) {
+		CHECK_MSG(false, "mount: %d", err);
+		goto out;
+	}
+	CHECK(ntfs_volume_root(h, &root) == 0);
+	err = ntfs_lookup(root, "sparse.bin", &f);
+	CHECK_MSG(err == 0, "sparse.bin: %d", err);
+	if (err) {
+		f = NULL;
+		goto unmount;
+	}
+	CHECK(ntfs_volume_get_info(h, &info) == 0);
+	CHECK(NVolFreeClusterKnown(h->vol));
+
+	/* The array, moved against a guard page. */
+	n = (((nr + 7) >> 3) + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	ps = (size_t)sysconf(_SC_PAGESIZE);
+	base = mmap(NULL, 2 * ps, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+	CHECK(base != MAP_FAILED);
+	if (base == MAP_FAILED)
+		goto unmount;
+	CHECK(mprotect((uint8_t *)base + ps, ps, PROT_NONE) == 0);
+	arr = (unsigned int *)((uint8_t *)base + ps) - n;
+	orig = h->vol->lcn_empty_bits_per_page;
+	memcpy(arr, orig, n * sizeof(*arr));
+	h->vol->lcn_empty_bits_per_page = arr;
+	memset(&sa, 0, sizeof(sa));
+	sa.sa_handler = bigbitmap_fault;
+	sigaction(SIGSEGV, &sa, &old_segv);
+	sigaction(SIGBUS, &sa, &old_bus);
+	fflush(stdout);		/* the handler leaves through _exit() */
+	fflush(stderr);
+
+	err = ntfs_fallocate(f, (HINT - p) * cs, cs, true);
+
+	sigaction(SIGSEGV, &old_segv, NULL);
+	sigaction(SIGBUS, &old_bus, NULL);
+	memcpy(orig, arr, n * sizeof(*arr));
+	h->vol->lcn_empty_bits_per_page = orig;
+	munmap(base, 2 * ps);
+	CHECK_MSG(err == 0, "fallocate far into a sparse file, on a volume whose $Bitmap "
+		  "is longer than the volume: %d", err);
+unmount:
+	if (f)
+		ntfs_inode_put(f);
+	ntfs_inode_put(root);
+	umount_vol(dev, h);
+	/* No ntfsck: $Bitmap is longer than the volume by construction. */
+out:
+	free(page1);
+	free(page2);
+	free(buf);
+	drop_image();
+	printf("test_bitmap_longer_than_volume\n");
+}
+
 /* A case that bails out early still owns an image; do not litter CI's /tmp. */
 static void cleanup(void) { drop_image(); }
 
@@ -805,6 +1184,8 @@ int main(void)
 	test_names_wall();
 	test_alloc_cases();
 	test_fallocate_hole_zeroes();
+	test_run_past_volume_end();
+	test_bitmap_longer_than_volume();	/* last: a fault ends the run */
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

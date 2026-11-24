@@ -61,13 +61,17 @@ tools/ci.sh --list       # what it will run
   size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
   and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this
   is what found finding 15 and what pins it fixed.
-* **`alloc`** (66) — the cluster allocator and upstream's two fixes to it (U13,
-  U14). A 2 MB root folder filled with names, which must not stop while
-  clusters the allocator could use are free. Four requests made straight to
+* **`alloc`** (94) — the cluster allocator and upstream's fixes to it (U13-U15).
+  A 2 MB root folder filled with names, which must not stop while clusters the
+  allocator could use are free. Four requests made straight to
   `ntfs_cluster_alloc()` over a `$Bitmap` crafted on the image, because a
-  contiguous request's second run cannot be seen through the ABI. And a
+  contiguous request's second run cannot be seen through the ABI. A
   `fallocate()` over a hole whose clusters hold a deleted file's bytes, read
   back after a remount: a guard that passes on 0.4.2 too (U14 explains why).
+  And two crafted images: a file whose run points past the end of the volume,
+  which a write must not reach through, and a `$Bitmap` longer than the
+  volume, whose out-of-bounds read a guard page catches. That case runs last,
+  because a fault ends the run.
 * **`logfile_unit`** (243 checks) — the replay engine against synthetic logs.
 * **`logfile_images`** — `ntfslog` over every fixture.
 * **`enable_module_script`** — the enable script's two silent-failure modes.
@@ -181,7 +185,10 @@ extraction moved the comment with it and changed nothing else.
   exiting. Confirmed on every test in this project, not just one. That matters
   because ASan is what originally found the work-queue use-after-free and the
   lookup-versus-invalidate race. It is `-DNTFS_ASAN=ON`, off by default, and
-  worth retrying after an Xcode update.
+  worth retrying after an Xcode update. For one known out-of-bounds access, a
+  guard page will do instead: `test_bitmap_longer_than_volume` copies the array
+  to the end of a page, makes the next page inaccessible, and turns the read
+  into a fault.
   **UBSan works and is ON by default**, with `-fno-sanitize-recover=undefined`
   so undefined behaviour fails the test rather than printing a warning nobody
   reads. This port takes a lot of unaligned loads out of packed on-disk
