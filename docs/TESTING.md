@@ -50,8 +50,9 @@ tools/ci.sh --list       # what it will run
 * **`crash`** (217) — the write ordering, asserted by mapping a sync's device
   writes back to `$MFT`/`$Bitmap`, then 55 interrupted operations checked with
   `ntfsck`.
-* **`faults`** (148) — injected read, write and flush failures at fourteen
-  points, plus a volume filled to `ENOSPC`.
+* **`faults`** (190) — injected read, write and flush failures at fourteen
+  points, plus volumes filled to `ENOSPC`: one with data, and two with names,
+  which must stay writable afterwards (finding 26).
 * **`geometry`** (672) — 4Kn sectors, cluster sizes either side of the sector
   size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
   and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this

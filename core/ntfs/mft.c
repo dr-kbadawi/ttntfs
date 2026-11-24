@@ -1257,8 +1257,17 @@ static int ntfs_mft_bitmap_extend_allocation_nolock(struct ntfs_volume *vol)
 				true, false, false);
 		if (IS_ERR(rl2)) {
 			up_write(&mftbmp_ni->runlist.lock);
-			ntfs_error(vol->sb,
-					"Failed to allocate a cluster for the mft bitmap.");
+			/*
+			 * PORT: a full volume is not a filesystem error, and
+			 * ntfs_error() would set the volume read-only (U11).
+			 * Nothing has been changed yet, and the caller returns
+			 * the error as it is.
+			 */
+			if (PTR_ERR(rl2) == -ENOSPC)
+				ntfs_debug("No free cluster for the mft bitmap.");
+			else
+				ntfs_error(vol->sb,
+						"Failed to allocate a cluster for the mft bitmap.");
 			return PTR_ERR(rl2);
 		}
 		rl = ntfs_runlists_merge(&mftbmp_ni->runlist, rl2, 0, &new_rl_count);
@@ -1683,9 +1692,20 @@ static int ntfs_mft_data_extend_allocation_nolock(struct ntfs_volume *vol)
 		if (!IS_ERR(rl2))
 			break;
 		if (PTR_ERR(rl2) != -ENOSPC || nr == min_nr) {
-			ntfs_error(vol->sb,
-				"Failed to allocate the minimal number of clusters (%lli) for the mft data attribute.",
-				nr);
+			/*
+			 * PORT: a full volume is not a filesystem error. Upstream
+			 * reports it here and in ntfs_mft_record_alloc() through
+			 * ntfs_error(), which sets the whole volume read-only
+			 * (U11). Nothing has been changed yet, so -ENOSPC is all
+			 * the caller needs, as for the 2^32 limit above.
+			 */
+			if (PTR_ERR(rl2) == -ENOSPC)
+				ntfs_debug("No free clusters for the mft data attribute (%lli).",
+					   nr);
+			else
+				ntfs_error(vol->sb,
+					"Failed to allocate the minimal number of clusters (%lli) for the mft data attribute.",
+					nr);
 			return PTR_ERR(rl2);
 		}
 		/*
@@ -2315,7 +2335,14 @@ have_alloc_rec:
 				err = ntfs_mft_data_extend_allocation_nolock(vol);
 
 			if (unlikely(err)) {
-				ntfs_error(vol->sb, "Failed to extend mft data allocation.");
+				/*
+				 * PORT: -ENOSPC means no room for $MFT to grow, with
+				 * anything half-done already undone; it must not set
+				 * the volume read-only (U11). See
+				 * ntfs_mft_data_extend_allocation_nolock().
+				 */
+				if (err != -ENOSPC)
+					ntfs_error(vol->sb, "Failed to extend mft data allocation.");
 				goto undo_mftbmp_alloc_nolock;
 			}
 			read_lock_irqsave(&mft_ni->size_lock, flags);

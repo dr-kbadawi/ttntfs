@@ -1258,6 +1258,115 @@ static void test_enospc(void)
 	printf("test_enospc\n");
 }
 
+/*
+ * ENOSPC from metadata: a volume that runs out of room for names, not data
+ * (finding 26). The root directory is filled with empty 8-character names,
+ * which use MFT records and index space but never a data cluster. On the
+ * pinned mkntfs that reaches two different walls, measured:
+ *
+ *   2 MB: the directory's $INDEX_ALLOCATION cannot grow. Upstream's
+ *     ntfs_enlarge_attribute() dropped ntfs_attr_truncate()'s -ENOSPC and
+ *     returned -1, so create() failed with EPERM on a full disk (U10).
+ *   4 MB: $MFT runs out of records with no cluster left to grow into.
+ *     ntfs_mft_data_extend_allocation_nolock() and ntfs_mft_record_alloc()
+ *     reported that through ntfs_error(), which sets the volume read-only:
+ *     that create got ENOSPC and every write after it EROFS (U11).
+ *
+ * The requirements are test_enospc's plus one. The create fails with ENOSPC
+ * and nothing else. The file from before the wall is intact, and ntfsck is
+ * clean. And the volume stays writable: free a few names and the same create
+ * succeeds. A full disk is an ordinary condition; it must not cost the user
+ * the volume.
+ */
+static void enospc_names(const char *tag, unsigned mb)
+{
+	static const char keep[] = "written before the wall";
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol;
+	ntfs_inode_t *root, *f;
+	struct ntfs_volume_info info;
+	char name[64], rbuf[sizeof(keep)];
+	int err, i, created = 0, last_err = 0;
+
+	if (make_image(tag, mb) != 0)
+		return;
+	fault_clear();
+	err = mount_rw(&dev, &vol);
+	CHECK(err == 0);
+	if (err) { drop_image(); return; }
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+
+	err = ntfs_create(root, "keep.txt", 0100644, &f);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_write(f, keep, sizeof(keep), 0) == (ssize_t)sizeof(keep));
+		ntfs_inode_put(f);
+	}
+
+	for (i = 0; i < 20000; i++) {
+		snprintf(name, sizeof(name), "e%05dxx", i);
+		err = ntfs_create(root, name, 0100644, &f);
+		if (err) {
+			last_err = err;
+			break;
+		}
+		ntfs_inode_put(f);
+		created++;
+	}
+	printf("  %s: %d names created, then %d (%s)\n", tag, created, last_err,
+	       last_err ? strerror(-last_err) : "none");
+	CHECK_MSG(last_err != 0,
+		  "%s: %d names fitted in a %u MB volume; the wall was never hit",
+		  tag, created, mb);
+	CHECK_MSG(last_err == -ENOSPC,
+		  "%s: a volume full of names reported %d (%s), expected -ENOSPC",
+		  tag, last_err, strerror(-last_err));
+
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	CHECK_MSG(!info.read_only,
+		  "%s: running out of space set the volume read-only (ro_reason %d)",
+		  tag, info.ro_reason);
+
+	/* Still writable: free the last eight names and create one again. */
+	for (i = created - 1; i >= 0 && i >= created - 8; i--) {
+		snprintf(name, sizeof(name), "e%05dxx", i);
+		err = ntfs_unlink(root, name);
+		CHECK_MSG(err == 0, "%s: unlink %s after ENOSPC: %d (%s)",
+			  tag, name, err, strerror(-err));
+	}
+	snprintf(name, sizeof(name), "e%05dxx", created > 8 ? created - 8 : 0);
+	err = ntfs_create(root, name, 0100644, &f);
+	CHECK_MSG(err == 0, "%s: create %s after freeing eight names: %d (%s)",
+		  tag, name, err, strerror(-err));
+	if (!err)
+		ntfs_inode_put(f);
+
+	err = ntfs_lookup(root, "keep.txt", &f);
+	CHECK_MSG(err == 0, "%s: keep.txt was lost when the volume filled: %d",
+		  tag, err);
+	if (!err) {
+		memset(rbuf, 0, sizeof(rbuf));
+		CHECK(ntfs_read(f, rbuf, sizeof(rbuf), 0) == (ssize_t)sizeof(rbuf));
+		CHECK_MSG(memcmp(rbuf, keep, sizeof(keep)) == 0,
+			  "%s: keep.txt came back with different bytes", tag);
+		ntfs_inode_put(f);
+	}
+
+	ntfs_inode_put(root);
+	ntfs_volume_sync(vol);
+	ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+	check_image(tag);
+	drop_image();
+}
+
+static void test_enospc_names(void)
+{
+	enospc_names("enospc-index", 2);
+	enospc_names("enospc-mft", 4);
+	printf("test_enospc_names\n");
+}
+
 /* A case that bails out early still owns an image; do not litter CI's /tmp. */
 static void cleanup(void) { drop_image(); }
 
@@ -1276,6 +1385,7 @@ int main(void)
 	test_write_fail_midtransfer();
 	test_flush_fail();
 	test_enospc();
+	test_enospc_names();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }
