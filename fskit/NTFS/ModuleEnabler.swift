@@ -29,11 +29,15 @@
 // Apple-restricted app group a sandboxed process cannot touch, and signalling
 // another of the user's processes is likewise out of reach under the sandbox.
 //
-// macOS 27 closes that path: the plist can no longer be read or written by an
-// app without Apple's private entitlement, so the only supported route is to
-// open System Settings and wait for FSClient to report the module enabled. The
-// same fallback is taken on 26 when the read fails with a permission error,
-// since Apple could extend the protection to a 26.x update.
+// macOS 27 protects the list: an app without Full Disk Access gets a
+// permission error reading it (issue #2). With Full Disk Access the same edit
+// and restart still work (reported on 27 in #2, 2026-11-21), and on 27 the
+// System Settings switch works for third-party modules too. So the app tries
+// the list first on every version, and opens System Settings and waits for
+// FSClient to report the module enabled when the list is refused, or, on 27,
+// when the edit fails in any other way or FSKit does not act on it. The
+// permission fallback is taken on 26 as well, since Apple could extend the
+// protection to a 26.x update.
 //
 // Neither path is documented, so nothing here assumes success: the result is
 // read back from FSClient and reported honestly.
@@ -60,15 +64,15 @@ final class ModuleEnabler: ObservableObject {
 
     static let moduleID = "ch.techtag.ntfs.extension"
 
-    /// macOS 27 no longer lets an app read or write fskit_agent's allowlist
-    /// without Apple's private entitlement. The supported switch is in System
-    /// Settings; the app can only open it and wait for FSKit to report the
-    /// module as enabled.
-    static var usesSystemSettingsOnly: Bool {
+    /// From macOS 27 the System Settings switch can turn a third-party module
+    /// on, so it is the fallback whenever the app's own route does not take
+    /// effect. On 26 it cannot, and only a permission error sends the user
+    /// there.
+    static var settingsSwitchWorks: Bool {
         ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
     }
 
-    static let systemSettingsHint = "This version of macOS enables third-party file systems only in System Settings → General → Login Items & Extensions. Under Extensions, choose By Category, then File System Extensions, and turn TT NTFS Native on there; the switch in the By App list does not stay on. This app will notice when it is enabled."
+    static let systemSettingsHint = "macOS did not let this app turn the extension on by itself, so turn it on in System Settings → General → Login Items & Extensions. Under Extensions, choose By Category, then File System Extensions, and turn TT NTFS Native on there; the switch in the By App list does not stay on. This app will notice when it is enabled."
 
     /// True while a poll loop is waiting for the user to finish in System
     /// Settings, which is not `.working` but still must not be re-entered.
@@ -87,11 +91,6 @@ final class ModuleEnabler: ObservableObject {
         guard outcome != .working, !isWaitingForSettings else { return }
         outcome = .working
 
-        if Self.usesSystemSettingsOnly {
-            await requireSystemSettings()
-            return
-        }
-
         // Restarting the agent drops volumes *our* module is serving. Volumes
         // mounted by Apple's ntfs driver survive it — verified 2026-09-13 on
         // 26.6.2 — which matters because the common case is a user plugging in
@@ -105,10 +104,11 @@ final class ModuleEnabler: ObservableObject {
         do {
             try Self.addToEnabledList()
         } catch {
-            // A permission error means Apple has protected the list on this
-            // build too, whatever the version says; the Settings route is then
-            // the only one left.
-            if Self.isPermissionDenied(error) {
+            // A permission error means the list is protected: on macOS 27
+            // whenever the app lacks Full Disk Access, and possibly on a 26.x
+            // update. The Settings route is then the only one left. On 27 it
+            // also answers any other failure, since the switch works there.
+            if Self.isPermissionDenied(error) || Self.settingsSwitchWorks {
                 await requireSystemSettings()
                 return
             }
@@ -119,11 +119,15 @@ final class ModuleEnabler: ObservableObject {
         let killed = Self.restartAgent()
 
         // Read the result back rather than trusting the write.
-        if await Self.waitUntilEnabled(timeout: .seconds(15)) {
+        if await Self.waitUntil(enabled: true, timeout: .seconds(15)) {
             // Enabling changes nothing for disks that are already mounted:
             // Disk Arbitration only picks a module when it probes, and it
             // probes on mount. DiskInventory shows what can be handed over.
             outcome = .succeeded
+        } else if Self.settingsSwitchWorks {
+            // On 27 the switch is known to work, so an edit FSKit does not act
+            // on hands over to it rather than ending in an error.
+            await requireSystemSettings()
         } else if killed == 0 {
             outcome = .failed("The module list was updated but fskit_agent was not running to restart. Log out and back in, then re-check.")
         } else {
@@ -135,30 +139,35 @@ final class ModuleEnabler: ObservableObject {
     /// mirror of `enable()`. Used by the uninstaller; leaving the entry behind
     /// would keep the module listed in System Settings after the app is gone.
     func disable() async -> String? {
-        if Self.usesSystemSettingsOnly {
-            return await switchOffInSystemSettings()
-        }
         if Self.moduleIsServingAVolume() {
             return "a volume this driver is serving is still mounted; eject it and try again"
         }
         do {
             try Self.removeFromEnabledList()
         } catch {
-            // Same protection as the 27 path: if the app may not edit the list,
-            // the Settings switch is the only way left.
-            if Self.isPermissionDenied(error) {
+            // As in `enable()`: if the app may not edit the list, or on 27
+            // cannot for any other reason, the Settings switch is the way left.
+            if Self.isPermissionDenied(error) || Self.settingsSwitchWorks {
                 return await switchOffInSystemSettings()
             }
             return "could not update the FSKit module list: \(error.localizedDescription)"
         }
         Self.restartAgent()
+        // On 27 the user may have turned the module on with the switch, and
+        // nothing says the list is all FSKit consults there, so check, and hand
+        // over to the switch if the module is still on.
+        if Self.settingsSwitchWorks {
+            let off = await Self.waitUntil(enabled: false, timeout: .seconds(15))
+            if !off { return await switchOffInSystemSettings() }
+        }
         return nil
     }
 
-    /// The one route left when the app may not edit the allowlist. Returns nil
-    /// if the extension is already off — refusing there would leave the
-    /// uninstaller stuck on a machine where the user has already switched it
-    /// off — and otherwise opens Settings and explains what to do.
+    /// The route when the app may not edit the list, or (on 27) its edit did
+    /// not take. Returns nil if the extension is already off — refusing there
+    /// would leave the uninstaller stuck on a machine where the user has
+    /// already switched it off — and otherwise opens Settings and explains
+    /// what to do.
     private func switchOffInSystemSettings() async -> String? {
         guard await Self.isEnabled() else { return nil }
         ExtensionStatus.openSettings()
@@ -188,11 +197,17 @@ final class ModuleEnabler: ObservableObject {
         if FileManager.default.fileExists(atPath: url.path) {
             let data = try Data(contentsOf: url)
             let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
-            modules = plist as? [String] ?? []
+            // Edit only a list in the shape we know. Anything else is FSKit's
+            // data in a form we do not understand, and writing our one entry
+            // over it would drop every other module.
+            guard let existing = plist as? [String] else {
+                throw CocoaError(.propertyListReadCorrupt)
+            }
+            modules = existing
         } else {
             // The list appears the first time System Settings shows the pane. If it
-            // is absent, creating it with the Apple defaults plus ours is correct:
-            // fskit_agent merges it with what is registered.
+            // is absent, creating it with only our ID is correct: fskit_agent
+            // merges it with what is registered.
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
         }
@@ -212,8 +227,9 @@ final class ModuleEnabler: ObservableObject {
         return agents.count
     }
 
-    /// The macOS 27 route: open System Settings, then wait for the user to flip
-    /// the switch there and for FSClient to report it.
+    /// The route when the app may not edit the list, or (on 27) its edit did
+    /// not take: open System Settings, then wait for the user to flip the
+    /// switch there and for FSClient to report it.
     private func requireSystemSettings() async {
         isWaitingForSettings = true
         defer { isWaitingForSettings = false }
@@ -224,8 +240,12 @@ final class ModuleEnabler: ObservableObject {
         // Polling is cheap but not free — each round asks the FSKit service —
         // and the user has to find the pane and click, so two seconds is often
         // enough resolution.
-        if await Self.waitUntilEnabled(timeout: .seconds(300), interval: .seconds(2)) {
+        if await Self.waitUntil(enabled: true, timeout: .seconds(300), interval: .seconds(2)) {
             outcome = .succeeded
+        } else {
+            // Nothing polls any more, so the hint's "this app will notice" no
+            // longer holds; offer the button again instead.
+            outcome = .idle
         }
     }
 
@@ -244,21 +264,29 @@ final class ModuleEnabler: ObservableObject {
         }
     }
 
-    private static func waitUntilEnabled(timeout: Duration, interval: Duration = .milliseconds(500)) async -> Bool {
+    /// Polls FSClient until it reports the module in the wanted state.
+    private static func waitUntil(enabled wanted: Bool, timeout: Duration,
+                                  interval: Duration = .milliseconds(500)) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: timeout)
         while ContinuousClock.now < deadline {
-            if await isEnabled() { return true }
+            if await enabledState() == wanted { return true }
             try? await Task.sleep(for: interval)
         }
         return false
     }
 
     static func isEnabled() async -> Bool {
+        await enabledState() ?? false
+    }
+
+    /// nil when FSClient could not be asked, which right after the agent is
+    /// restarted is no answer either way; a module FSKit does not list is off.
+    private static func enabledState() async -> Bool? {
         do {
             let modules = try await FSClient.shared.installedExtensions
             return modules.first { $0.bundleIdentifier == moduleID }?.isEnabled ?? false
         } catch {
-            return false
+            return nil
         }
     }
 

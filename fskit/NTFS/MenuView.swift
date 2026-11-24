@@ -201,8 +201,9 @@ struct MenuView: View {
     }
 
     /// On macOS 26 the System Settings switch cannot turn a third-party FSKit
-    /// module on (26.3 and 26.6.2), so we do it here; on 27 that switch is the
-    /// only path. See ModuleEnabler.
+    /// module on (26.3 and 26.6.2), so we do it here. On 27 we try the same,
+    /// which needs Full Disk Access there, and fall back to that switch, which
+    /// works on 27. See ModuleEnabler.
     @ViewBuilder private var enableFooter: some View {
         switch enabler.outcome {
         case .working:
@@ -235,13 +236,12 @@ struct MenuView: View {
             }
         case .idle:
             VStack(alignment: .leading, spacing: 6) {
-                Text(ModuleEnabler.usesSystemSettingsOnly
-                     ? "Turn the extension on in System Settings, under Login Items & Extensions → By Category → File System Extensions. This app will notice when it is enabled."
+                Text(ModuleEnabler.settingsSwitchWorks
+                     ? "Turn it on here, or in System Settings under Login Items & Extensions → By Category → File System Extensions, then press Re-check."
                      : "Turn it on here — the switch in System Settings cannot enable third-party file system extensions on this version of macOS.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                enableButtons(title: ModuleEnabler.usesSystemSettingsOnly
-                              ? "Open System Settings" : "Enable Extension")
+                enableButtons(title: "Enable Extension")
             }
         }
     }
