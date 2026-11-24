@@ -20,7 +20,7 @@ tools/ci.sh --list       # what it will run
 
 | suite | what it covers | run by |
 |---|---|---|
-| `ctest` (15 targets, ~2,700 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the enable script | `ctest --test-dir build` |
+| `ctest` (16 targets, ~2,800 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the cluster allocator, the enable script | `ctest --test-dir build` |
 | `tools/run-tests.sh` (265 checks) | read and write against 7 NTFS fixtures, compared with ntfsprogs as ground truth, then structurally checked | `tools/run-tests.sh all` |
 | `NTFSTests` (51 tests) | the app's Swift logic: option parsing, status decoding, note expiry | `xcodebuild test -scheme NTFSTests` |
 | `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end, then `fsck` on the result | by hand |
@@ -61,6 +61,13 @@ tools/ci.sh --list       # what it will run
   size, and a 16 TiB sparse volume. Runs a full read-write cycle per geometry
   and compares `$MFT` records 0-5 and `$MFTMirr` byte for byte afterwards; this
   is what found finding 15 and what pins it fixed.
+* **`alloc`** (66) — the cluster allocator and upstream's two fixes to it (U13,
+  U14). A 2 MB root folder filled with names, which must not stop while
+  clusters the allocator could use are free. Four requests made straight to
+  `ntfs_cluster_alloc()` over a `$Bitmap` crafted on the image, because a
+  contiguous request's second run cannot be seen through the ABI. And a
+  `fallocate()` over a hole whose clusters hold a deleted file's bytes, read
+  back after a remount: a guard that passes on 0.4.2 too (U14 explains why).
 * **`logfile_unit`** (243 checks) — the replay engine against synthetic logs.
 * **`logfile_images`** — `ntfslog` over every fixture.
 * **`enable_module_script`** — the enable script's two silent-failure modes.
@@ -209,6 +216,13 @@ extraction moved the comment with it and changed nothing else.
   failed only after a remount: a truncated symlink target served from
   `ni->target`, and a compressed extension served from the page cache. Every
   assertion about what reached the disk must remount first.
+* **A fresh mount is a special case for the allocator.** Its data zone position
+  starts on a cluster in use (the root folder's security descriptor, on mkntfs
+  images), and a cluster in use ends a contiguous run cleanly. The first
+  version of `test_fallocate_hole_zeroes` passed against the defect it was
+  written for: the rest of the request came from a second call, which reports
+  its clusters as new. It fails as it should once a write earlier in the same
+  mount has moved the zone position onto free space.
 * **The logfile fixture has a real `$INDEX_ALLOCATION`** (record 31, cluster 44,
   left zeroed). That is what lets `test_first_write_into_fresh_cluster_is_protected`
   exist: it is the state finding 19 was about, a cluster allocated but never

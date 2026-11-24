@@ -224,6 +224,23 @@ if(NTFS_BUILD_TESTS)
   set_tests_properties(names PROPERTIES
     ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFS_TOOLS=${CMAKE_CURRENT_SOURCE_DIR}/tools")
 
+  # The cluster allocator: upstream 18d4d2a3ce75 and b05a67615b98, U13 and U14
+  # in docs/UPSTREAM-BUGS.md. White-box, because the second of them cannot be
+  # seen through the ABI: it calls ntfs_cluster_alloc() over a $Bitmap crafted
+  # on the image, so it sees the driver's own headers, quote-only as in
+  # core/CMakeLists.txt.
+  add_executable(test_alloc core/tests/test_alloc.c)
+  target_link_libraries(test_alloc ntfscore ntfsplatform)
+  target_include_directories(test_alloc PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
+  target_compile_options(test_alloc PRIVATE
+    "SHELL:-iquote ${CMAKE_CURRENT_SOURCE_DIR}/core/ntfs"
+    "SHELL:-iquote ${CMAKE_CURRENT_SOURCE_DIR}/core/vfs")
+  add_test(NAME alloc COMMAND test_alloc)
+  set_tests_properties(alloc PROPERTIES
+    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck")
+
   # enable-module.sh: two silent-failure bugs cost a mount each. Static checks
   # plus the real prune loop under stubbed tools; touches no system state.
   add_test(NAME enable_module_script

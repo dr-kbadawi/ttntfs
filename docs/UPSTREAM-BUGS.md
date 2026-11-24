@@ -32,7 +32,39 @@ fixing one means updating the test that documents it.
 | U10 | `ntfs_enlarge_attribute()` (`inode.c`) | Drops the error from `ntfs_attr_truncate()` and returns -1. `ntfs_ib_write()` passes that on verbatim, so when a directory's `$INDEX_ALLOCATION` cannot grow on a full volume, `create()`, `mkdir()` and `link()` fail with EPERM. Nothing is logged above debug level. | Backport of upstream 5cd6692db272 (mainline, 2026-10-20), identical apart from a `PORT:` comment. Finding 26. |
 | U11 | `ntfs_mft_data_extend_allocation_nolock()`, `ntfs_mft_record_alloc()` and `ntfs_mft_bitmap_extend_allocation_nolock()` (`mft.c`) | When there is no cluster left for `$MFT` or its bitmap to grow into, the code reports it through `ntfs_error()`, whose errors=remount-ro handling sets the whole volume read-only. That create gets ENOSPC and every write after it EROFS, unlinks included. On a disk full of data, the first few names in a new folder are enough. Still in mainline as of 8d7fe988 (2026-11). | -ENOSPC is returned without `ntfs_error()`; any other error still goes through it. The failing allocations change nothing themselves, and `ntfs_mft_record_alloc()` clears the record's bit again. A `$MFT` bitmap that was extended earlier in the same call stays extended, which is valid on disk. A side effect: reaching the 2^32-record limit no longer sets the volume read-only either. The `ntfs_mft_bitmap_extend_allocation_nolock()` site has no test, because reaching it needs `$MFT` to outgrow its first bitmap cluster (32768 records) when no cluster is free. `PORT:` comments. Finding 26. |
 | U12 | `__ntfs_create()` (`namei.c`) | When a create fails after the new file's EAs are written -- on a full disk, when the folder's index cannot grow -- the error path frees the MFT record but leaves the attribute inodes the create opened in the inode cache. Each holds a reference on the file's inode, so `discard_new_inode()` does not evict it. When the record is next given to a file, that file's EA writes find the cached attribute inodes (`ntfs_test_inode()` matches them by record number, type and name) and go into the dead inode, and the next writeback writes the dead inode's freed copy of the record over the new file's. The new name then points at a record not in use: the file is gone. Same code in mainline as of 68271fbe7d14 (2026-11-14); not reproduced on a Linux kernel. | The error path evicts the record's attribute inodes before freeing it, as `ntfs_delete()` does when a file's last name goes. `PORT:` comment. Finding 27. |
+| U13 | `ntfs_cluster_alloc()` (`lcnalloc.c`) | When the clusters at the caller's hint do not satisfy a request, the search moves to the zone position but keeps its pass, its zone end and its `has_guess` state. It tries the one cluster there as if it were the hint, skips the rest of the bitmap page when that cluster is in use, then shrinks the MFT zone to nothing and fails with -ENOSPC while clusters are free. A hint at or past the end of the volume is enough: the next extension of an attribute whose last run ends on the last cluster gets one. A 2 MB volume whose root was filled with empty names stopped after 846 names with 70 of its 511 clusters free (as EPERM on `main`, which lacks U10's fix). | Backport of upstream 18d4d2a3ce75 (mainline, 2026-10-20), identical apart from a `PORT:` comment. The same volume now takes 1076 names. `test_alloc`: `test_names_wall`, cases C and D. |
+| U14 | `ntfs_cluster_alloc()` (`lcnalloc.c`) | A contiguous request whose run reaches the end of a bitmap page or of a zone carries on wherever the scan goes next: the zone position after a hint, the page after a full one, pass 2, or the new end of a shrunk MFT zone. The first free cluster there starts a second run, and the caller, which asked for contiguous clusters, uses the first run alone. Upstream reported that `fallocate()` of 20 clusters over a hole then read back a deleted file's data in 16 of them. | Backport of upstream b05a67615b98 and of the contiguous half of 18d4d2a3ce75, identical apart from `PORT:` comments. A contiguous request can now come back short, and `ntfs_attr_map_cluster()`'s callers ask again for the rest. `test_alloc`: cases A and B, and the guard `test_fallocate_hole_zeroes`. |
 | U19 | `ntfs_mft_bitmap_find_and_alloc_free_rec_nolock()` (`mft.c`) | The search for a free MFT record takes the first zero bit in a byte without checking that it is below the end of `$MFT`. When `$MFT`'s allocation is not a multiple of eight records, the bitmap byte that holds its last records also holds zero bits for records past its end, and a search that reaches that byte returns one of them. `ntfs_mft_record_alloc()` then extends `$MFT` instead of wrapping round to the free records below where the search started. On a full volume the extension fails, so a create gets ENOSPC while MFT records are free. Already fixed in mainline: 6d8c197c9992 rewrote the search (`mft_bitmap_alloc_free_rec()`) to check the found bit against the end. | The same check in v7.1's function: a found bit at or past the end ends the pass, so the search wraps round. `PORT:` comment. Finding 28. |
+
+U13 and U14 were backported on 2026-11-24. What was measured here, beyond the
+table:
+
+* **U14 was produced in this port, but nothing read the old data.** 0.4.2's
+  allocator answered upstream's `fallocate()` with 4 clusters at the end of the
+  volume and 16 at the zone position, in one call. But 7.1's
+  `ntfs_attr_fallocate()` zeroes every run `ntfs_attr_map_cluster()` maps,
+  including the second one, which it is then told was already allocated.
+  Mainline zeroes only the runs reported as new, and that is where upstream
+  read the old data. The port's write path writes over every run it maps.
+  `getattr()` takes its sizes from the mapping pairs, and the port never holds
+  dirty clusters, so upstream's `statfs()` miscount cannot arise either. So
+  `test_fallocate_hole_zeroes` passes on 0.4.2. It is a guard: with mainline's
+  zeroing applied to 0.4.2 it fails, with 16 of 20 clusters reading back a
+  deleted file's bytes; with 18d4d2a3ce75 as well, it passes.
+* **Open, from reading the code (not reproduced): the compressed writer
+  assumes a single full run.** `ntfs_write_cb()` (`compress.c`) asks for
+  contiguous clusters with no hint, then writes the whole compression block
+  from `rlc->lcn`, whatever came back. A short run (possible in 7.1 too, when a
+  cluster in use ends one) or, before U14, a split one puts the end of the
+  block on clusters the file does not own. Mainline's writer is the same. U14
+  turns the split case into a short one, so it does not fix this.
+* **Still not fixed: `$MFT` cannot extend into the MFT zone from a hint past
+  it.** With U13 the names test stops with one cluster free: LCN 3, the gap
+  mkntfs leaves in front of `$MFT`, inside the MFT zone. The request that fails
+  is `$MFT`'s own extension. Its hint (after its last run) lies past the MFT
+  zone, so the search skips that zone (`done_zones |= 1`). An `MFT_ZONE`
+  request never shrinks the zone either. 0.4.2 behaves the same at 4, 5 and
+  6 MB. Upstream has the same code.
 
 U5-U7 were confirmed present verbatim in `upstream/linux-v7.1/fs/ntfs/compress.c`: the only differences between it and `core/ntfs/compress.c` are folio and bio accessors. They are Linux bugs, not porting bugs.
 
