@@ -43,9 +43,11 @@ tools/ci.sh --list       # what it will run
 * **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
   Windows-illegal names refused, case-insensitive and case-preserving lookup
   through a real `$UpCase` table, and xattrs as alternate data streams.
-* **`compress`** (505) — compressed writes, including appending across
-  compression-block boundaries and a block rewritten where no free run can hold
-  it (finding 30), and the sparse read, seek and `fallocate` paths.
+* **`compress`** (559) — compressed writes, including appending across
+  compression-block boundaries, a block rewritten where no free run can hold
+  it (finding 30), and rewrites that fail for want of space or on a write error
+  and must leave the old block (finding 32), and the sparse read, seek and
+  `fallocate` paths.
 * **`bigdir`** (480) — the index B-tree: growth to four levels, deletion in
   creation, reverse and shuffled order, and six collation shapes.
 * **`crash`** (217) — the write ordering, asserted by mapping a sync's device

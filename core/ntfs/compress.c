@@ -1321,13 +1321,15 @@ static bool cb_is_allocated(struct ntfs_inode *ni, s64 cb_vcn)
  * ntfs_write_cb_runs - write @len bytes of a compression block to its clusters
  *
  * PORT: upstream writes the block in one bio from the first allocated
- * cluster. The port writes it a run at a time, looking each run up in the run
- * list from @vcn on, because the block's clusters need not be contiguous (see
- * the allocation in ntfs_write_cb()).
+ * cluster. The port writes it a run at a time, looking each run up in
+ * @runlist from @vcn on, because the block's clusters need not be contiguous
+ * (see the allocation in ntfs_write_cb()). @runlist holds the block's new
+ * clusters and nothing else. It is not the attribute's run list yet, so no
+ * one else can see it and it needs no lock.
  */
-static int ntfs_write_cb_runs(struct ntfs_inode *ni, s64 vcn, const void *data, u32 len)
+static int ntfs_write_cb_runs(struct ntfs_volume *vol, struct runlist *runlist, s64 vcn,
+		const void *data, u32 len)
 {
-	struct ntfs_volume *vol = ni->vol;
 	const u8 *buf = data;
 
 	while (len) {
@@ -1336,15 +1338,11 @@ static int ntfs_write_cb_runs(struct ntfs_inode *ni, s64 vcn, const void *data, 
 		u32 n;
 		int err;
 
-		down_read(&ni->runlist.lock);
-		rl = __ntfs_attr_find_vcn_nolock(&ni->runlist, vcn);
-		if (IS_ERR(rl)) {
-			up_read(&ni->runlist.lock);
+		rl = __ntfs_attr_find_vcn_nolock(runlist, vcn);
+		if (IS_ERR(rl))
 			return PTR_ERR(rl);
-		}
 		lcn = ntfs_rl_vcn_to_lcn(rl, vcn);
 		count = rl->length - (vcn - rl->vcn);
-		up_read(&ni->runlist.lock);
 		if (lcn < 0 || count <= 0)
 			return -EIO;
 		n = min_t(u64, len, ntfs_cluster_to_bytes(vol, count));
@@ -1376,6 +1374,7 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 	struct page **pages_disk = NULL, *pg;
 	s64 got = 0, rlc_length = 0;
 	struct runlist_element *rlc, *rl;
+	struct runlist new_rl;
 	int i, err;
 	int pages_count = (round_up(ni->itype.compressed.block_size + 2 *
 		(ni->itype.compressed.block_size / NTFS_SB_SIZE) + 2, PAGE_SIZE)) / PAGE_SIZE;
@@ -1482,11 +1481,18 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 
 	new_length = ntfs_bytes_to_cluster(vol, round_up(bio_size, vol->cluster_size));
 
-	err = ntfs_non_resident_attr_punch_hole(ni, new_vcn, ni->itype.compressed.block_clusters);
-	if (err < 0)
-		goto out;
-
 	/*
+	 * PORT: v7.1 punched the old block out here, before it asked for the
+	 * new clusters, and gave nothing back when the allocation or the write
+	 * failed. On a volume without room for the new block, a rewrite
+	 * returned -ENOSPC and the block it was rewriting read back as zeroes.
+	 * Mainline allocates and writes the new block first and punches the old
+	 * one last, and so does the port now. The new clusters are asked for
+	 * while the old block still holds its own, so they cannot be the same
+	 * clusters, and a rewrite needs room for both. Until the punch, a
+	 * failure gives the new clusters back and leaves the old block as it
+	 * was. Finding 32 in docs/UPSTREAM-BUGS.md.
+	 *
 	 * PORT: upstream (7.1 and mainline) asks once for new_length contiguous
 	 * clusters and writes the whole block from rlc->lcn. A contiguous
 	 * request comes back short when a cluster in use ends the longest free
@@ -1496,63 +1502,101 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 	 * the block itself, left short of clusters, read back as a corrupt
 	 * compressed block. Ask again for whatever is still missing, and write
 	 * each run its own part of the block: a compression block may lie in
-	 * several runs, and the reader maps it a cluster at a time.
+	 * several runs, and the reader maps it a cluster at a time. The runs
+	 * are collected in @new_rl, because the attribute's run list still maps
+	 * the old block at new_vcn.
 	 */
+	ntfs_init_runlist(&new_rl);
 	for (got = 0; got < new_length; got += rlc_length) {
 		rlc = ntfs_cluster_alloc(vol, new_vcn + got, new_length - got, -1,
 				DATA_ZONE, false, true, true);
 		if (IS_ERR(rlc)) {
 			err = PTR_ERR(rlc);
-			goto undo;
+			goto free_new;
 		}
 		for (rlc_length = 0, rl = rlc; rl->length; rl++)
 			rlc_length += rl->length;
 
-		down_write(&ni->runlist.lock);
-		rl = ntfs_runlists_merge(&ni->runlist, rlc, 0, &new_rl_count);
+		rl = ntfs_runlists_merge(&new_rl, rlc, 0, &new_rl_count);
 		if (IS_ERR(rl)) {
-			up_write(&ni->runlist.lock);
 			ntfs_error(vol->sb, "Failed to merge runlists");
 			err = PTR_ERR(rl);
 			if (ntfs_cluster_free_from_rl(vol, rlc))
 				ntfs_error(vol->sb, "Failed to free hot clusters.");
 			kvfree(rlc);
-			goto undo;
+			goto free_new;
 		}
-		ni->runlist.count = new_rl_count;
-		ni->runlist.rl = rl;
-		up_write(&ni->runlist.lock);
-	}
-
-	down_write(&ni->runlist.lock);
-	err = ntfs_attr_update_mapping_pairs(ni, 0);
-	up_write(&ni->runlist.lock);
-	if (err) {
-		err = -EIO;
-		goto undo;
+		new_rl.count = new_rl_count;
+		new_rl.rl = rl;
 	}
 
 	/*
 	 * PORT: no bio in user space. The data already sits in a contiguous
 	 * vmap of @pages (@outbuf for compressed, @inbuf otherwise).
 	 */
-	err = ntfs_write_cb_runs(ni, new_vcn, pages == pages_disk ? outbuf : inbuf,
-				 bio_size);
+	err = ntfs_write_cb_runs(vol, &new_rl, new_vcn,
+				 pages == pages_disk ? outbuf : inbuf, bio_size);
+	if (err)
+		goto free_new;
+
+	/* Do not discard the old compression block until the new one is safe. */
+	err = ntfs_non_resident_attr_punch_hole(ni, new_vcn,
+			ni->itype.compressed.block_clusters);
+	if (err < 0)
+		goto free_new;
+
+	down_write(&ni->runlist.lock);
+	rl = ntfs_runlists_merge(&ni->runlist, new_rl.rl, 0, &new_rl_count);
+	if (IS_ERR(rl)) {
+		up_write(&ni->runlist.lock);
+		ntfs_error(vol->sb, "Failed to merge runlists");
+		err = PTR_ERR(rl);
+		goto free_new;
+	}
+	ni->runlist.count = new_rl_count;
+	ni->runlist.rl = rl;
+	new_rl.rl = NULL;	/* the merge took it over */
+	err = ntfs_attr_update_mapping_pairs(ni, 0);
+	up_write(&ni->runlist.lock);
 	if (!err)
 		goto out;
-undo:
+	err = -EIO;
 	/*
-	 * PORT: leave the block a hole, as the punch above did, rather than
-	 * holding clusters with nothing of it written to them, which would read
-	 * as whatever they held before.
+	 * PORT: the punch wrote the block's mapping pairs as a hole and freed
+	 * the old clusters. The new ones are in the run list but not in the
+	 * mapping pairs on the disk. Punch the block again, so that the run
+	 * list, the mapping pairs and the bitmap agree that it is a hole; the
+	 * block is lost. Mainline keeps the new runs in the run list, where the
+	 * next mapping-pairs update of the file may still save the block. Until
+	 * then the bitmap holds clusters that nothing on the disk points to,
+	 * and they leak if no update comes.
 	 */
-	if (got) {
+	{
 		int err2 = ntfs_non_resident_attr_punch_hole(ni, new_vcn,
 				ni->itype.compressed.block_clusters);
 
 		if (err2 < 0)
 			ntfs_error(vol->sb, "Failed to release a compression block's clusters (%d).",
 				   err2);
+	}
+	goto out;
+free_new:
+	/*
+	 * The new clusters never reached the attribute's run list. Give them
+	 * back. A failure before the punch leaves the old block as it was.
+	 * The punch itself can fail after it has taken the old block out of
+	 * the run list, as in mainline. If writing the mapping pairs failed,
+	 * the block reads as a hole on this mount. It can come back after a
+	 * remount, if the failed update had not yet changed the MFT record
+	 * and nothing writes the file's mapping pairs first. Otherwise it is
+	 * lost and its clusters leak. If freeing the old clusters failed, they
+	 * leak, and the block is lost. It is lost too if the merge after the
+	 * punch fails, which only a failed memory allocation can cause.
+	 */
+	if (new_rl.rl) {
+		if (ntfs_cluster_free_from_rl(vol, new_rl.rl))
+			ntfs_error(vol->sb, "Failed to free hot clusters.");
+		kvfree(new_rl.rl);
 	}
 out:
 	vunmap(outbuf);
@@ -1673,7 +1717,18 @@ int ntfs_compress_write(struct ntfs_inode *ni, loff_t pos, size_t count,
 
 		for (i = 0; i < pages_per_cb; i++) {
 			folio = page_folio(pages[i]);
-			if (i < ip) {
+			if (err) {
+				/*
+				 * PORT: v7.1 left these uptodate when
+				 * ntfs_write_cb() failed, holding bytes that
+				 * never reached the disk. A read returned them,
+				 * and the next write to the block encoded them
+				 * with its own bytes and put them on the disk.
+				 * Mainline drops them, so that the block is
+				 * read from the disk again. Finding 32.
+				 */
+				folio_clear_uptodate(folio);
+			} else if (i < ip) {
 				folio_clear_dirty(folio);
 				folio_mark_uptodate(folio);
 			}

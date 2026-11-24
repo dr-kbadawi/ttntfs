@@ -37,9 +37,10 @@ fixing one means updating the test that documents it.
 | U15 | `ntfs_cluster_alloc()` (`lcnalloc.c`) and `ntfs_mapping_pairs_decompress()` (`runlist.c`) | `vol->lcn_empty_bits_per_page` is sized from `nr_clusters` at mount, but the allocator bounds its scan by `$Bitmap`'s size, and the mount refuses only a `$Bitmap` that is too short. On an image whose `$Bitmap` covers more clusters than the volume has, a hint in the gap reads past the array: `fallocate()` far into a sparse file extrapolates one. And the run-list decoder accepted an LCN at or past the end of the volume. Measured: a write through such a run returned 4096 and overwrote the backup boot sector. | Backport of upstream 19cac7902a8a (mainline, 2026-08-19, Cc stable), identical apart from `PORT:` comments. `test_alloc`: `test_run_past_volume_end` and `test_bitmap_longer_than_volume`, each failing without its own half of the fix. The second catches the out-of-bounds read with a guard page, because ASan does not run on this platform. |
 | U16 | `ntfs_cluster_free_from_rl_nolock()` (`lcnalloc.c`) | When clearing a run's bits failed, its length was still added to the free-cluster count, unless that failure was the first or came after -ENOMEM. A second run failing with the same errno was counted. Measured with `$Bitmap` unreadable, as on a failing disk: freeing two runs of 4 clusters moved the count from 0 to 4, with no bit cleared. The count then stays wrong until the next mount, and the allocator's free-space gate trusts it. | Backport of upstream be9e89ccb8e5 (mainline, 2026-08-26), identical apart from a `PORT:` comment. `test_alloc`: `test_free_with_unreadable_bitmap`. |
 | U17 | `__ntfs_cluster_free()` (`lcnalloc.c`) | When freeing fails partway and the rollback fails too, the rollback returns a negative errno, and `ntfs_dec_free_clusters()` subtracts it: the count grows by the errno's value, on a volume that is already failing. | Backport of upstream 5f2a22b36fe3 (mainline, 2026-08-26), identical apart from a `PORT:` comment. No test reaches it. The rollback re-sets only bits the forward pass has just cleared, in `$Bitmap` pages that pass has just read and dirtied, and the page cache never drops a dirty page itself (`__reclaim_from()`). The rollback fails only if the writer thread cleans that page and reclaim evicts it between two bitmap updates in one call, on a disk that then fails the read. That is a race, not a state a test can set up. |
-| U18 | `ntfs_write_cb()` (`compress.c`) | Asks `ntfs_cluster_alloc()` for a compression block's clusters as one contiguous run and writes the whole block from `rlc->lcn`. A contiguous request comes back short when a cluster in use ends the longest free range the allocator found, and in two runs when that range reaches the end of a bitmap page or a zone. On fragmented free space the end of the block then goes onto clusters the file does not own. Measured: a block of random bytes rewritten where only 8-cluster gaps were free returned 65536, and after a remount it read back `-EILSEQ`, the file after the gap had lost its 8 clusters to the block's second half, and `ntfsck -n` was clean. Mainline still writes from `rlc->lcn`, though it now allocates and writes before it punches the old block. | The writer asks again for the clusters still missing and writes each run its own part of the block, looking the runs up in the merged run list. `PORT:` comments. Finding 30. |
+| U18 | `ntfs_write_cb()` (`compress.c`) | Asks `ntfs_cluster_alloc()` for a compression block's clusters as one contiguous run and writes the whole block from `rlc->lcn`. A contiguous request comes back short when a cluster in use ends the longest free range the allocator found, and in two runs when that range reaches the end of a bitmap page or a zone. On fragmented free space the end of the block then goes onto clusters the file does not own. Measured: a block of random bytes rewritten where only 8-cluster gaps were free returned 65536, and after a remount it read back `-EILSEQ`, the file after the gap had lost its 8 clusters to the block's second half, and `ntfsck -n` was clean. Mainline still writes from `rlc->lcn`, though it now allocates and writes before it punches the old block. | The writer asks again for the clusters still missing and writes each run its own part of the block, looking the runs up in a run list of the block's own (in the attribute's run list before finding 32). `PORT:` comments. Finding 30. |
 | U19 | `ntfs_mft_bitmap_find_and_alloc_free_rec_nolock()` (`mft.c`) | The search for a free MFT record takes the first zero bit in a byte without checking that it is below the end of `$MFT`. When `$MFT`'s allocation is not a multiple of eight records, the bitmap byte that holds its last records also holds zero bits for records past its end, and a search that reaches that byte returns one of them. `ntfs_mft_record_alloc()` then extends `$MFT` instead of wrapping round to the free records below where the search started. On a full volume the extension fails, so a create gets ENOSPC while MFT records are free. Already fixed in mainline: 6d8c197c9992 rewrote the search (`mft_bitmap_alloc_free_rec()`) to check the found bit against the end. | The same check in v7.1's function: a found bit at or past the end ends the pass, so the search wraps round. `PORT:` comment. Finding 28. |
 | U20 | `ntfs_attr_map_cluster()` (`attrib.c`) | When `ntfs_attr_update_mapping_pairs()` fails after the allocator has succeeded and the new run is merged into the run list, `ntfs_cluster_free()` clears the run's bits in `$Bitmap` and leaves the run in the run list, which `__ntfs_cluster_free()` never changes. The file then maps clusters it no longer owns: they read back whatever is on the disk, and the next mapping-pairs update writes them into the attribute, over clusters another file can allocate. Without U14 a contiguous request can come back in two runs, and only the first was freed. Measured: a write into the hole of a file whose base record was full needed an attribute list, whose extent record could not be read; the write returned -EIO, and on the same mount the hole read back 4,096 bytes of a deleted file. `errors=remount-ro` had taken the volume read-only, so nothing reached the disk. | Backport of the `ntfs_attr_map_cluster()` part of upstream 91709ba5d6d7 (mainline, 2026-09-13): a copy of the run list from before the merge, restored once the clusters are freed, then the mapping pairs written again, with `NVolSetErrors()` when either step fails. The rest of that commit, the run-list locking and `ntfs_attr_update_mapping_pairs_locked()`, is not taken: that variant differs from the plain one only for the `$ATTRIBUTE_LIST` inode, and the second update runs under the locks the callers hold for the first. `PORT:` the free covers everything the allocator returned, not only the run it reported, for 0.4.2's allocator without U14. `test_faults`: `test_failed_mapping_pairs_update` (2 failures without the fix). It reaches neither the `PORT:` part nor the second update: it allocates one cluster at a time, and its first update fails inside `ntfs_inode_add_attrlist()` before any mapping pairs are written. The review checked both with failure hooks in a scratch copy: freeing only the reported run of a two-run allocation leaked the second, and `ntfsck -n` found `$Bitmap` wrong. It closed finding 29's open item about this call. |
+| U21 | `ntfs_write_cb()` and `ntfs_compress_write()` (`compress.c`) | Punches the old compression block's clusters out before it allocates the new ones, and gives nothing back when the allocation or the write fails, so a rewrite that fails loses the block it was rewriting. Measured on the `compressed-sparse` fixture filled to its last cluster: random bytes over a block that held 2 clusters of compressed text need 16 clusters. The rewrite returned `-ENOSPC`, and after a remount the block read back as 65,536 zeroes. `ntfsck -n` was clean. The failed write also left the block's pages uptodate with bytes that never reached the disk. A read on the same mount returned them, and the next write into the block put them on the disk. Mainline fixed both. | Mainline's order: the new clusters are allocated while the old block still holds its own, the block is written to them, and only then is the old block punched and the new runs merged in. Mainline's page handling: a failed write marks the block's pages not uptodate. `PORT:` comments. Finding 32. |
 
 U13 and U14 were backported on 2026-11-24. What was measured here, beyond the
 table:
@@ -1199,14 +1200,15 @@ same code wrote from the first cluster too. U14 turns that into a short run, so
 the fix has to cover both.
 
 The writer now asks again for whatever the block still lacks, and writes each
-run its own part, looking the runs up in the merged run list
-(`ntfs_write_cb_runs()`). A block in several runs is valid NTFS, and the reader
-maps it a cluster at a time. If an allocation fails part way, or the mapping
-pairs cannot be written, or the block's write fails, the block is punched
-again. It is then left a hole, as a failure always left it, rather than holding
-clusters with nothing of it written to them. Only a concurrent allocation, or a
-memory or I/O error, can make a later request in the loop fail, because the
-allocator refuses up front unless the whole count is free.
+run its own part (`ntfs_write_cb_runs()`). A block in several runs is valid
+NTFS, and the reader maps it a cluster at a time. Only a concurrent allocation,
+or a memory or I/O error, can make a later request in the loop fail, because
+the allocator refuses up front unless the whole count is free. As first
+committed, the runs were merged into the attribute's run list and looked up
+there, and any failure after the allocation punched the block again, leaving
+it a hole. Finding 32 changed both: the runs stay in a run list of the block's
+own until the old block is punched, and a failure before the punch gives the
+new clusters back and keeps the old block.
 
 The test is `test_fragmented_rewrite` in `core/tests/test_compress.c`: the
 reproduction above, then after a remount:
@@ -1224,15 +1226,6 @@ allocator branch's. With the fix it passes on both.
 
 Still open, found beside it, not fixed:
 
-* **A rewrite that fails for space loses the block it was rewriting.** v7.1's
-  `ntfs_write_cb()` punches the old block's clusters before it allocates the
-  new ones, and does not restore them when the allocation fails. Measured on the
-  same fixture filled to its last cluster: the rewrite returned `-ENOSPC`. After
-  a remount, block 1 of `text-1m.txt` read back as 65,536 zeroes where it had
-  held text. Mainline allocates and writes the new block first, and punches the
-  old one last ("Do not discard the old compression block until the new one is
-  safe"). That reorder is the fix. It has to keep U7's punch of a block that
-  compresses to nothing.
 * **From reading the code, not reproduced: the compressed reader can see
   device pages older than the last write.** `ntfs_read_compressed_block()`
   reads clusters through the device's page cache (`bd_mapping`). The port's bio
@@ -1244,3 +1237,109 @@ Still open, found beside it, not fixed:
   served from those first. Nothing on the disk is wrong, and a remount clears
   it.
 
+## Finding 32 **FIXED** (= U21): a compressed rewrite that failed lost the block
+
+Found 2026-11-24 beside finding 30, and reproduced here. Present in 0.4.2 and
+v7.1. Mainline has the fix. The U21 row has the mechanism.
+
+The reproduction uses the `compressed-sparse` fixture:
+
+1. Fill the volume until a fresh file cannot get one cluster. That leaves none
+   free.
+2. Rewrite block 1 of `/compressed/text-1m.txt` (2 clusters, compressed) with
+   random bytes. They do not compress, so the block is stored raw and needs 16
+   clusters.
+3. `ntfs_write_cb()` punched the block, which freed its 2 clusters, and then
+   asked for 16. The allocator refused, and the write returned `-ENOSPC`.
+
+After a remount the block read back as 65,536 zeroes where it had held text,
+and 2 more clusters were free. `ntfsck -n` was clean.
+
+A device that refuses the block's write loses it as well. In 0.4.2 and v7.1
+the write is the last step, after the new clusters are mapped and their
+mapping pairs written. A refused write therefore leaves the block mapped to 16
+clusters that were never written. Measured: 14 fewer free clusters (2 freed, 16
+kept), and `ntfsck -n` clean. From the code, the block then reads back
+whatever those clusters held, which can be a deleted file's data, as in
+finding 29. Finding 30's fix punched the block again instead, which left a
+hole.
+
+The failed write got a second thing wrong. `ntfs_compress_write()` copies the
+new bytes into the block's pages before it calls `ntfs_write_cb()`, and it left
+them uptodate when that failed. On the same mount the block read back as the
+refused bytes, whatever the order of the punch. A later write into the block
+took the rest of the block from those pages and put the refused bytes on the
+disk.
+
+The fix is mainline's, in both functions:
+
+* `ntfs_write_cb()` asks for the new clusters while the old block still holds
+  its own, writes the block to them, and only then punches the old block and
+  merges the new runs in. Until then the new runs are kept in a run list of
+  their own, because the attribute's run list still maps the old block. A
+  failure before the punch gives the new clusters back and leaves the old block
+  as it was.
+* `ntfs_compress_write()` marks the block's pages not uptodate when the write
+  fails, so the block is read from the disk again.
+
+U7's punch of a block that compresses to nothing is unchanged. So are finding
+30's allocation loop and `ntfs_write_cb_runs()`, which now looks the runs up in
+the new block's run list instead of the attribute's.
+
+A rewrite now needs room for both blocks at once. On a volume with fewer free
+clusters than the new block needs, it fails with `-ENOSPC` even when the new
+block would have fitted in the old block's clusters. That is mainline's choice
+too: reusing them means discarding the old block before the new one is safe.
+
+A write of data to a compressed named stream is still refused, with
+`-EOPNOTSUPP` from the punch, which does not handle named streams. It is now
+refused only after its block has been allocated and written, and on a volume
+without room it gets `-ENOSPC` instead.
+
+The tests are in `core/tests/test_compress.c`:
+
+* `test_full_volume_rewrite` is the reproduction above, on a volume that must
+  have no cluster free. The write must fail
+  with `-ENOSPC` and leave the free count as it was. The block must read back
+  unchanged on the same mount and after a remount, and `ntfsck -n` must be
+  clean. A second rewrite follows with one repeated byte, which compresses to a
+  single cluster that the block's own 2 could hold. It must be refused the same
+  way, which pins the trade-off above. Last, the block is zeroed to count its
+  clusters. The free clusters and the block's must come to fewer than the 16
+  the first rewrite needs, or the old order would have succeeded and the case
+  tested nothing.
+* `test_rewrite_write_error` makes the same rewrite with room to spare, on a
+  device that refuses the write that carries the block. The device must refuse
+  it once, and the new clusters must be given back. A small write into the
+  block follows on the same mount. The file must read back as before with only
+  that write in it, on the same mount and after a remount.
+
+Before the fix they fail 12 checks, and the old order lets the small rewrite
+through. With the new order alone they fail 4: the three same-mount reads, and
+the small write that put the refused bytes on the disk. With the page change
+alone they fail 12.
+
+Still open, not fixed:
+
+* **A failure after the punch still loses the block, as in mainline.** The
+  punch can fail after it has taken the old block out of the run list. If
+  writing the mapping pairs is what failed, the block reads as a hole on that
+  mount. It can come back after a remount, if the failed update had not yet
+  changed the MFT record and nothing writes the file's mapping pairs first.
+  Otherwise it is lost and its clusters leak. If freeing the old clusters
+  failed, they leak at once, and the error takes the volume read-only. The
+  new block, already on the disk, is given back too. If the new block's
+  mapping pairs cannot be written after the punch, the block is punched
+  again, so that the run list, the mapping pairs and the bitmap agree.
+  Each case takes an I/O error, a failed memory allocation, or an MFT record
+  that cannot get an extent. Closing them means swapping the old runs for the
+  new ones in one mapping-pairs update. Neither v7.1 nor mainline does that.
+* **No CI test reaches a failure inside the driver.** That covers the punch
+  failing, the merge or the mapping-pairs update after it, the merge into the
+  new block's run list, and an allocation failing part way through the loop.
+  The device wrapper can only refuse data writes. The independent review drove
+  each of them once, with faults injected in a private build. A failure before
+  the punch kept the old block and the free count, and `ntfsck -n` was clean.
+  After the punch, the results were as described above. `ntfsck -n` was clean
+  except where a failed punch leaked clusters, which it reported as a cluster
+  bitmap that differs from the disk's.
