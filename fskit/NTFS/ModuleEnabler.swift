@@ -78,6 +78,17 @@ final class ModuleEnabler: ObservableObject {
     /// Settings, which is not `.working` but still must not be re-entered.
     private var isWaitingForSettings = false
 
+    /// Clears a finished attempt's result once the extension is seen on, by
+    /// whatever route. If it is switched off later (System Settings can do
+    /// that on macOS 27), the menu then starts again from the Enable button
+    /// instead of showing an old message next to "Extension is disabled".
+    func settle() {
+        switch outcome {
+        case .succeeded, .failed, .blocked: outcome = .idle
+        case .idle, .working, .needsSettings: break
+        }
+    }
+
     private static var listURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appending(path: "Library/Group Containers/group.com.apple.fskit.settings/enabledModules.plist")

@@ -14,10 +14,20 @@ final class ExtensionStatus: ObservableObject {
 
     static let extensionBundleID = "ch.techtag.ntfs.extension"
 
+    /// Refreshes run on their own and can finish out of order: one started
+    /// just after `fskit_agent` was restarted can answer late. Each answer is
+    /// used only if no newer refresh has answered already.
+    private var started = 0
+    private var answered = 0
+
     func refresh() {
+        started += 1
+        let mine = started
         Task {
             do {
                 let modules = try await FSClient.shared.installedExtensions
+                guard mine > answered else { return }
+                answered = mine
                 if let m = modules.first(where: { $0.bundleIdentifier == Self.extensionBundleID }) {
                     state = m.isEnabled ? .enabled : .disabled
                 } else {
@@ -25,7 +35,11 @@ final class ExtensionStatus: ObservableObject {
                 }
             } catch {
                 NSLog("FSClient: %@", error.localizedDescription)
-                state = .notInstalled
+                // FSClient fails for a moment while fskit_agent restarts, and
+                // the menu refreshes every time it opens. An error is no
+                // answer, so keep what is known; only with nothing known yet
+                // is "not registered" the best guess.
+                if state == .unknown { state = .notInstalled }
             }
         }
     }

@@ -70,6 +70,16 @@ struct MenuView: View {
         .padding(12)
         .frame(width: 340)
         .task { monitor.start(); inventory.start(); status.refresh() }
+        // Nothing promises that `.task` runs again each time the panel reopens,
+        // and the extension can be switched off in System Settings while the
+        // app runs (macOS 27 allows it), so read its state whenever one of the
+        // app's windows becomes key, as the menu panel does when it opens.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            status.refresh()
+        }
+        .onChange(of: status.state) { _, new in
+            if new == .enabled { enabler.settle() }
+        }
     }
 
     /// `openSettings()` alone does nothing useful in a menu-bar-only app: with
@@ -211,8 +221,6 @@ struct MenuView: View {
                 ProgressView().controlSize(.small)
                 Text("Enabling…").font(.caption).foregroundStyle(.secondary)
             }
-        case .succeeded:
-            Text("Enabled.").font(.caption).foregroundStyle(.secondary)
         case .needsSettings(let why):
             VStack(alignment: .leading, spacing: 6) {
                 Text(why)
@@ -234,7 +242,10 @@ struct MenuView: View {
                     .fixedSize(horizontal: false, vertical: true)
                 enableButtons(title: "Try Again")
             }
-        case .idle:
+        // This footer shows only while the extension is off, so a success
+        // here is one the status has not caught up with yet, or one undone
+        // since in System Settings. Either way the button is what is needed.
+        case .idle, .succeeded:
             VStack(alignment: .leading, spacing: 6) {
                 Text(ModuleEnabler.settingsSwitchWorks
                      ? "Turn it on here, or in System Settings under Login Items & Extensions → By Category → File System Extensions, then press Re-check."
