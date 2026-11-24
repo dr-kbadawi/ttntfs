@@ -17,6 +17,8 @@ macOS 26 or later · Apple Silicon · 1.6 MB · notarized by Apple
 
 Or with Homebrew: `brew tap dr-kbadawi/ttntfs && brew install --cask ttntfs`
 
+If it works for you, a star on this repository helps other Mac users find it.
+
 ## The first of its kind
 
 Until now, writing to NTFS on a Mac meant one of two things: pay for a driver
