@@ -227,13 +227,23 @@ static ssize_t refuse_pread(struct ntfs_bdev *d, void *b, size_t c, u64 o)
 	return real_ops->pread(d, b, c, o);
 }
 
-static int mount_scratch(void)
+/*
+ * Mount the scratch image. A read-only mount fails the test, since nothing
+ * below would be exercised, except where @after_error says that the last
+ * mount ended in an error that took the volume read-only. The unmount after
+ * such an error may leave the volume marked dirty, as finding 33's does, and a
+ * dirty volume mounts read-only only: the fallback is asked for then, and a
+ * read-only mount is accepted for that reason alone.
+ */
+static int mount_scratch_after(bool after_error)
 {
 	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0,
 					.fmask = 022, .dmask = 022 };
 	struct ntfs_volume_info info;
 	int err;
 
+	if (after_error)
+		o.flags = NTFS_MOUNT_RDONLY_FALLBACK;
 	g_dev = ntfs_bdev_open_path(scratch, false);
 	if (!g_dev)
 		return -ENOENT;
@@ -251,12 +261,17 @@ static int mount_scratch(void)
 		return err;
 	}
 	ntfs_volume_get_info(g_vol, &info);
-	if (info.read_only) {
+	if (info.read_only && !(after_error && info.ro_reason == NTFS_RO_DIRTY)) {
 		fprintf(stderr, "FAIL: fixture mounted read-only (reason %d); "
 			"nothing below would have been exercised\n", info.ro_reason);
 		failures++; checks++;
 	}
 	return 0;
+}
+
+static int mount_scratch(void)
+{
+	return mount_scratch_after(false);
 }
 
 static void umount_scratch(void)
@@ -1668,7 +1683,8 @@ struct refused_rewrite {
  * in between. With r->poke, a small write into the block follows on the same
  * mount, and @orig is updated to match. @orig is the whole file before the
  * writes, and @rb is 1 MiB of scratch. Leaves the volume mounted again after
- * the remount.
+ * the remount: read-only, when r->read_only and the unmount left the volume
+ * marked dirty.
  */
 static void rewrite_refused(const struct refused_rewrite *r, unsigned char *orig,
 			    unsigned char *rb)
@@ -1719,7 +1735,8 @@ static void rewrite_refused(const struct refused_rewrite *r, unsigned char *orig
 	umount_scratch();
 	fsck(tag);
 
-	CHECK_EQ(mount_scratch(), 0, label(tag, "remount"));
+	/* Only reads follow, so a read-only remount does as well. */
+	CHECK_EQ(mount_scratch_after(r->read_only), 0, label(tag, "remount"));
 	f = g_vol ? open_file("compressed", r->file) : NULL;
 	CHECK(f != NULL);
 	if (!f)
