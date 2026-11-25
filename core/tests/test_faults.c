@@ -388,6 +388,32 @@ static int mount_rw(struct ntfs_bdev **dev_out, ntfs_volume_t **vol_out)
 	return 0;
 }
 
+/*
+ * As mount_rw(), but a volume marked dirty mounts read-only instead of
+ * failing. For checks that only read, after an error took the volume
+ * read-only: its unmount then leaves it marked dirty, so that Windows runs
+ * chkdsk (finding 33).
+ */
+static int mount_rw_or_ro(struct ntfs_bdev **dev_out, ntfs_volume_t **vol_out)
+{
+	static const struct ntfs_mount_options opts = {
+		.flags = NTFS_MOUNT_RDONLY_FALLBACK, .uid = 0, .gid = 0,
+		.fmask = 022, .dmask = 022
+	};
+	struct ntfs_bdev *dev = fault_open(false);
+	int err;
+
+	if (!dev)
+		return -ENOENT;
+	err = ntfs_mount(dev, &opts, vol_out);
+	if (err) {
+		ntfs_bdev_close(dev);
+		return err;
+	}
+	*dev_out = dev;
+	return 0;
+}
+
 /* Create @name and fill it with @len bytes of @fill, through a clean mount. */
 static int seed_file(const char *name, size_t len, uint8_t fill, const uint8_t *marker,
 		     size_t markerlen)
@@ -2320,7 +2346,8 @@ unmount:
  * the cluster of the write that failed, and a read on the same mount returns
  * 'D'. ntfs_error() takes the volume read-only meanwhile (errors=remount-ro),
  * so nothing reaches the disk and a remount reads the hole either way: the
- * same-mount read is the evidence.
+ * same-mount read is the evidence. That remount may come up read-only, since
+ * the unmount after the error leaves the volume marked dirty.
  */
 #define FILL_XATTR "fill"
 #define HOLE_END 64	/* full.bin's hole is [1, HOLE_END) */
@@ -2450,8 +2477,8 @@ static void test_failed_mapping_pairs_update(void)
 	ntfs_unmount(vol);
 	ntfs_bdev_close(dev);
 
-	/* After a remount: the hole, and a clean volume. */
-	err = mount_rw(&dev, &vol);
+	/* After a remount, read-only or not: the hole, and a clean volume. */
+	err = mount_rw_or_ro(&dev, &vol);
 	CHECK(err == 0);
 	if (err)
 		goto out;
