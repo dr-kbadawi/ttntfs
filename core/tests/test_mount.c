@@ -497,6 +497,7 @@ static unsigned kept;
 static uint64_t kept_off[MAX_KEPT], kept_len[MAX_KEPT];
 static uint64_t fail_lo, fail_hi;
 static int fail_times, failed_writes;
+static unsigned long writes_after_fail;	/* writes that went through after a refused one */
 
 static ssize_t c_pread(struct ntfs_bdev *d, void *b, size_t c, u64 o) { return real_ops->pread(d, b, c, o); }
 static ssize_t c_pwrite(struct ntfs_bdev *d, const void *b, size_t c, u64 o)
@@ -507,6 +508,8 @@ static ssize_t c_pwrite(struct ntfs_bdev *d, const void *b, size_t c, u64 o)
 		failed_writes++;
 		return -EIO;
 	}
+	if (failed_writes)
+		writes_after_fail++;
 	if (keep_writes && kept < MAX_KEPT) {
 		kept_off[kept] = o;
 		kept_len[kept] = c;
@@ -1096,11 +1099,14 @@ out:
 }
 
 /*
- * The byte of $MFT's bitmap on the image that holds the bit of MFT record
- * @rec, or -1. The bitmap is record 0's $BITMAP attribute, non-resident; one
- * run covers every record of a small volume.
+ * Where the first run of attribute @type in MFT record @rec lies on the image:
+ * its byte offset, or -1, and its length in *@bytes. The record is counted
+ * from the start of $MFT, which holds for every record of these small
+ * fixtures, and read with its fixups undone. The attribute must be
+ * non-resident.
  */
-static long long mft_bitmap_byte(const char *path, uint64_t rec)
+static long long attr_first_run(const char *path, uint64_t rec, uint32_t type,
+				uint64_t *bytes)
 {
 	uint8_t bs[512], r[4096];
 	uint64_t cs, len = 0;
@@ -1118,7 +1124,7 @@ static long long mft_bitmap_byte(const char *path, uint64_t rec)
 	c = (int8_t)bs[0x40];
 	size = c > 0 ? (uint32_t)(c * cs) : 1u << -c;
 	if (size > sizeof(r) ||
-	    pread(fd, r, size, (off_t)(get64(bs + 0x30) * cs)) != (ssize_t)size ||
+	    pread(fd, r, size, (off_t)(get64(bs + 0x30) * cs + rec * size)) != (ssize_t)size ||
 	    memcmp(r, "FILE", 4))
 		goto out;
 	/* Undo the fixups: the update sequence holds the last two bytes of
@@ -1131,7 +1137,7 @@ static long long mft_bitmap_byte(const char *path, uint64_t rec)
 
 		if (get32(r + a) == 0xffffffffu || get32(r + a + 4) < 0x18)
 			break;
-		if (get32(r + a) != 0xb0)
+		if (get32(r + a) != type)
 			continue;
 		if (!r[a + 8])			/* resident */
 			break;
@@ -1144,13 +1150,23 @@ static long long mft_bitmap_byte(const char *path, uint64_t rec)
 			len = len << 8 | p[i];
 		for (i = ls + os; i > ls; i--)
 			lcn = lcn << 8 | p[i];
-		if (rec / 8 < len * cs)
-			ret = (long long)((uint64_t)lcn * cs + rec / 8);
+		*bytes = len * cs;
+		ret = (long long)((uint64_t)lcn * cs);
 		break;
 	}
 out:
 	close(fd);
 	return ret;
+}
+
+/* The byte of $MFT's bitmap on the image that holds the bit of MFT record
+ * @rec, or -1: record 0's $BITMAP, one run on a small volume. */
+static long long mft_bitmap_byte(const char *path, uint64_t rec)
+{
+	uint64_t bytes = 0;
+	long long at = attr_first_run(path, 0, 0xb0, &bytes);
+
+	return at >= 0 && rec / 8 < bytes ? at + (long long)(rec / 8) : -1;
 }
 
 static void test_errors_rw_unmount(void)
@@ -1280,6 +1296,158 @@ out:
 	unlink(scratch);
 }
 
+/* ---- 6. a failed discard of the hibernation image ----------------------- */
+
+/*
+ * Finding 34 in docs/UPSTREAM-BUGS.md. With NTFS_MOUNT_DISCARD_HIBERNATION,
+ * ntfs_mount() switches a hibernated volume read-write, then zeroes the header
+ * of hiberfil.sys. When the zeroing failed, the volume stayed read-write
+ * though the log said "staying read-only". With the read-only fallback, the
+ * mount succeeded with a volume that took writes and that
+ * ntfs_volume_get_info() reported writable. Without it, the failed mount's
+ * teardown synced the volume, and U23 then set VOLUME_IS_DIRTY on it.
+ *
+ * The volume is made here: empty.img with a hiberfil.sys whose header starts
+ * "hibr". The device refuses the header's write, which the discard makes
+ * straight to the disk. Its two earlier writes, the journal's restart pages,
+ * are what any read-write mount writes; nothing may follow the refused one.
+ */
+static void discard_case(const char *what, uint32_t flags, int want_err)
+{
+	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
+	static uint8_t buf[8192];
+	struct ntfs_volume_info info;
+	struct ntfs_bdev *dev = NULL;
+	ntfs_volume_t *vol = NULL;
+	ntfs_inode_t *root = NULL, *f = NULL;
+	struct vol_rec v;
+	uint64_t hib_no = 0, run = 0;
+	long long hib = -1;
+	uint8_t magic[4] = { 0 };
+	int err, fl, fd;
+
+	if (copy_fixture("empty.img") != 0) {
+		fprintf(stderr, "SKIP failed_discard: no fixture\n");
+		return;
+	}
+	err = locate_vol_rec(scratch, &v);
+	CHECK(err == 0);
+	if (err)
+		goto out;
+
+	/* Windows hibernated on it: hiberfil.sys in the root, a header to resume. */
+	dev = ntfs_bdev_open_path(scratch, false);
+	CHECK(dev != NULL);
+	if (!dev)
+		goto out;
+	err = ntfs_mount(dev, &o, &vol);
+	CHECK(err == 0);
+	if (err)
+		goto out;
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	CHECK(ntfs_create(root, "hiberfil.sys", 0100644, &f) == 0);
+	if (f) {
+		memset(buf, 'H', sizeof(buf));
+		memcpy(buf, "hibr", 4);
+		CHECK(ntfs_write(f, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf));
+		hib_no = ntfs_inode_number(f);
+		ntfs_inode_put(f);
+		f = NULL;
+	}
+	ntfs_inode_put(root);
+	root = NULL;
+	CHECK(ntfs_unmount(vol) == 0);
+	vol = NULL;
+	ntfs_bdev_close(dev);
+	dev = NULL;
+	if (hib_no)
+		hib = attr_first_run(scratch, hib_no, 0x80, &run);
+	CHECK(hib >= 0 && run >= 4096);
+	if (hib < 0)
+		goto out;
+
+	/* The discard switches it read-write; then the header's write is refused. */
+	dev = open_counting(scratch);
+	CHECK(dev != NULL);
+	if (!dev)
+		goto out;
+	o.flags = flags;
+	fail_lo = (uint64_t)hib;
+	fail_hi = fail_lo + 4096;
+	failed_writes = 0;
+	writes_after_fail = 0;
+	fail_times = 1;
+	err = ntfs_mount(dev, &o, &vol);
+	fail_times = 0;
+	printf("  failed_discard (%s): mount %d, %d write(s) refused\n", what, err, failed_writes);
+	CHECK(failed_writes == 1);
+	CHECK(err == want_err);
+	if (!err) {
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		CHECK(info.read_only);
+		CHECK(info.ro_reason == NTFS_RO_HIBERNATED);
+		CHECK(info.hibernated);
+		CHECK(ntfs_volume_root(vol, &root) == 0);
+		CHECK(ntfs_create(root, "after.txt", 0100644, &f) == -EROFS);
+		if (f) {
+			ntfs_inode_put(f);
+			f = NULL;
+		}
+		CHECK(ntfs_lookup(root, "hiberfil.sys", &f) == 0);
+		if (f) {
+			CHECK(ntfs_write(f, "x", 1, 0) == -EROFS);
+			ntfs_inode_put(f);
+			f = NULL;
+		}
+		ntfs_inode_put(root);
+		root = NULL;
+		ntfs_volume_sync(vol);
+		ntfs_unmount(vol);
+		vol = NULL;
+	}
+	ntfs_bdev_close(dev);
+	dev = NULL;
+	checks++;
+	if (writes_after_fail) {
+		failures++;
+		fprintf(stderr, "FAIL failed_discard (%s): %lu device writes after the "
+			"header's write was refused\n", what, writes_after_fail);
+	}
+
+	/* Still hibernated on the disk, and not marked dirty by us. */
+	fd = open(scratch, O_RDONLY);
+	CHECK(fd >= 0 && pread(fd, magic, 4, (off_t)hib) == 4);
+	if (fd >= 0)
+		close(fd);
+	CHECK(memcmp(magic, "hibr", 4) == 0);
+	for (int i = 0; i < 2; i++) {
+		fl = vol_flags_on_disk(scratch, &v, i);
+		checks++;
+		if (fl < 0 || (fl & 0x0001)) {
+			failures++;
+			fprintf(stderr, "FAIL failed_discard (%s): VOLUME_IS_DIRTY was set on "
+				"the hibernated volume, in %s (flags %#x)\n", what,
+				i ? "$MFTMirr" : "$MFT", fl);
+		}
+	}
+out:
+	fail_times = 0;
+	failed_writes = 0;
+	if (f) ntfs_inode_put(f);
+	if (root) ntfs_inode_put(root);
+	if (vol) ntfs_unmount(vol);
+	if (dev) ntfs_bdev_close(dev);
+	unlink(scratch);
+}
+
+static void test_failed_discard_stays_read_only(void)
+{
+	discard_case("read-only fallback",
+		     NTFS_MOUNT_DISCARD_HIBERNATION | NTFS_MOUNT_RDONLY_FALLBACK, 0);
+	discard_case("no fallback", NTFS_MOUNT_DISCARD_HIBERNATION, -EROFS);
+	printf("test_failed_discard_stays_read_only\n");
+}
+
 int main(void)
 {
 	ntfs_set_logger(log_to_stderr, NULL);
@@ -1292,6 +1460,7 @@ int main(void)
 	test_ro_unmount_keeps_dirty();
 	test_error_ro_unmount();
 	test_errors_rw_unmount();
+	test_failed_discard_stays_read_only();
 	CHECK(busy_inode_logs == 0);
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

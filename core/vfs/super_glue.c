@@ -659,11 +659,17 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 			made_rw = true;
 			err = ntfs_glue_zero_hiberfil(vol);
 			if (err) {
-				/* Writable now but still hibernated: put the flag
-				 * back and let the decision below keep it
-				 * read-only, so nothing reaches the volume. */
+				/*
+				 * Writable now but still hibernated: put the
+				 * errors flag back, and the volume read-only,
+				 * so that nothing more reaches it. The decision
+				 * below names the reason; it does not switch
+				 * the volume back itself. Finding 34 in
+				 * docs/UPSTREAM-BUGS.md.
+				 */
 				if (had_errors)
 					NVolSetErrors(vol);
+				sb->s_flags |= SB_RDONLY;
 				platform_log(PLATFORM_LOG_ERR,
 					     "ntfs: %s: could not discard the hibernation image (%d); staying read-only",
 					     sb->s_id, err);

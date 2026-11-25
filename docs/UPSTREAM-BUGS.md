@@ -42,7 +42,7 @@ fixing one means updating the test that documents it.
 | U20 | `ntfs_attr_map_cluster()` (`attrib.c`) | When `ntfs_attr_update_mapping_pairs()` fails after the allocator has succeeded and the new run is merged into the run list, `ntfs_cluster_free()` clears the run's bits in `$Bitmap` and leaves the run in the run list, which `__ntfs_cluster_free()` never changes. The file then maps clusters it no longer owns: they read back whatever is on the disk, and the next mapping-pairs update writes them into the attribute, over clusters another file can allocate. Without U14 a contiguous request can come back in two runs, and only the first was freed. Measured: a write into the hole of a file whose base record was full needed an attribute list, whose extent record could not be read; the write returned -EIO, and on the same mount the hole read back 4,096 bytes of a deleted file. `errors=remount-ro` had taken the volume read-only, so nothing reached the disk. | Backport of the `ntfs_attr_map_cluster()` part of upstream 91709ba5d6d7 (mainline, 2026-09-13): a copy of the run list from before the merge, restored once the clusters are freed, then the mapping pairs written again, with `NVolSetErrors()` when either step fails. The rest of that commit, the run-list locking and `ntfs_attr_update_mapping_pairs_locked()`, is not taken: that variant differs from the plain one only for the `$ATTRIBUTE_LIST` inode, and the second update runs under the locks the callers hold for the first. `PORT:` the free covers everything the allocator returned, not only the run it reported, for 0.4.2's allocator without U14. `test_faults`: `test_failed_mapping_pairs_update` (2 failures without the fix). It reaches neither the `PORT:` part nor the second update: it allocates one cluster at a time, and its first update fails inside `ntfs_inode_add_attrlist()` before any mapping pairs are written. The review checked both with failure hooks in a scratch copy: freeing only the reported run of a two-run allocation leaked the second, and `ntfsck -n` found `$Bitmap` wrong. It closed finding 29's open item about this call. |
 | U21 | `ntfs_write_cb()` and `ntfs_compress_write()` (`compress.c`) | Punches the old compression block's clusters out before it allocates the new ones, and gives nothing back when the allocation or the write fails, so a rewrite that fails loses the block it was rewriting. Measured on the `compressed-sparse` fixture filled to its last cluster: random bytes over a block that held 2 clusters of compressed text need 16 clusters. The rewrite returned `-ENOSPC`, and after a remount the block read back as 65,536 zeroes. `ntfsck -n` was clean. The failed write also left the block's pages uptodate with bytes that never reached the disk. A read on the same mount returned them, and the next write into the block put them on the disk. Mainline fixed both. | Mainline's order: the new clusters are allocated while the old block still holds its own, the block is written to them, and only then is the old block punched and the new runs merged in (in one mapping-pairs update since U22). Mainline's page handling: a failed write marks the block's pages not uptodate. `PORT:` comments. Finding 32. |
 | U22 | `ntfs_write_cb()` (`compress.c`) | Takes the old compression block out and puts the new one in with two mapping-pairs updates: the punch's, then one after the new runs are merged in. A failure between the two leaves a hole in the run list where the block was. The block reads back as zeroes on the same mount, and the next write of the file's mapping pairs puts the hole on the disk; in this port the sync at unmount is one, even after an error has taken the volume read-only. A punch whose update fails has already rewritten the compressed size. The punch of a block written with zeroes (U7) had the same single update. Measured with an update that could not get an extent record: block 1 of `text-1m.txt` read back as zeroes after a remount, and `random-1m.bin` kept a compressed size 64 KiB short of its runs, after a rewrite and after zeroes alike. `ntfsck -n` was clean every time. Same in v7.1, and in mainline, whose order finding 32 took. | One mapping-pairs update. The runs are swapped in memory, and if writing them fails, the run list is put back from a copy and the mapping pairs are written again, as mainline's `ntfs_attr_map_cluster()` does since 91709ba5d6d7. If that fails too, no clusters are freed. The old clusters are freed once the new runs are recorded. The U7 punch goes the same way. `PORT:` comments. Finding 32's last open path. |
-| U23 | `ntfs_sync_fs()` (`super.c`) | Clears `VOLUME_IS_DIRTY` on every sync, whether or not `NVolErrors()` says the volume has errors. `ntfs_put_super()` leaves a volume with errors marked dirty so that chkdsk runs, but the sync that unmount runs before it, or any sync before that, has already marked it clean. Most `NVolSetErrors()` calls come with `ntfs_error()`, which takes the volume read-only, and then no sync runs (finding 33). Two leave the volume writable: the MFT allocator's, for a record that `$MFT`'s bitmap calls free but that is in use, which only warns ("Unmount and run chkdsk"), and `ntfs_write_mft_block()`'s, when `bio_add_folio()` fails or, with clusters smaller than a page, a run-list lookup does. Measured on the first: the unmount logs "Leaving volume marked dirty" and the flag is clear in both copies. Mainline no longer clears the flag in a sync at all, and sets it there while `NVolErrors()` is set, unless the volume is hibernated. | With `NVolErrors()` set, the sync sets the flag; without, it clears it as before. The port has no `NVolHibernated()`: a hibernated volume stays read-only here, so no sync reaches it, except after a failed discard of its hibernation image, which leaves it writable (a separate bug). `PORT:` comment. `test_errors_rw_unmount` in `test_mount.c`. Finding 33. |
+| U23 | `ntfs_sync_fs()` (`super.c`) | Clears `VOLUME_IS_DIRTY` on every sync, whether or not `NVolErrors()` says the volume has errors. `ntfs_put_super()` leaves a volume with errors marked dirty so that chkdsk runs, but the sync that unmount runs before it, or any sync before that, has already marked it clean. Most `NVolSetErrors()` calls come with `ntfs_error()`, which takes the volume read-only, and then no sync runs (finding 33). Two leave the volume writable: the MFT allocator's, for a record that `$MFT`'s bitmap calls free but that is in use, which only warns ("Unmount and run chkdsk"), and `ntfs_write_mft_block()`'s, when `bio_add_folio()` fails or, with clusters smaller than a page, a run-list lookup does. Measured on the first: the unmount logs "Leaving volume marked dirty" and the flag is clear in both copies. Mainline no longer clears the flag in a sync at all, and sets it there while `NVolErrors()` is set, unless the volume is hibernated. | With `NVolErrors()` set, the sync sets the flag; without, it clears it as before. The port has no `NVolHibernated()`: a hibernated volume stays read-only here, so no sync reaches it, and since finding 34 that holds after a failed discard of its hibernation image too. `PORT:` comment. `test_errors_rw_unmount` in `test_mount.c`. Finding 33. |
 
 U13 and U14 were backported on 2026-11-24. What was measured here, beyond the
 table:
@@ -1584,3 +1584,52 @@ Still open:
     through `write_mft_record()`. FSKit's reclaimItem makes that last put.
   * From reading only: the inode cache's shrink past 4096 inodes writes dirty
     records.
+
+## Finding 34 **FIXED**: a failed discard of the hibernation image left the volume writable
+
+Found 2026-11-25 by the review of finding 33. Present in 0.4.2. It is in the
+port's own code, `core/vfs/super_glue.c`, so it has no U number.
+
+With `NTFS_MOUNT_DISCARD_HIBERNATION`, `ntfs_mount()` discards the saved Windows
+session of a hibernated volume that is otherwise clean. It switches the volume
+read-write with `ntfs_glue_make_rw()`, which retires the journal, then zeroes
+the header of `hiberfil.sys`. When the zeroing failed, a comment said the
+read-only decision below would keep the volume read-only. That decision only
+names the reason, and nothing switched the volume back:
+
+* With `NTFS_MOUNT_RDONLY_FALLBACK`, as the app always asks, the mount
+  succeeded with the volume writable, while the log said "staying read-only".
+  `ntfs_volume_get_info()` reported it read-write, with no reason. Measured: a
+  create and a write both went through, and 12 device writes followed the
+  refused one, among them the hibernation header and `VOLUME_IS_DIRTY`.
+* Without the fallback, the mount failed, and its teardown synced the
+  read-write volume. With U23 that sync set `VOLUME_IS_DIRTY` on the
+  hibernated volume: 2 writes.
+
+The fix puts `SB_RDONLY` back when the zeroing fails. The volume is then
+read-only for `NTFS_RO_HIBERNATED`, and nothing more reaches it.
+
+`test_failed_discard_stays_read_only` in `test_mount.c` makes its own
+hibernated volume: `empty.img` with a `hiberfil.sys` whose header starts
+"hibr". The device refuses the header's write, which the discard makes
+straight to the disk. With the fallback, the mount must succeed read-only for
+`NTFS_RO_HIBERNATED` and refuse a create and a write with `-EROFS`. Without
+it, the mount must fail with `-EROFS`. Either way no device write may follow
+the refused one, the header must still read "hibr", and `VOLUME_IS_DIRTY` must
+stay clear in both copies. Without the fix the test fails 11 checks.
+
+Still open:
+
+* **The journal stays retired.** Before the zeroing is tried,
+  `ntfs_glue_make_rw()` rewrites the journal's two restart pages, or erases
+  the whole journal when it cannot parse it, and a failed zeroing puts neither
+  back. Windows then resumes onto a journal it did not write.
+* **A successful discard hides other errors found at load.** The discard
+  clears `NVolErrors()`, which the hibernation check sets to keep a hibernated
+  volume read-only. But the `$MFTMirr` comparison (`super.c:1462`) and the
+  `$Quota` load (`super.c:1719`) set it too, so a hibernated volume with one of
+  those errors mounts read-write once its image is discarded. The review of
+  this finding reproduced it: with one byte flipped in `$MFTMirr`'s copy of
+  record 3, a mount with `NTFS_MOUNT_DISCARD_HIBERNATION` came up read-write,
+  with reason `NTFS_RO_NONE`, and a create succeeded. Without the discard flag
+  the same volume stays read-only. Present in 0.4.2; deferred on 2026-11-26.

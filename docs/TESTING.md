@@ -35,12 +35,14 @@ tools/ci.sh --list       # what it will run
   contract that every bdev must satisfy.
 * **`pagecache`, `pagecache_stress`** — folio lifecycle, writeback visibility,
   the lookup-versus-invalidate race, reclaim under a cap.
-* **`mount`** (199) — the `$LogFile` clean rule, the read-only reason, a
+* **`mount`** (239) — the `$LogFile` clean rule, the read-only reason, a
   read-write mount with a non-empty journal, the fast probe against the full
   one, the device-flush count, and the unmount of a read-only volume. That
   unmount must write nothing, except the dirty flag after an error
   (finding 33), and neither may a refused mount or `ntfs_probe()`. A volume
-  with errors that stays writable must stay marked dirty too (U23).
+  with errors that stays writable must stay marked dirty too (U23), and a
+  failed discard of the hibernation image must leave the volume read-only
+  (finding 34).
 * **`links`** (279) — hard links, symlinks through reparse points, the 100 ns
   timestamp conversion, and permissions from the mount masks.
 * **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
