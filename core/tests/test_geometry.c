@@ -1770,6 +1770,294 @@ next:
 	done("test_hole_write_zeroes");
 }
 
+/* ---- 11. a write that fails gives its holes back ------------------------ */
+
+/*
+ * Finding 29, the path test_hole_write_zeroes() cannot reach. alloc_range()
+ * maps the clusters of every hole a write covers before do_write() writes a
+ * byte, and zeroes only the edges of each. When a later hole cannot be filled,
+ * or the zeroing or a data write fails, the write returns an error, and the
+ * clusters already mapped used to stay in the file, inside initialized_size,
+ * holding whatever the disk had there. Measured by the review of the first
+ * fix: a write of 299 clusters across two holes, with 200 free, returned
+ * -ENOSPC, and after a remount the first hole read back 36,864 bytes of a
+ * deleted file. ntfsck -n was clean.
+ *
+ * The file has clusters at 0, at FAIL_HOLE and far past the end of the volume,
+ * so it has two holes inside initialized_size: [1, FAIL_HOLE), and one longer
+ * than the volume. The free clusters are filled with 'D' and deleted, as in
+ * test_hole_write_zeroes(). One write then covers the first hole and
+ * FAIL_OVER clusters more of the second than are free. It starts inside
+ * cluster 1, so zero_new_edges() zeroes that cluster on the device: a cluster
+ * of the image that held 'D' before and zeroes after shows that the first hole
+ * landed on the deleted file's data, and so that the case tested something.
+ * After a remount the holes must read zero and be holes again, and the volume
+ * must have every cluster back.
+ *
+ * Then a named stream, through ntfs_setxattr(), the other caller of
+ * do_write(), with a value larger than the free space: the error must come
+ * back, and every cluster, and the volume must stay clean. Nothing stale can
+ * show there through the API, and this case does not reach release_holes():
+ * setxattr writes a whole value into an emptied stream, one hole that the
+ * allocator refuses up front when it is larger than the free space, and
+ * do_write()'s truncate back to the empty size would free it anyway.
+ * test_faults.c's test_write_fail_into_hole() runs the release on a stream.
+ */
+#define FAIL_HOLE	9	/* the first hole is clusters [1, FAIL_HOLE) */
+#define FAIL_OVER	64	/* clusters asked for beyond the free ones */
+#define FAIL_XATTR	"failed.write"
+
+/* Clusters of the image that held only 'D' in @pre and hold only zeroes in
+ * @post. */
+static size_t d_clusters_zeroed(const unsigned char *pre, const unsigned char *post,
+				size_t size, u32 cs)
+{
+	size_t n = 0;
+
+	for (size_t at = 0; at + cs <= size; at += cs) {
+		size_t k;
+
+		for (k = 0; k < cs && pre[at + k] == 'D' && !post[at + k]; k++)
+			;
+		n += k == cs;
+	}
+	return n;
+}
+
+static void test_failed_hole_write(void)
+{
+	char path[1024];
+	int any = 0;
+
+	for (size_t i = 0; i < NGEOM; i++) {
+		const struct geom *g = &geoms[i];
+		const u32 cs = g->cluster;
+		unsigned char *fbuf = NULL, *wbuf = NULL, *rb = NULL, *pre = NULL, *post = NULL;
+		size_t pre_size = 0, post_size = 0, wlen = 0, vlen, rlen = 0, len = 0;
+		struct ntfs_volume_info info;
+		struct ntfs_attr a = { 0 };
+		struct ntfs_bdev *dev;
+		ntfs_volume_t *vol;
+		ntfs_inode_t *root, *f;
+		u64 last = 0, free_before = 0, alloc_before = 0, pos, end, r;
+		long long filled = -1;
+		ssize_t w;
+		int err;
+
+		if (!g->mkntfs_can)
+			continue;
+		snprintf(path, sizeof(path), "%s/failhole-%s.img", workdir, g->name);
+		if (make_image(path, HOLE_IMAGE, g->sector, cs, NULL) != 0) {
+			CHECK_MSG(0, "%s: mkntfs failed for the failed-write image", g->name);
+			continue;
+		}
+		any = 1;
+		fbuf = malloc(cs);
+		if (!fbuf) {
+			CHECK_MSG(0, "%s: out of memory", g->name);
+			goto next;
+		}
+		memset(fbuf, 'F', cs);
+
+		/* The sparse file, the stream's file, then the fill. */
+		err = hole_mount(path, &dev, &vol, &root);
+		CHECK_MSG(err == 0, "%s: mount failed with %d", g->name, err);
+		if (err)
+			goto next;
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		last = 2 * info.total_clusters + 16;
+		err = ntfs_create(root, "sparse.bin", 0100644, &f);
+		CHECK_MSG(err == 0, "%s: create failed with %d", g->name, err);
+		if (!err) {
+			CHECK_MSG(ntfs_write(f, fbuf, cs, 0) == (ssize_t)cs &&
+				  ntfs_write(f, fbuf, cs, FAIL_HOLE * (u64)cs) == (ssize_t)cs &&
+				  ntfs_write(f, fbuf, cs, last * cs) == (ssize_t)cs,
+				  "%s: the three clusters of the sparse file did not write",
+				  g->name);
+			CHECK(ntfs_fsync(f, false) == 0);
+			ntfs_inode_put(f);
+			err = ntfs_create(root, "stream.bin", 0100644, &f);
+			CHECK_MSG(err == 0, "%s: create failed with %d", g->name, err);
+		}
+		if (!err) {
+			ntfs_inode_put(f);
+			filled = fill_and_delete(vol, root, cs);
+			CHECK_MSG(filled > 0, "%s: filling the free clusters failed with %lld",
+				  g->name, filled);
+		}
+		CHECK(hole_unmount(dev, vol, root) == 0);
+		if (err || filled <= 0)
+			goto next;
+		pre = read_image(path, &pre_size);
+		CHECK_MSG(pre != NULL, "%s: cannot read the image back", g->name);
+		if (!pre)
+			goto next;
+
+		/* The write, on a fresh mount. */
+		err = hole_mount(path, &dev, &vol, &root);
+		CHECK_MSG(err == 0, "%s: remount failed with %d", g->name, err);
+		if (err)
+			goto next;
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		free_before = info.free_clusters;
+		err = ntfs_lookup(root, "sparse.bin", &f);
+		CHECK_MSG(err == 0, "%s: sparse.bin gone after a remount (%d)", g->name, err);
+		if (!err) {
+			CHECK(ntfs_getattr(f, &a) == 0);
+			alloc_before = a.alloc_size;
+			pos = cs + cs / 4 + 3;
+			end = (FAIL_HOLE + 1 + free_before + FAIL_OVER) * cs - cs / 3;
+			wlen = end - pos;
+			wbuf = malloc(wlen);
+			if (wbuf) {
+				memset(wbuf, 'W', wlen);
+				w = ntfs_write(f, wbuf, wlen, pos);
+				CHECK_MSG(w == -ENOSPC,
+					  "%s: a write needing %d clusters more than the %llu free "
+					  "returned %zd, expected -ENOSPC", g->name,
+					  FAIL_HOLE - 1 + FAIL_OVER,
+					  (unsigned long long)free_before, w);
+			} else {
+				CHECK_MSG(0, "%s: out of memory", g->name);
+			}
+			ntfs_inode_put(f);
+		}
+		CHECK(hole_unmount(dev, vol, root) == 0);
+		if (err || !wbuf)
+			goto next;
+
+		post = read_image(path, &post_size);
+		CHECK_MSG(post != NULL && post_size == pre_size,
+			  "%s: cannot read the image back", g->name);
+		if (!post || post_size != pre_size)
+			goto next;
+		CHECK_MSG(d_clusters_zeroed(pre, post, pre_size, cs) > 0,
+			  "%s: the failed write zeroed no cluster that held 'D': its first "
+			  "hole did not land on the deleted file's data (the fill took %lld "
+			  "clusters), so this case tested nothing", g->name, filled);
+
+		/* What a remount reads back: the three clusters, and zeroes in
+		 * holes everywhere else. */
+		err = hole_mount(path, &dev, &vol, &root);
+		CHECK_MSG(err == 0, "%s: second remount failed with %d", g->name, err);
+		if (err)
+			goto next;
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		CHECK_MSG(info.free_clusters == free_before,
+			  "%s: %llu clusters free after the failed write, %llu before it",
+			  g->name, (unsigned long long)info.free_clusters,
+			  (unsigned long long)free_before);
+		err = ntfs_lookup(root, "sparse.bin", &f);
+		CHECK(err == 0);
+		if (!err) {
+			size_t stale = 0, deleted = 0, written = 0;
+
+			CHECK(ntfs_getattr(f, &a) == 0);
+			CHECK_MSG(a.size == (last + 1) * cs,
+				  "%s: sparse.bin is %llu bytes, expected %llu", g->name,
+				  (unsigned long long)a.size, (unsigned long long)(last + 1) * cs);
+			CHECK_MSG(a.alloc_size == alloc_before,
+				  "%s: sparse.bin has %llu bytes allocated after the failed write, "
+				  "%llu before it", g->name, (unsigned long long)a.alloc_size,
+				  (unsigned long long)alloc_before);
+			rlen = (size_t)(FAIL_HOLE + 1 + free_before + FAIL_OVER) * cs;
+			rb = malloc(rlen);
+			CHECK_MSG(rb && ntfs_read(f, rb, rlen, 0) == (ssize_t)rlen,
+				  "%s: read back short", g->name);
+			for (size_t b = 0; rb && b < rlen; b++) {
+				u64 c = b / cs;
+				unsigned char want = (c == 0 || c == FAIL_HOLE) ? 'F' : 0;
+
+				stale += rb[b] != want;
+				deleted += rb[b] == 'D';
+				written += rb[b] == 'W';
+			}
+			CHECK_MSG(stale == 0,
+				  "%s: after the failed write, %zu bytes of sparse.bin read back "
+				  "wrong after a remount (%zu are the deleted file's 'D', %zu the "
+				  "failed write's 'W')", g->name, stale, deleted, written);
+			CHECK_MSG(ntfs_seek_data_hole(f, 0, true, &r) == 0 && r == cs,
+				  "%s: the first hole is not a hole again", g->name);
+			CHECK_MSG(ntfs_seek_data_hole(f, cs, false, &r) == 0 &&
+				  r == FAIL_HOLE * (u64)cs,
+				  "%s: data inside the first hole", g->name);
+			CHECK_MSG(ntfs_seek_data_hole(f, (FAIL_HOLE + 1) * (u64)cs, false, &r) == 0 &&
+				  r == last * cs,
+				  "%s: data inside the second hole", g->name);
+			CHECK_MSG(rb && ntfs_read(f, rb, cs, last * cs) == (ssize_t)cs &&
+				  memcmp(rb, fbuf, cs) == 0,
+				  "%s: the last cluster of sparse.bin did not read back", g->name);
+			ntfs_inode_put(f);
+		}
+
+		/* The named stream. The value is buffered whole, as setxattr
+		 * takes it. */
+		free_before = info.free_clusters;
+		vlen = (size_t)(free_before + FAIL_OVER) * cs;
+		if (vlen > wlen) {
+			free(wbuf);
+			wbuf = malloc(vlen);
+			if (wbuf)
+				memset(wbuf, 'W', vlen);
+		}
+		err = ntfs_lookup(root, "stream.bin", &f);
+		CHECK_MSG(err == 0 && wbuf, "%s: stream.bin gone after a remount (%d)",
+			  g->name, err);
+		if (!err && wbuf) {
+			err = ntfs_setxattr(f, FAIL_XATTR, wbuf, vlen, 0);
+			CHECK_MSG(err == -ENOSPC,
+				  "%s: a stream value %d clusters larger than the free space "
+				  "returned %d, expected -ENOSPC", g->name, FAIL_OVER, err);
+			err = ntfs_getxattr(f, FAIL_XATTR, NULL, 0, &len);
+			CHECK_MSG(err == -ENOATTR || (err == 0 && len == 0),
+				  "%s: after the failed setxattr the stream reads %d, %zu bytes",
+				  g->name, err, len);
+			ntfs_inode_put(f);
+		}
+		CHECK(hole_unmount(dev, vol, root) == 0);
+
+		err = hole_mount(path, &dev, &vol, &root);
+		CHECK_MSG(err == 0, "%s: third remount failed with %d", g->name, err);
+		if (err)
+			goto next;
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		CHECK_MSG(info.free_clusters == free_before,
+			  "%s: %llu clusters free after the failed setxattr, %llu before it",
+			  g->name, (unsigned long long)info.free_clusters,
+			  (unsigned long long)free_before);
+		err = ntfs_lookup(root, "stream.bin", &f);
+		CHECK(err == 0);
+		if (!err) {
+			unsigned char *v = malloc(cs);
+
+			CHECK_MSG(ntfs_setxattr(f, FAIL_XATTR, fbuf, cs, 0) == 0,
+				  "%s: a value that fits did not go in after the failed one",
+				  g->name);
+			CHECK_MSG(v && ntfs_getxattr(f, FAIL_XATTR, v, cs, &len) == 0 &&
+				  len == cs && memcmp(v, fbuf, cs) == 0,
+				  "%s: the stream did not read back", g->name);
+			free(v);
+			ntfs_inode_put(f);
+		}
+		CHECK(hole_unmount(dev, vol, root) == 0);
+		err = fsck(path);
+		CHECK_MSG(err == 0, "%s: ntfsck -n returned %d after the failed writes",
+			  g->name, err);
+next:
+		free(fbuf);
+		free(wbuf);
+		free(rb);
+		free(pre);
+		free(post);
+		unlink(path);
+	}
+	if (!any) {
+		fprintf(stderr, "SKIP test_failed_hole_write: no images\n");
+		skipped++;
+	}
+	done("test_failed_hole_write");
+}
+
 /* ------------------------------------------------------------------------ */
 
 static void cleanup(void)
@@ -1821,6 +2109,7 @@ int main(void)
 	test_large_volume();
 	test_cluster_count_ceiling();
 	test_hole_write_zeroes();
+	test_failed_hole_write();
 
 	cleanup();
 	printf("%d checks, %d failures, %d skipped groups\n", checks, failures, skipped);

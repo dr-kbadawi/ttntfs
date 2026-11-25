@@ -57,10 +57,13 @@ tools/ci.sh --list       # what it will run
   afterwards and pass a check after a remount (finding 26). One more, also
   full, checks that a create which fails on a full folder leaves its MFT
   record safe to give to the next file (finding 27), and that a record freed
-  on a full volume can be given out again (finding 28).
-* **`geometry`** (977) — 4Kn sectors, cluster sizes either side of the sector
+  on a full volume can be given out again (finding 28). A write into a hole
+  whose data the device refuses must leave the hole a hole on the disk and in
+  the page cache, without losing an earlier write in the same page (finding 29).
+* **`geometry`** (1271) — 4Kn sectors, cluster sizes either side of the sector
   size, a 16 TiB sparse volume, and writes into holes, which must read back
-  zeroes around them after a remount on every cluster size (finding 29). Runs a
+  zeroes around them after a remount on every cluster size, and give their
+  clusters back when they fail with `ENOSPC` (finding 29). Runs a
   full read-write cycle per geometry and compares `$MFT` records 0-5 and
   `$MFTMirr` byte for byte afterwards; this
   is what found finding 15 and what pins it fixed.
@@ -250,7 +253,11 @@ extraction moved the comment with it and changed nothing else.
   against the bug. `test_hole_write_zeroes` finds each write on the image and
   checks what its cluster held before. `test_fragmented_rewrite` finds the
   rewritten block on the image and requires it in two runs at least, because a
-  free count cannot rule out 16 free clusters in a row.
+  free count cannot rule out 16 free clusters in a row. A write that fails
+  leaves nothing of its own on the image to find. `test_failed_hole_write`
+  requires a cluster that held `D` before to hold zeroes after, which only the
+  failed write's edge zeroing does. `test_write_fail_into_hole` checks the
+  cluster its refused data was aimed at.
 * **A sandboxed extension reads the app-group container, not `~/Library/Preferences`.**
   `defaults write group.ch.techtag.ntfs …` from a shell lands in
   `~/Library/Preferences/group.ch.techtag.ntfs.plist`; the extension reads

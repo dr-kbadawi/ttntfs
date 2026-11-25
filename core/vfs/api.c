@@ -37,6 +37,7 @@
 #define ntfs_setattr ntfs_setattr_internal
 #include "ntfs.h"
 #include "attrib.h"
+#include "lcnalloc.h"
 #include "mft.h"
 #include "dir.h"
 #include "reparse.h"
@@ -1110,11 +1111,61 @@ static int zero_new_edges(struct ntfs_inode *ni, s64 vcn, s64 end_vcn,
 	return err;
 }
 
+/*
+ * What alloc_range() has mapped into holes for one write, as vcn ranges in
+ * ascending order, so that a write that fails can give it back
+ * (release_holes()). After each ntfs_attr_map_cluster() call a range takes in
+ * all that is mapped from its start, which includes a second run the
+ * allocator can return without the call reporting it (no U14). It never takes
+ * in what a call that fails may have left: that is the call's to clean up,
+ * and freeing it here could free clusters another file has taken since.
+ * Finding 29's open items in docs/UPSTREAM-BUGS.md say where the call falls
+ * short.
+ */
+struct vcn_range {
+	s64 start, end;
+};
+
+struct filled_holes {
+	struct vcn_range *r;
+	unsigned int nr, max;
+};
+
+/* Open an empty range at @vcn, for a hole about to be filled. */
+static int filled_holes_open(struct filled_holes *fh, s64 vcn)
+{
+	struct vcn_range *r;
+
+	if (fh->nr == fh->max) {
+		unsigned int max = fh->max ? 2 * fh->max : 8;
+
+		r = krealloc(fh->r, max * sizeof(*r), GFP_NOFS);
+		if (!r)
+			return -ENOMEM;
+		fh->r = r;
+		fh->max = max;
+	}
+	fh->r[fh->nr].start = fh->r[fh->nr].end = vcn;
+	fh->nr++;
+	return 0;
+}
+
+/* The first vcn from @vcn on, below @end, that has no cluster. */
+static s64 mapped_until(struct ntfs_inode *ni, s64 vcn, s64 end)
+{
+	s64 count;
+
+	while (vcn < end && ntfs_vfs_map_vcn(ni, vcn, end - vcn, &count) >= 0)
+		vcn += count;
+	return vcn;
+}
+
 /* Allocate real clusters under [pos, pos + len) (upstream's writeback
  * allocation, done up front because the port writes to the device
  * directly), a hole at a time, zeroing what each hole's new clusters hold
- * around the write. */
-static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len)
+ * around the write. @fh records what was mapped, for release_holes(). */
+static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len,
+		       struct filled_holes *fh)
 {
 	struct ntfs_volume *vol = ni->vol;
 	s64 vcn = ntfs_bytes_to_cluster(vol, pos);
@@ -1142,7 +1193,10 @@ static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len)
 		/* Fill the hole, in as many runs as the allocator returns. */
 		hole_start = vcn;
 		hole_end = vcn + count;
-		for (; vcn < hole_end; vcn += count) {
+		err = filled_holes_open(fh, hole_start);
+		if (err)
+			return err;
+		for (; vcn < hole_end; vcn = fh->r[fh->nr - 1].end) {
 			bool balloc;
 
 			mutex_lock(&ni->mrec_lock);
@@ -1155,6 +1209,8 @@ static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len)
 				return err;
 			if (count <= 0)
 				return -EIO;
+			fh->r[fh->nr - 1].end = mapped_until(ni, min(vcn + count, hole_end),
+							     hole_end);
 		}
 		err = zero_new_edges(ni, hole_start, hole_end, pos, pos + len,
 				     init_size);
@@ -1162,6 +1218,233 @@ static int alloc_range(struct ntfs_inode *ni, loff_t pos, size_t len)
 			return err;
 	}
 	return 0;
+}
+
+/* Zero [start, end), within one page, if the page cache holds that page. */
+static void zero_cached(struct address_space *mapping, loff_t start, loff_t end)
+{
+	struct folio *folio;
+
+	folio = __filemap_get_folio(mapping, start >> PAGE_SHIFT, FGP_LOCK, 0);
+	if (IS_ERR(folio))
+		return;
+	folio_zero_range(folio, start & ~PAGE_MASK, end - start);
+	folio_unlock(folio);
+	folio_put(folio);
+}
+
+/*
+ * Take [start, end) out of the page cache, for clusters about to be given
+ * back: the pages wholly inside go unwritten, and a page that also holds
+ * bytes outside the range keeps them, dirty or not, with zeroes over the
+ * range. Nothing is written back, so nothing of another write's goes with a
+ * dropped page, and no writeback error is taken that a later fsync should
+ * report. What this write left over the range goes to clusters that become a
+ * hole, which write_folio skips.
+ *
+ * PORT: upstream's punch hole (ntfs_punch_hole(), file.c) writes back and
+ * truncates the page cache from the hole to the end of the file. That needs
+ * the writeback to succeed, and stops the punch when it does not; here the
+ * punch is what undoes a failure, on a device that may be refusing writes.
+ */
+static void forget_range(struct inode *vi, loff_t start, loff_t end)
+{
+	struct address_space *mapping = vi->i_mapping;
+	loff_t first = round_up(start, PAGE_SIZE), last = round_down(end, PAGE_SIZE);
+
+	if (!mapping->nrpages)
+		return;
+	if (first > last) {
+		zero_cached(mapping, start, end);	/* inside one page */
+		return;
+	}
+	if (start < first)
+		zero_cached(mapping, start, first);
+	/* Page-aligned bounds only: the port's truncate_inode_pages_range()
+	 * drops the whole page that holds its last byte. */
+	if (first < last)
+		truncate_inode_pages_range(mapping, first, last - 1);
+	if (last < end)
+		zero_cached(mapping, last, end);
+}
+
+/*
+ * Wait out a writeback of the pages at either end of [start, end) that may
+ * have mapped the range before it became a hole. forget_range() keeps those
+ * pages, still dirty, and writeback holds a folio's lock from
+ * ntfs_vfs_map_vcn() to the device write: once the lock has been taken here,
+ * a writeback that saw the old clusters is done, and one that comes later
+ * sees the hole. Without this, it could write into clusters another file has
+ * taken since. The pages wholly inside are gone: truncation waited for them.
+ */
+static void settle_edge_pages(struct address_space *mapping, loff_t start, loff_t end)
+{
+	pgoff_t idx = start >> PAGE_SHIFT, last = (end - 1) >> PAGE_SHIFT;
+	struct folio *folio;
+
+	for (;;) {
+		folio = __filemap_get_folio(mapping, idx, FGP_LOCK, 0);
+		if (!IS_ERR(folio)) {
+			folio_unlock(folio);
+			folio_put(folio);
+		}
+		if (idx == last)
+			break;
+		idx = last;
+	}
+}
+
+/* Zero on the device what [vcn, vcn + len) of @ni is mapped to. */
+static int zero_mapped(struct ntfs_inode *ni, s64 vcn, s64 len)
+{
+	struct ntfs_volume *vol = ni->vol;
+	s64 end = vcn + len, lcn, count;
+	int err = 0;
+
+	for (; vcn < end && !err; vcn += count) {
+		lcn = ntfs_vfs_map_vcn(ni, vcn, end - vcn, &count);
+		if (lcn >= 0)
+			err = ntfs_dio_zero_range(VFS_I(ni),
+						  ntfs_cluster_to_bytes(vol, lcn),
+						  ntfs_cluster_to_bytes(vol, count));
+		else if (lcn != LCN_HOLE && lcn != LCN_DELALLOC)
+			err = -EIO;
+	}
+	return err;
+}
+
+/*
+ * Make [vcn, vcn + len) of @ni a hole again and free its clusters. Where they
+ * cannot be given back, they stay the file's, zeroed on the device, so that
+ * nothing reads what they held.
+ *
+ * PORT: the steps of ntfs_non_resident_attr_punch_hole() (attrib.c, what
+ * fallocate uses), which refuses an attribute inode, and whose closing
+ * mark_mft_record_dirty(ni) would warn for one (__mark_mft_record_dirty()).
+ * ntfs_attr_update_mapping_pairs() marks the records it rewrites itself, for
+ * either kind of inode, so nothing else needs marking. Where the update
+ * fails, upstream leaves the hole in the run list and the clusters allocated,
+ * so the next update that succeeds leaks them; here they go back into the run
+ * list.
+ */
+static int punch_clusters(struct ntfs_inode *ni, s64 vcn, s64 len)
+{
+	struct ntfs_volume *vol = ni->vol;
+	struct runlist_element *rl, *punch_rl = NULL;
+	size_t new_count;
+	int nr, err, err2 = 0, zerr = 0;
+
+	mutex_lock(&ni->mrec_lock);
+	down_write(&ni->runlist.lock);
+	err = ntfs_attr_map_whole_runlist(ni);
+	if (!err) {
+		for (rl = ni->runlist.rl, nr = 0; rl && rl->length; rl++)
+			nr++;
+		rl = ntfs_rl_punch_hole(ni->runlist.rl, nr + 1, vcn, len,
+					&punch_rl, &new_count);
+		if (IS_ERR(rl)) {
+			err = PTR_ERR(rl);
+			punch_rl = NULL;
+		} else {
+			ni->runlist.rl = rl;
+			ni->runlist.count = new_count;
+			err = ntfs_attr_update_mapping_pairs(ni, 0);
+		}
+	}
+	if (err && punch_rl) {
+		/*
+		 * The run list has the hole and the attribute record may have
+		 * part of it: put the clusters back, and write the record
+		 * again, so that it and $Bitmap agree. The punched runs end in
+		 * LCN_ENOENT, which a merge takes for the end of the attribute.
+		 */
+		for (rl = punch_rl; rl->length; rl++)
+			;
+		rl->lcn = LCN_RL_NOT_MAPPED;
+		rl = ntfs_runlists_merge(&ni->runlist, punch_rl, 0, &new_count);
+		if (IS_ERR(rl)) {
+			err2 = PTR_ERR(rl);
+		} else {
+			ni->runlist.rl = rl;
+			ni->runlist.count = new_count;
+			punch_rl = NULL;	/* the merge took it */
+			err2 = ntfs_attr_update_mapping_pairs(ni, 0);
+		}
+	}
+	up_write(&ni->runlist.lock);
+	mutex_unlock(&ni->mrec_lock);
+
+	if (!err) {
+		settle_edge_pages(VFS_I(ni)->i_mapping, ntfs_cluster_to_bytes(vol, vcn),
+				  ntfs_cluster_to_bytes(vol, vcn + len));
+		err = ntfs_cluster_free_from_rl(vol, punch_rl);
+		kvfree(punch_rl);
+		if (err)
+			ntfs_error(vol->sb,
+				   "Failed to free the clusters of a failed write to inode 0x%llx (%d).",
+				   ni->mft_no, err);
+		return err;
+	}
+	/* The page cache over the range is gone already (forget_range()). */
+	if (punch_rl) {
+		/* Out of the run list and still allocated: lost to the
+		 * volume until chkdsk, but zeroed. */
+		for (rl = punch_rl; rl->length && !zerr; rl++)
+			if (rl->lcn >= 0)
+				zerr = ntfs_dio_zero_range(VFS_I(ni),
+						ntfs_cluster_to_bytes(vol, rl->lcn),
+						ntfs_cluster_to_bytes(vol, rl->length));
+		kvfree(punch_rl);
+		ntfs_error(vol->sb,
+			   "Failed to give back clusters 0x%llx-0x%llx of inode 0x%llx after a failed write (%d), or to keep them (%d): they are allocated to nothing%s.",
+			   (unsigned long long)vcn, (unsigned long long)(vcn + len - 1),
+			   ni->mft_no, err, err2, zerr ? ", and zeroing them failed" : "");
+		return err;
+	}
+	zerr = zero_mapped(ni, vcn, len);
+	if (!err2 && !zerr) {
+		/* Consistent: a file with zeroes where it had a hole. */
+		ntfs_warning(vol->sb,
+			     "Could not give back clusters 0x%llx-0x%llx of inode 0x%llx after a failed write (%d): the file keeps them, zeroed.",
+			     (unsigned long long)vcn, (unsigned long long)(vcn + len - 1),
+			     ni->mft_no, err);
+		return err;
+	}
+	ntfs_error(vol->sb,
+		   "Failed to give back clusters 0x%llx-0x%llx of inode 0x%llx after a failed write (%d): the file keeps them (%d)%s.",
+		   (unsigned long long)vcn, (unsigned long long)(vcn + len - 1),
+		   ni->mft_no, err, err2, zerr ? ", and zeroing them failed" : ", zeroed");
+	return err;
+}
+
+/*
+ * release_holes - give back what alloc_range() mapped for a write that failed
+ *
+ * PORT: finding 29. Upstream does not map ahead of the data: its buffered
+ * write allocates at writeback (delayed allocation), and its direct I/O maps
+ * one extent per iomap_begin and submits that extent's data before it maps
+ * the next. The port maps the whole range before it writes a byte, so a later
+ * hole that cannot be filled (-ENOSPC), or a zeroing or data write that
+ * fails, left the clusters already mapped in the holes holding whatever the
+ * disk had there: below initialized_size, a remount read back a deleted
+ * file's data where the file had holes. Upstream's write_iter undoes only the
+ * sizes, as do_write() did, so its direct I/O leaves the extent in flight the
+ * same way when its edge zeroing or its data fails (v7.1, from reading).
+ */
+static void release_holes(struct ntfs_inode *ni, const struct filled_holes *fh)
+{
+	struct ntfs_volume *vol = ni->vol;
+	unsigned int i;
+
+	for (i = 0; i < fh->nr; i++) {
+		s64 start = fh->r[i].start, end = fh->r[i].end;
+
+		if (end <= start)
+			continue;
+		forget_range(VFS_I(ni), ntfs_cluster_to_bytes(vol, start),
+			     ntfs_cluster_to_bytes(vol, end));
+		punch_clusters(ni, start, end - start);
+	}
 }
 
 /*
@@ -1232,6 +1515,7 @@ out:
 static ssize_t do_write(struct inode *vi, const void *buf, size_t count, loff_t pos)
 {
 	struct ntfs_inode *ni = NTFS_I(vi);
+	struct filled_holes fh = { };
 	loff_t end = pos + count, old_data_size, old_init_size, init_size;
 	unsigned long flags;
 	ssize_t ret;
@@ -1266,7 +1550,7 @@ static ssize_t do_write(struct inode *vi, const void *buf, size_t count, loff_t 
 	}
 
 	/* Non-resident: allocate, zero the gap up to pos, write, extend. */
-	err = alloc_range(ni, pos, count);
+	err = alloc_range(ni, pos, count, &fh);
 	if (err) {
 		ret = err;
 		goto done;
@@ -1321,7 +1605,9 @@ static ssize_t do_write(struct inode *vi, const void *buf, size_t count, loff_t 
 	ret = count;
 done:
 	if (ret < 0) {
-		/* Undo a size change of a failed write (upstream write_iter). */
+		/* Give back what went into holes (release_holes()), then undo
+		 * a size change (upstream write_iter). */
+		release_holes(ni, &fh);
 		if (ni->initialized_size != old_init_size && NInoNonResident(ni)) {
 			mutex_lock(&ni->mrec_lock);
 			set_initialized_size(ni, old_init_size);
@@ -1336,6 +1622,7 @@ done:
 		NInoSetFileNameDirty(ni);
 		mark_inode_dirty(vi);
 	}
+	kfree(fh.r);
 	return ret;
 }
 

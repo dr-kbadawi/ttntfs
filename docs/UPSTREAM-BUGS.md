@@ -993,7 +993,7 @@ compressed-write code appended to and overwrote mid-stream, read back by
 Windows byte for byte and still compressed. First independent confirmation of
 that code path.
 
-## Finding 29 **FIXED** (one path open): a write into a hole read back a deleted file's data
+## Finding 29 **FIXED**: a write into a hole read back a deleted file's data
 
 Found 2026-11-24 beside the allocator backports. Present in 0.4.2. A
 data exposure, and `ntfsck -n` is clean throughout.
@@ -1060,21 +1060,120 @@ Without the fix there are 37 failures, and every stale byte is a `D`. With it
 there are none. The same holds with the allocator branch's `lcnalloc.c` and
 `runlist.c` (U13-U17): 37 failures without the fix, none with it.
 
+### A write that fails part way (fixed 2026-11-24)
+
+The fix above left one path open, and the review measured it. `alloc_range()`
+fills every hole in the range before anything is written, and zeroes only the
+edges. When a later hole could not be filled (`-ENOSPC`), or the zeroing or a
+data write failed, `do_write()` rolled back the sizes only. The clusters mapped
+so far stayed under `initialized_size` with their old contents. A write of 299
+clusters into two holes, on a volume with 200 free clusters, returned
+`-ENOSPC`, and after a remount the first hole read back 36,864 bytes of a
+deleted file. `ntfsck -n` was clean. Pre-existing, and the same with the
+allocator branch. Upstream does not map ahead of the data: its buffered write
+allocates at writeback, and its direct I/O maps one extent per `iomap_begin`
+and submits that extent's data before it maps the next, so `-ENOSPC` leaves
+nothing of it unwritten. Its `write_iter` rolls back only the sizes, though,
+so from reading v7.1 its direct I/O leaves the extent in flight the same way
+when that extent's edge zeroing or data write fails. Not reported upstream.
+
+Fix, `core/vfs/api.c`: `alloc_range()` records the ranges it maps in holes.
+After each `ntfs_attr_map_cluster()` call a range takes in all that is mapped
+from its start, so a second run that the allocator returned without the call
+reporting it (no U14) is in it too. For a failed write, `do_write()` hands the
+record to `release_holes()` before it rolls back the sizes. For each range,
+`forget_range()` takes it out of the page cache without writing anything back:
+the pages wholly inside go, and a page that also holds clusters that stay keeps
+their bytes, dirty or not, with zeroes over the range. `punch_clusters()` then
+makes the range a hole again and frees its clusters. It does the steps of
+`ntfs_non_resident_attr_punch_hole()` itself, because that function refuses an
+attribute inode, and its closing `mark_mft_record_dirty()` would warn for one.
+`PORT:` comments.
+
+The first version wrote the pages back and dropped them, as `cache_sync_range()`
+does. The independent review showed the cost where clusters are smaller than a
+page. With the device refusing writes for a while, the page that held an
+earlier write's dirty bytes, in a cluster that stays, failed to write and was
+dropped all the same, and the writeback error went with it. The earlier write
+was lost, and a later `fsync()` returned 0.
+
+Before a range's clusters are freed, `punch_clusters()` takes the lock of each
+cached page at the range's two ends, which `forget_range()` kept. That waits out
+a writeback that mapped the clusters before they became a hole, which could
+otherwise write into them after another file has taken them. The second review
+found that race by reading.
+
+Where a range cannot be given back, the file keeps its clusters, zeroed on the
+device. When the mapping-pairs update fails after the run list was punched, the
+punched runs go back into the run list and the update is tried again, so that
+`$Bitmap` and the attribute agree. Only if that merge fails too, for want of
+memory, are the clusters left allocated to nothing: zeroed, reported by
+`ntfs_error()`, and reclaimed by chkdsk. Upstream's punch hole leaves the hole
+in the run list and the clusters allocated, and the next update that succeeds
+leaks them. A consistent outcome is logged as a warning, anything else with
+`ntfs_error()`, which can take the volume read-only. Both fallbacks were run
+with the review's failure hooks in a scratch copy: the holes read zero on the
+same mount and after a remount, the file keeps two zeroed clusters, and
+`ntfsck -n` is clean. No test in the tree reaches them.
+
+A range never takes in what a call that fails may have left behind. That is
+the call's to clean up, and freeing it here could free clusters another file
+has taken since. The first open item below is where the call falls short.
+
+Two tests. Each fails without the fix and passes with it, on main's allocator
+and with the allocator branch's `lcnalloc.c` and `runlist.c` (U13-U17):
+
+* `test_failed_hole_write` in `core/tests/test_geometry.c`, on all seven
+  geometries. The free clusters hold `D`, as in `test_hole_write_zeroes`. A
+  write then covers a hole of 8 clusters and 64 clusters more of a second hole
+  than are free. After a remount both holes must read zero and be holes again
+  (`ntfs_seek_data_hole()`). The free count and the file's allocation must be
+  what they were. The first hole's first cluster, which `zero_new_edges()`
+  zeroes, must have held `D`, or the case fails as having tested nothing.
+  Without the fix, 35 failures, 5 per geometry. The 8 clusters stay allocated
+  and 7 of them read back as `D`.
+* `test_write_fail_into_hole` in `core/tests/test_faults.c`, the zeroing-or-data
+  half of the path, on 4 KiB clusters and on 512-byte ones. After the hole is
+  mapped, the device refuses the write's data, and only that: the injector
+  fails transfers that begin with the `W` the case writes. The cluster the
+  refused data was aimed at must have held `D`. A second file takes a write
+  that starts inside its hole and runs past its end, so that the release comes
+  before `do_write()`'s truncate. The holes are read on the same mount as well,
+  a page at a time through the cache. On 512-byte clusters an earlier write's
+  `W` shares the first page and is refused while the fault is armed: it must
+  reach the disk, or `fsync()` must say it did not. Without the fix, 18
+  failures, 9 per cluster size. On 4 KiB clusters 11 clusters stay allocated,
+  the first file's hole reads back 28,672 bytes of `D` and 3,996 of the failed
+  write's `W`, and the second file's hole 4,096 and 3,996. The first version of
+  the fix fails the earlier write's check, and a release that leaves the page
+  cache alone fails the same-mount reads.
+
+Both tests also write a named stream through `ntfs_setxattr()`, the other
+caller of `do_write()`. Through the API a stream cannot show the exposure.
+`ntfs_setxattr()` writes a whole value into an emptied stream, and
+`do_write()`'s truncate back to the empty size frees whatever was mapped. The
+stream cases are there to run `release_holes()` on an attribute inode and check
+that the volume is clean afterwards. They pass with or without the fix. On an
+idle volume only the device fault reaches the release for a stream: the
+allocator fills the stream's one hole entirely or, with `-ENOSPC`, refuses it
+before anything is mapped. Another file allocating between the calls could
+leave it part filled.
+
 Still open:
 
-* **A write that fails part way leaves the clusters it already mapped exposed.**
-  `alloc_range()` fills every hole in the range before anything is written, and
-  zeroes only the edges. When a later hole cannot be filled (ENOSPC), or the
-  zeroing or the data write fails, `do_write()` rolls back the sizes only. The
-  clusters mapped so far stay under `initialized_size` with their old contents.
-  The review measured it: a write of 299 clusters into two holes on a volume
-  with 200 free clusters returned `-ENOSPC`. After a remount the first hole read
-  back 36,864 bytes of a deleted file. `ntfsck -n` was clean. The same happens
-  with the allocator branch. Pre-existing. Upstream writes each extent before
-  it allocates the next, and buffers through delayed allocation, so it does not
-  have this. The fix is to give back what `alloc_range()` allocated when the
-  write fails. `ntfs_non_resident_attr_punch_hole()` cannot do that for a named
-  stream (`NInoAttr`) as it stands.
+* **From reading the code: `ntfs_attr_map_cluster()` keeps clusters it has
+  freed.** When `ntfs_attr_update_mapping_pairs()` fails after the allocation,
+  `ntfs_cluster_free()` clears the bits of the run the call reports in
+  `$Bitmap`. It leaves the run in the run list, because `__ntfs_cluster_free()`
+  never changes the run list. The next mapping-pairs update writes the run into
+  the attribute, over clusters another file can then allocate. That next update
+  can be `do_write()`'s truncate, or `release_holes()` giving back the holes
+  before it. Without U14 it is worse. When the allocator returned the request
+  in two runs, only the first is freed, and the second stays allocated and
+  mapped with its old contents, where `release_holes()` cannot know of it. Same
+  in v7.1. The call needs to free every run it allocated and punch them out of
+  the run list. No test reaches it: the update has to fail after the allocator
+  has succeeded.
 * **From reading the code: `ntfs_attr_fallocate()` drops a failed zeroing.** It
   tests `if (err > 0)` after `ntfs_dio_zero_range()`, which returns a negative
   errno, so on an I/O error the clusters it maps under `initialized_size` keep

@@ -83,23 +83,30 @@ static const char *tool(const char *envvar, const char *fallback)
 	return v && *v ? v : fallback;
 }
 
-/* A fresh mkntfs volume of @mb megabytes. Small on purpose: ENOSPC has to be
- * reachable in under a second, and every case wants its own image. */
-static int make_image(const char *tag, unsigned mb)
+/* A fresh mkntfs volume of @mb megabytes, with @opts added to mkntfs's
+ * arguments (NULL for none). Small on purpose: ENOSPC has to be reachable in
+ * under a second, and every case wants its own image. */
+static int make_image_opts(const char *tag, unsigned mb, const char *opts)
 {
 	char cmd[2048];
 
 	snprintf(img, sizeof(img), "/tmp/ttntfs-faults-%d-%s.img", (int)getpid(), tag);
 	snprintf(cmd, sizeof(cmd),
 		 "dd if=/dev/zero of='%s' bs=1m count=%u >/dev/null 2>&1 && "
-		 "'%s' -Q -F -L FAULT '%s' >/dev/null 2>&1",
-		 img, mb, tool("NTFS_MKNTFS", "tools/.local/sbin/mkntfs"), img);
+		 "'%s' -Q -F %s -L FAULT '%s' >/dev/null 2>&1",
+		 img, mb, tool("NTFS_MKNTFS", "tools/.local/sbin/mkntfs"),
+		 opts ? opts : "", img);
 	if (system(cmd) != 0) {
 		fprintf(stderr, "SKIP %s: could not build an image (mkntfs missing?)\n", tag);
 		img[0] = 0;
 		return -1;
 	}
 	return 0;
+}
+
+static int make_image(const char *tag, unsigned mb)
+{
+	return make_image_opts(tag, mb, NULL);
 }
 
 /*
@@ -173,14 +180,17 @@ enum { FAULT_NONE = 0, FAULT_READ, FAULT_WRITE, FAULT_FLUSH };
 static struct fault {
 	int mode;
 	uint64_t lo, hi;	/* byte range that arms the fault; hi = 0 means "to the end" */
+	int content;		/* writes only: arm only for a transfer whose first 16
+				 * bytes are all this byte (-1 = any transfer) */
 	int skip;		/* let this many matching transfers through first */
 	int times;		/* then fail this many (-1 = every one after that) */
 	int err;		/* what the device reports */
 	bool partial;		/* do the first half of the transfer for real, then fail */
 	/* observed */
 	int matched, fired;
+	uint64_t fired_off;	/* device offset of the first transfer failed */
 	int reads, writes, flushes;
-} fi;
+} fi = { .content = -1, .err = -EIO, .times = -1 };	/* as fault_clear() leaves it */
 
 static const struct ntfs_bdev_ops *real_ops;
 static struct ntfs_bdev_ops fault_ops;
@@ -188,8 +198,23 @@ static struct ntfs_bdev_ops fault_ops;
 static void fault_clear(void)
 {
 	memset(&fi, 0, sizeof(fi));
+	fi.content = -1;
 	fi.err = -EIO;
 	fi.times = -1;
+}
+
+static bool content_matches(const void *b, size_t count)
+{
+	const uint8_t *p = b;
+
+	if (fi.content < 0)
+		return true;
+	if (count < 16)
+		return false;
+	for (int i = 0; i < 16; i++)
+		if (p[i] != (uint8_t)fi.content)
+			return false;
+	return true;
 }
 
 static bool in_range(uint64_t off, size_t count)
@@ -206,7 +231,8 @@ static bool should_fail(int mode, uint64_t off, size_t count)
 		return false;
 	if (fi.times >= 0 && fi.fired >= fi.times)
 		return false;
-	fi.fired++;
+	if (!fi.fired++)
+		fi.fired_off = off;
 	return true;
 }
 
@@ -230,7 +256,7 @@ static ssize_t f_pread(struct ntfs_bdev *d, void *b, size_t c, u64 o)
 static ssize_t f_pwrite(struct ntfs_bdev *d, const void *b, size_t c, u64 o)
 {
 	fi.writes++;
-	if (should_fail(FAULT_WRITE, o, c)) {
+	if (content_matches(b, c) && should_fail(FAULT_WRITE, o, c)) {
 		if (fi.partial) {
 			size_t half = (c / 2) & ~(size_t)511;
 			if (half)
@@ -1099,6 +1125,404 @@ out:
 }
 
 /*
+ * Fill the free clusters with @fill through one file, then delete it: what a
+ * disk that has been used holds where nothing is allocated.
+ */
+static int stain_free_space(ntfs_volume_t *vol, ntfs_inode_t *root, uint8_t fill,
+			    size_t cs)
+{
+	enum { CHUNK = 65536 };
+	uint8_t *buf = malloc(CHUNK);
+	ntfs_inode_t *s;
+	size_t chunk = CHUNK;
+	uint64_t off = 0;
+	int err;
+
+	if (!buf)
+		return -ENOMEM;
+	memset(buf, fill, CHUNK);
+	err = ntfs_create(root, "stain.bin", 0100644, &s);
+	if (err) {
+		free(buf);
+		return err;
+	}
+	for (;;) {
+		ssize_t w = ntfs_write(s, buf, chunk, off);
+
+		if (w == (ssize_t)chunk) {
+			off += chunk;
+			continue;
+		}
+		if (w != -ENOSPC) {
+			err = w < 0 ? (int)w : -EIO;
+			break;
+		}
+		if (chunk <= cs)
+			break;
+		chunk = cs;
+	}
+	free(buf);
+	/* On the disk before the name goes: a deleted file's dirty pages are
+	 * dropped, not written. */
+	if (!err)
+		err = ntfs_fsync(s, false);
+	ntfs_inode_put(s);
+	if (!err)
+		err = ntfs_unlink(root, "stain.bin");
+	if (!err)
+		err = ntfs_volume_sync(vol);
+	return err;
+}
+
+static uint8_t *read_whole_image(size_t *len)
+{
+	struct stat st;
+	uint8_t *p = NULL;
+	int fd = open(img, O_RDONLY);
+
+	if (fd < 0)
+		return NULL;
+	if (fstat(fd, &st) == 0 && st.st_size > 0)
+		p = malloc((size_t)st.st_size);
+	if (p && pread(fd, p, (size_t)st.st_size, 0) != (ssize_t)st.st_size) {
+		free(p);
+		p = NULL;
+	}
+	close(fd);
+	if (p)
+		*len = (size_t)st.st_size;
+	return p;
+}
+
+/*
+ * A write into a hole whose data the device refuses after the hole's clusters
+ * are mapped: finding 29 in docs/UPSTREAM-BUGS.md. alloc_range() maps every
+ * hole a write covers before anything is written, and when a data write then
+ * failed, do_write() undid only the sizes. The clusters stayed in the file,
+ * inside initialized_size, holding what the disk had there: after a remount,
+ * a deleted file's data where the file had a hole, and ntfsck clean.
+ * release_holes() gives them back now. test_geometry's
+ * test_failed_hole_write() reaches the same path through -ENOSPC. This is the
+ * other way in, and on an idle volume the only one for a named stream:
+ * ntfs_setxattr() writes a whole value into an emptied stream, one hole that
+ * the allocator fills entirely or refuses up front. For the stream,
+ * do_write()'s truncate back to the empty size frees the clusters anyway; the
+ * case is there to run release_holes() on an attribute inode, which
+ * ntfs_non_resident_attr_punch_hole() refuses, and to see the volume clean
+ * after it.
+ *
+ * A second file takes a write that starts inside its hole and runs past its
+ * end, so that the release comes before do_write()'s truncate back to the old
+ * size, and gives back part of a hole next to a part that stays one.
+ *
+ * The holes are read on the same mount too, before the remount: the page
+ * cache must not show what the failed writes left there either. And where a
+ * page holds more than one cluster (@mkopts makes them 512 bytes), the first
+ * file's page 0 also holds W1, an earlier write's dirty bytes in a cluster
+ * that stays. W1 is 'W' as well, so the device refuses it while the fault is
+ * armed, as a device that refuses writes for a while would: the release must
+ * not write that page back and drop it, or W1 is gone and a later fsync says
+ * nothing. W1 has to reach the disk, or fsync has to say it did not.
+ *
+ * The free clusters hold 'D' first. The fault fails only transfers that begin
+ * with the 'W' the case writes, so the zeroing and every metadata write land.
+ */
+#define HOLE_XATTR "fail.into.hole"
+
+/*
+ * Bytes of [from, to) of @f that are not zero, -1 if a read fails. No read
+ * spans a whole page: do_read() writes back and drops a whole page before it
+ * reads the device directly, so only reads within a page show what the page
+ * cache holds.
+ */
+static long long cached_nonzero(ntfs_inode_t *f, uint8_t *rb, uint64_t from, uint64_t to)
+{
+	const uint64_t pg = 1u << NTFS_PAGE_SHIFT;
+	long long n = 0;
+
+	for (uint64_t at = from, stop; at < to; at = stop) {
+		stop = (at / pg + 1) * pg;
+		if (stop > to)
+			stop = to;
+		if (stop - at == pg)
+			stop = at + 1;
+		if (ntfs_read(f, rb, stop - at, at) != (ssize_t)(stop - at))
+			return -1;
+		for (uint64_t b = 0; b < stop - at; b++)
+			n += rb[b] != 0;
+	}
+	return n;
+}
+
+static void test_write_fail_into_hole(const char *tag, const char *mkopts)
+{
+	enum { WLEN = 32768 };
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol;
+	ntfs_inode_t *root, *f;
+	struct ntfs_volume_info info;
+	struct ntfs_attr a = { 0 };
+	uint8_t *buf = NULL, *pre = NULL, *rb = NULL;
+	uint64_t cs, hole_end, free_before = 0, alloc_before = 0, ext_before = 0;
+	uint64_t off = 0, r;
+	size_t pre_len = 0, rlen, len = 0;
+	long long nz;
+	ssize_t wn;
+	int err, xerr, w1_sync = 0;
+	bool small;
+
+	if (make_image_opts(tag, 8, mkopts) != 0)
+		return;
+	fault_clear();
+	err = mount_rw(&dev, &vol);
+	CHECK(err == 0);
+	if (err) { drop_image(); return; }
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	cs = info.cluster_size;
+	small = cs < (1u << NTFS_PAGE_SHIFT);
+	/* The hole is [1, hole_end), at least 64 KiB, so that the write below
+	 * has whole pages in its middle, which go to the device directly. */
+	hole_end = 1 + (65536 / cs > 8 ? 65536 / cs : 8);
+	rlen = (size_t)(hole_end + 1) * cs;
+	buf = malloc(WLEN + 3 * cs);
+	rb = malloc(rlen);
+	if (!buf || !rb) {
+		CHECK_MSG(0, "%s: out of memory", tag);
+		ntfs_inode_put(root);
+		goto out_umount;
+	}
+	memset(buf, 'F', cs);
+	err = ntfs_create(root, "sparse.bin", 0100644, &f);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_write(f, buf, cs, 0) == (ssize_t)cs);
+		CHECK(ntfs_write(f, buf, cs, hole_end * cs) == (ssize_t)cs);
+		CHECK(ntfs_fsync(f, false) == 0);
+		ntfs_inode_put(f);
+		/* Clusters at 0 and 4: the hole is [1, 4), the end at 5. */
+		err = ntfs_create(root, "extend.bin", 0100644, &f);
+		CHECK(err == 0);
+	}
+	if (!err) {
+		CHECK(ntfs_write(f, buf, cs, 0) == (ssize_t)cs);
+		CHECK(ntfs_write(f, buf, cs, 4 * cs) == (ssize_t)cs);
+		CHECK(ntfs_fsync(f, false) == 0);
+		ntfs_inode_put(f);
+		err = ntfs_create(root, "stream.bin", 0100644, &f);
+		CHECK(err == 0);
+	}
+	if (!err) {
+		ntfs_inode_put(f);
+		err = stain_free_space(vol, root, 'D', cs);
+		CHECK_MSG(err == 0, "%s: staining the free clusters failed with %d", tag, err);
+	}
+	ntfs_inode_put(root);
+out_umount:
+	CHECK(ntfs_volume_sync(vol) == 0);
+	ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+	if (err || !buf || !rb)
+		goto out;
+	pre = read_whole_image(&pre_len);
+	CHECK_MSG(pre != NULL, "%s: cannot read the image back", tag);
+
+	/* The writes, with the device refusing their data. */
+	err = mount_rw(&dev, &vol);
+	CHECK(err == 0);
+	if (err)
+		goto out;
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	free_before = info.free_clusters;
+	memset(buf, 'W', WLEN + 3 * cs);
+	fi.mode = FAULT_WRITE;
+	fi.content = 'W';
+	err = ntfs_lookup(root, "sparse.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_getattr(f, &a) == 0);
+		alloc_before = a.alloc_size;
+		/* W1 lands in the page cache only: no transfer to refuse yet. */
+		if (small)
+			CHECK_MSG(ntfs_write(f, buf, cs, 0) == (ssize_t)cs,
+				  "%s: W1 into cluster 0 did not write", tag);
+		wn = ntfs_write(f, buf, WLEN, cs + 100);
+		CHECK_MSG(wn < 0, "%s: a write into a hole whose data the device refused "
+			  "returned %zd", tag, wn);
+		CHECK_MSG(fi.fired > 0, "%s: no transfer of the data reached the device: "
+			  "the case is vacuous", tag);
+		off = fi.fired_off;
+		ntfs_inode_put(f);
+	}
+	err = ntfs_lookup(root, "extend.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_getattr(f, &a) == 0);
+		ext_before = a.alloc_size;
+		fi.fired = 0;
+		wn = ntfs_write(f, buf, WLEN + 3 * cs, 2 * cs + 100);
+		CHECK_MSG(wn < 0, "%s: a write from a hole past the end whose data the "
+			  "device refused returned %zd", tag, wn);
+		CHECK_MSG(fi.fired > 0, "%s: no transfer of the extending write reached "
+			  "the device: the case is vacuous", tag);
+		ntfs_inode_put(f);
+	}
+	err = ntfs_lookup(root, "stream.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		fi.fired = 0;
+		xerr = ntfs_setxattr(f, HOLE_XATTR, buf, WLEN, 0);
+		CHECK_MSG(xerr < 0, "%s: a stream value the device refused returned %d",
+			  tag, xerr);
+		CHECK_MSG(fi.fired > 0, "%s: no transfer of the stream's value reached the "
+			  "device: the case is vacuous", tag);
+		ntfs_inode_put(f);
+	}
+	fault_clear();
+
+	/* The same mount: what the page cache shows over the holes. */
+	err = ntfs_lookup(root, "sparse.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		nz = cached_nonzero(f, rb, cs, hole_end * cs);
+		CHECK_MSG(nz == 0, "%s: before a remount, %lld bytes of sparse.bin's hole "
+			  "read back non-zero after the failed write", tag, nz);
+		if (small)
+			w1_sync = ntfs_fsync(f, false);
+		ntfs_inode_put(f);
+	}
+	err = ntfs_lookup(root, "extend.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		nz = cached_nonzero(f, rb, cs, 4 * cs);
+		CHECK_MSG(nz == 0, "%s: before a remount, %lld bytes of extend.bin's hole "
+			  "read back non-zero after the failed write", tag, nz);
+		ntfs_inode_put(f);
+	}
+	ntfs_inode_put(root);
+	CHECK(ntfs_volume_sync(vol) == 0);
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	CHECK_MSG(!info.read_only, "%s: the refused data took the volume read-only, so "
+		  "nothing the failed writes left behind reached the disk", tag);
+	ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+
+	/* The refused data was aimed at a cluster that held the deleted
+	 * file's 'D': without release_holes() it is what the hole shows. */
+	{
+		size_t k = 0;
+
+		while (pre && off + k < pre_len && k < 16 && pre[off + k] == 'D')
+			k++;
+		CHECK_MSG(k == 16, "%s: the refused write was aimed at byte %" PRIu64 ", "
+			  "which held no 'D': this case tested nothing", tag, off);
+	}
+
+	/* What a remount reads back. */
+	err = mount_rw(&dev, &vol);
+	CHECK(err == 0);
+	if (err)
+		goto out;
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	CHECK_MSG(info.free_clusters == free_before,
+		  "%s: %" PRIu64 " clusters free after the failed writes, %" PRIu64
+		  " before them", tag, info.free_clusters, free_before);
+	err = ntfs_lookup(root, "sparse.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		size_t stale = 0, deleted = 0, written = 0, w1 = 0;
+
+		CHECK(ntfs_getattr(f, &a) == 0);
+		CHECK_MSG(a.alloc_size == alloc_before,
+			  "%s: sparse.bin has %" PRIu64 " bytes allocated after the failed "
+			  "write, %" PRIu64 " before it", tag, a.alloc_size, alloc_before);
+		CHECK(ntfs_read(f, rb, rlen, 0) == (ssize_t)rlen);
+		for (size_t b = 0; b < rlen; b++) {
+			uint64_t c = b / cs;
+
+			if (c == 0 && small) {
+				w1 += rb[b] == 'W';
+				continue;
+			}
+			stale += rb[b] != ((c == 0 || c == hole_end) ? 'F' : 0);
+			deleted += rb[b] == 'D';
+			written += rb[b] == 'W';
+		}
+		CHECK_MSG(stale == 0,
+			  "%s: after the failed write, %zu bytes of sparse.bin read back wrong "
+			  "after a remount (%zu are the deleted file's 'D', %zu the failed "
+			  "write's 'W')", tag, stale, deleted, written);
+		if (small)
+			CHECK_MSG(w1 == cs || w1_sync != 0,
+				  "%s: W1, written before the failed write into the same page, "
+				  "is not on the disk (%zu of %" PRIu64 " bytes), and fsync "
+				  "returned %d", tag, w1, cs, w1_sync);
+		CHECK_MSG(ntfs_seek_data_hole(f, 0, true, &r) == 0 && r == cs,
+			  "%s: the hole is not a hole again", tag);
+		ntfs_inode_put(f);
+	}
+	err = ntfs_lookup(root, "extend.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		size_t stale = 0, deleted = 0, other = 0;
+
+		CHECK(ntfs_getattr(f, &a) == 0);
+		CHECK_MSG(a.size == 5 * cs, "%s: extend.bin is %" PRIu64 " bytes after the "
+			  "failed write, %" PRIu64 " before it", tag, a.size, 5 * cs);
+		CHECK_MSG(a.alloc_size == ext_before,
+			  "%s: extend.bin has %" PRIu64 " bytes allocated after the failed "
+			  "write, %" PRIu64 " before it", tag, a.alloc_size, ext_before);
+		CHECK(ntfs_read(f, rb, 5 * cs, 0) == (ssize_t)(5 * cs));
+		/* Cluster 4 was the file's own, and the write covered it: where a
+		 * page holds more than one cluster, the edge page took the failed
+		 * write's bytes there. Its own bytes or those, nothing else. */
+		for (size_t b = 0; b < 5 * cs; b++) {
+			uint64_t c = b / cs;
+
+			if (c == 4)
+				other += rb[b] != 'F' && rb[b] != 'W';
+			else
+				stale += rb[b] != (c == 0 ? 'F' : 0);
+			deleted += rb[b] == 'D';
+		}
+		CHECK_MSG(stale == 0 && other == 0,
+			  "%s: after the failed extending write, %zu bytes of extend.bin's "
+			  "hole and %zu of its last cluster read back wrong after a remount "
+			  "(%zu are the deleted file's 'D')", tag, stale, other, deleted);
+		CHECK_MSG(ntfs_seek_data_hole(f, cs, false, &r) == 0 && r == 4 * cs,
+			  "%s: data inside extend.bin's hole", tag);
+		ntfs_inode_put(f);
+	}
+	err = ntfs_lookup(root, "stream.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		xerr = ntfs_getxattr(f, HOLE_XATTR, NULL, 0, &len);
+		CHECK_MSG(xerr == -ENOATTR || (xerr == 0 && len == 0),
+			  "%s: after the failed setxattr the stream reads %d, %zu bytes",
+			  tag, xerr, len);
+		memset(buf, 'F', cs);
+		CHECK_MSG(ntfs_setxattr(f, HOLE_XATTR, buf, cs, 0) == 0,
+			  "%s: a value did not go in after the failed one", tag);
+		CHECK_MSG(ntfs_getxattr(f, HOLE_XATTR, rb, cs, &len) == 0 && len == cs &&
+			  memcmp(rb, buf, cs) == 0, "%s: the stream did not read back", tag);
+		ntfs_inode_put(f);
+	}
+	ntfs_inode_put(root);
+	CHECK(ntfs_volume_sync(vol) == 0);
+	ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+	check_image(tag);
+out:
+	free(buf);
+	free(pre);
+	free(rb);
+	drop_image();
+	printf("test_write_fail_into_hole (%s)\n", tag);
+}
+
+/*
  * The flush is the barrier the whole durability story rests on. If the device
  * refuses it and ntfs_volume_sync() still returns 0, then fsync() lies: the
  * caller believes its data survives a power cut when it is still in a volatile
@@ -1881,6 +2305,8 @@ int main(void)
 	test_write_fail_data();
 	test_write_fail_sync();
 	test_write_fail_midtransfer();
+	test_write_fail_into_hole("holefail", NULL);
+	test_write_fail_into_hole("holefail512", "-c 512");
 	test_flush_fail();
 	test_enospc();
 	test_enospc_names();
