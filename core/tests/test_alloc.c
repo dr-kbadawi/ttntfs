@@ -414,10 +414,10 @@ static bool mark_free(uint8_t *b, const uint8_t *orig, uint64_t from, uint64_t t
  *
  * That one cluster is allowed, and it is always the same one: LCN 3, the gap
  * mkntfs leaves in front of $MFT, inside the MFT zone. The request that fails
- * there is $MFT's own extension (which, until U11 is fixed, also sets the
- * volume read-only). Its hint lies past the MFT zone, so the search skips that
- * zone and never reaches LCN 3 (done_zones |= 1). That happens with and
- * without either fix.
+ * there is $MFT's own extension (before U11, in finding 26, that failure
+ * also set the volume read-only). Its hint lies past the MFT zone, so the
+ * search skips that zone and never reaches LCN 3 (done_zones |= 1). That
+ * happens with and without either fix.
  */
 static void test_names_wall(void)
 {
