@@ -41,6 +41,7 @@
 #include "logfile.h"
 #include "dir.h"
 #include "vfs.h"
+#include "mft.h"
 #undef ntfs_attr
 #undef ntfs_getattr
 #undef ntfs_setattr
@@ -471,23 +472,83 @@ int ntfs_probe(struct ntfs_bdev *dev, struct ntfs_volume_info *info)
 
 /* ---- mount / unmount -------------------------------------------------- */
 
+/*
+ * Write nothing more to a read-only volume, as its teardown begins.
+ *
+ * The teardown of a volume that mounted read-only writes nothing. The mount
+ * keeps a volume read-only when it is marked dirty, by a session here that did
+ * not finish or by Windows flagging it for chkdsk, and clearing that flag at
+ * unmount kept Windows from running chkdsk on it. A volume that an
+ * error took read-only gets VOLUME_IS_DIRTY, so that chkdsk does run:
+ * __ntfs_write_inode() writes $Volume's record alone, with its $MFTMirr copy.
+ * The teardown writes nothing else that is dirty in memory, since that may hold
+ * what the failed operation left half done; changes not yet on the disk are
+ * lost. NVolSetShutdown() then makes __ntfs_write_inode() and the $MFT and
+ * page-cache writeback refuse, which is how ntfs_put_super()'s commits and the
+ * evictions write. This covers the teardown only: between the error and the
+ * unmount, the rest of the failed operation and the background writeback still
+ * write. Finding 33 in docs/UPSTREAM-BUGS.md.
+ */
+static void ntfs_glue_stop_writes(struct ntfs_volume_handle *h, struct ntfs_volume *vol)
+{
+	if (h->mounted_rw && vol->vol_ino) {
+		int err = ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY);
+
+		/*
+		 * Written whether or not it is dirty: the flag may already have
+		 * been set in memory, and the error may have been this very
+		 * record's write failing part way, which left it torn on the
+		 * disk and no longer marked dirty.
+		 */
+		if (!err) {
+			mark_mft_record_dirty(NTFS_I(vol->vol_ino));
+			err = __ntfs_write_inode(vol->vol_ino, 1);
+		}
+		if (err)
+			platform_log(PLATFORM_LOG_ERR,
+				     "ntfs: %s: could not leave the volume marked dirty (%d); run chkdsk in Windows",
+				     vol->sb->s_id, err);
+	}
+	NVolSetShutdown(vol);
+}
+
 static void ntfs_glue_teardown(struct ntfs_volume_handle *h)
 {
 	struct super_block *sb = h->sb;
 
 	if (sb) {
+		struct ntfs_volume *vol = NTFS_SB(sb);
+
 		/*
 		 * generic_shutdown_super(): flush, drop the root dentry's
-		 * reference, then put_super releases the system inodes. With
-		 * SB_ACTIVE cleared every iput evicts at once, so nothing is
-		 * left for sb_free() to complain about.
+		 * reference, evict the inodes nothing holds, then put_super
+		 * releases the system inodes. With SB_ACTIVE cleared every
+		 * iput evicts at once, so nothing is left for sb_free() to
+		 * complain about.
+		 *
+		 * PORT: Linux's sync_filesystem() returns at once for a
+		 * read-only super block; the platform's does not, so the sync
+		 * is skipped here. It cleared VOLUME_IS_DIRTY through
+		 * ntfs_sync_fs() and wrote every dirty inode. See
+		 * ntfs_glue_stop_writes(). Finding 33. The read-only test is
+		 * made again after the sync, which an error may end read-only.
 		 */
-		sync_filesystem(sb);
+		if (!sb_rdonly(sb))
+			sync_filesystem(sb);
+		if (sb_rdonly(sb) && vol)
+			ntfs_glue_stop_writes(h, vol);
 		sb->s_flags &= ~SB_ACTIVE;
 		if (sb->s_root && sb->s_root->d_inode) {
 			iput(sb->s_root->d_inode);
 			sb->s_root->d_inode = NULL;
 		}
+		/*
+		 * PORT: evict before put_super, as generic_shutdown_super()
+		 * does. sb_free() did it, after put_super had freed the volume,
+		 * and evicting a dirty inode writes it through ni->vol: once
+		 * the sync above was skipped, that use of freed memory crashed.
+		 */
+		evict_inodes(sb);
 		if (sb->s_op && sb->s_op->put_super)
 			sb->s_op->put_super(sb);
 		sb->s_fs_info = NULL;
@@ -674,6 +735,8 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 		     sb->s_id, sb_rdonly(sb) ? "read-only" : "read-write",
 		     vol->volume_label ? (char *)vol->volume_label : "",
 		     vol->major_ver, vol->minor_ver);
+	/* Read-only at unmount after this means an error took it there. */
+	h->mounted_rw = !sb_rdonly(sb);
 	*vol_out = h;
 	return 0;
 

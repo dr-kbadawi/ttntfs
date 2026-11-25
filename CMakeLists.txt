@@ -122,8 +122,11 @@ if(NTFS_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/core/logfile
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
   add_test(NAME mount COMMAND test_mount)
+  # MallocScribble: test_error_ro_unmount unmounts with dirty inodes, which
+  # used to be evicted after put_super had freed the volume. Freed memory
+  # filled with 0x55 makes such a use crash instead of passing unseen.
   set_tests_properties(mount PROPERTIES
-    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images")
+    ENVIRONMENT "NTFS_IMAGES=${CMAKE_CURRENT_SOURCE_DIR}/tools/images;NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck;MallocScribble=1")
 
   # Volume geometry: 4Kn sectors, cluster sizes on either side of the sector
   # size, and a 16 TiB sparse volume whose metadata sits past the 32-bit byte

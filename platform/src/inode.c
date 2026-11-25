@@ -861,6 +861,12 @@ int sync_filesystem(struct super_block *sb)
 	return err;
 }
 
+/*
+ * Evict every inode nothing holds. One still referenced is skipped without a
+ * word, as Linux's evict_inodes() does: unmount runs this before put_super,
+ * while the filesystem still holds its own inodes. sb_free() reports any left
+ * at the end.
+ */
 void evict_inodes(struct super_block *sb)
 {
 	struct inode *inode;
@@ -885,12 +891,6 @@ void evict_inodes(struct super_block *sb)
 		lru_remove(victim);
 		evict_unreferenced_locked(victim, victim->i_nlink != 0);
 	}
-	sb_lock(sb);
-	list_for_each_entry(inode, &sb->s_inodes, i_sb_list)
-		if (!inode_dying(inode))
-			platform_log(PLATFORM_LOG_WARN, "inode %lu still referenced (%d) after evict_inodes",
-				     inode->i_ino, atomic_read(&inode->i_count));
-	sb_unlock(sb);
 }
 
 /* ------------------------------------------------------------------ */
@@ -923,10 +923,19 @@ struct super_block *sb_alloc(void)
 
 void sb_free(struct super_block *sb)
 {
+	struct inode *inode;
+
 	if (!sb)
 		return;
 	if (!list_empty(&sb->s_inodes))
 		evict_inodes(sb);
+	/* The filesystem has let go of everything by now: what is left leaked. */
+	sb_lock(sb);
+	list_for_each_entry(inode, &sb->s_inodes, i_sb_list)
+		if (!inode_dying(inode))
+			platform_log(PLATFORM_LOG_WARN, "inode %lu still referenced (%d) after evict_inodes",
+				     inode->i_ino, atomic_read(&inode->i_count));
+	sb_unlock(sb);
 	if (!list_empty(&sb->s_inodes))
 		platform_log(PLATFORM_LOG_WARN, "sb_free: busy inodes remain");
 	free(sb->s_root);

@@ -24,6 +24,7 @@ struct ntfs_volume_handle {
 	bool dirty;			/* VOLUME_IS_DIRTY as found on disk */
 	bool hibernated;
 	bool logfile_clean;
+	bool mounted_rw;		/* the mount ended read-write */
 };
 
 /*

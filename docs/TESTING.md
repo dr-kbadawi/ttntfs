@@ -35,9 +35,12 @@ tools/ci.sh --list       # what it will run
   contract that every bdev must satisfy.
 * **`pagecache`, `pagecache_stress`** — folio lifecycle, writeback visibility,
   the lookup-versus-invalidate race, reclaim under a cap.
-* **`mount`** (111) — the `$LogFile` clean rule, the read-only reason, a
+* **`mount`** (199) — the `$LogFile` clean rule, the read-only reason, a
   read-write mount with a non-empty journal, the fast probe against the full
-  one, and the device-flush count.
+  one, the device-flush count, and the unmount of a read-only volume. That
+  unmount must write nothing, except the dirty flag after an error
+  (finding 33), and neither may a refused mount or `ntfs_probe()`. A volume
+  with errors that stays writable must stay marked dirty too (U23).
 * **`links`** (279) — hard links, symlinks through reparse points, the 100 ns
   timestamp conversion, and permissions from the mount masks.
 * **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
@@ -242,6 +245,12 @@ extraction moved the comment with it and changed nothing else.
   written for: the rest of the request came from a second call, which reports
   its clusters as new. It fails as it should once a write earlier in the same
   mount has moved the zone position onto free space.
+* **A volume that an error took read-only comes back dirty.** Since finding 33,
+  its unmount writes nothing but `VOLUME_IS_DIRTY`. A test that injects an
+  error and then remounts finds what reached the disk before the unmount, not
+  what was in memory, and that includes what the failing operation wrote after
+  its error. A read-write remount is refused (`-EROFS`) unless the test mounts
+  with `NTFS_MOUNT_RDONLY_FALLBACK`.
 * **The logfile fixture has a real `$INDEX_ALLOCATION`** (record 31, cluster 44,
   left zeroed). That is what lets `test_first_write_into_fresh_cluster_is_protected`
   exist: it is the state finding 19 was about, a cluster allocated but never

@@ -42,6 +42,7 @@ fixing one means updating the test that documents it.
 | U20 | `ntfs_attr_map_cluster()` (`attrib.c`) | When `ntfs_attr_update_mapping_pairs()` fails after the allocator has succeeded and the new run is merged into the run list, `ntfs_cluster_free()` clears the run's bits in `$Bitmap` and leaves the run in the run list, which `__ntfs_cluster_free()` never changes. The file then maps clusters it no longer owns: they read back whatever is on the disk, and the next mapping-pairs update writes them into the attribute, over clusters another file can allocate. Without U14 a contiguous request can come back in two runs, and only the first was freed. Measured: a write into the hole of a file whose base record was full needed an attribute list, whose extent record could not be read; the write returned -EIO, and on the same mount the hole read back 4,096 bytes of a deleted file. `errors=remount-ro` had taken the volume read-only, so nothing reached the disk. | Backport of the `ntfs_attr_map_cluster()` part of upstream 91709ba5d6d7 (mainline, 2026-09-13): a copy of the run list from before the merge, restored once the clusters are freed, then the mapping pairs written again, with `NVolSetErrors()` when either step fails. The rest of that commit, the run-list locking and `ntfs_attr_update_mapping_pairs_locked()`, is not taken: that variant differs from the plain one only for the `$ATTRIBUTE_LIST` inode, and the second update runs under the locks the callers hold for the first. `PORT:` the free covers everything the allocator returned, not only the run it reported, for 0.4.2's allocator without U14. `test_faults`: `test_failed_mapping_pairs_update` (2 failures without the fix). It reaches neither the `PORT:` part nor the second update: it allocates one cluster at a time, and its first update fails inside `ntfs_inode_add_attrlist()` before any mapping pairs are written. The review checked both with failure hooks in a scratch copy: freeing only the reported run of a two-run allocation leaked the second, and `ntfsck -n` found `$Bitmap` wrong. It closed finding 29's open item about this call. |
 | U21 | `ntfs_write_cb()` and `ntfs_compress_write()` (`compress.c`) | Punches the old compression block's clusters out before it allocates the new ones, and gives nothing back when the allocation or the write fails, so a rewrite that fails loses the block it was rewriting. Measured on the `compressed-sparse` fixture filled to its last cluster: random bytes over a block that held 2 clusters of compressed text need 16 clusters. The rewrite returned `-ENOSPC`, and after a remount the block read back as 65,536 zeroes. `ntfsck -n` was clean. The failed write also left the block's pages uptodate with bytes that never reached the disk. A read on the same mount returned them, and the next write into the block put them on the disk. Mainline fixed both. | Mainline's order: the new clusters are allocated while the old block still holds its own, the block is written to them, and only then is the old block punched and the new runs merged in (in one mapping-pairs update since U22). Mainline's page handling: a failed write marks the block's pages not uptodate. `PORT:` comments. Finding 32. |
 | U22 | `ntfs_write_cb()` (`compress.c`) | Takes the old compression block out and puts the new one in with two mapping-pairs updates: the punch's, then one after the new runs are merged in. A failure between the two leaves a hole in the run list where the block was. The block reads back as zeroes on the same mount, and the next write of the file's mapping pairs puts the hole on the disk; in this port the sync at unmount is one, even after an error has taken the volume read-only. A punch whose update fails has already rewritten the compressed size. The punch of a block written with zeroes (U7) had the same single update. Measured with an update that could not get an extent record: block 1 of `text-1m.txt` read back as zeroes after a remount, and `random-1m.bin` kept a compressed size 64 KiB short of its runs, after a rewrite and after zeroes alike. `ntfsck -n` was clean every time. Same in v7.1, and in mainline, whose order finding 32 took. | One mapping-pairs update. The runs are swapped in memory, and if writing them fails, the run list is put back from a copy and the mapping pairs are written again, as mainline's `ntfs_attr_map_cluster()` does since 91709ba5d6d7. If that fails too, no clusters are freed. The old clusters are freed once the new runs are recorded. The U7 punch goes the same way. `PORT:` comments. Finding 32's last open path. |
+| U23 | `ntfs_sync_fs()` (`super.c`) | Clears `VOLUME_IS_DIRTY` on every sync, whether or not `NVolErrors()` says the volume has errors. `ntfs_put_super()` leaves a volume with errors marked dirty so that chkdsk runs, but the sync that unmount runs before it, or any sync before that, has already marked it clean. Most `NVolSetErrors()` calls come with `ntfs_error()`, which takes the volume read-only, and then no sync runs (finding 33). Two leave the volume writable: the MFT allocator's, for a record that `$MFT`'s bitmap calls free but that is in use, which only warns ("Unmount and run chkdsk"), and `ntfs_write_mft_block()`'s, when `bio_add_folio()` fails or, with clusters smaller than a page, a run-list lookup does. Measured on the first: the unmount logs "Leaving volume marked dirty" and the flag is clear in both copies. Mainline no longer clears the flag in a sync at all, and sets it there while `NVolErrors()` is set, unless the volume is hibernated. | With `NVolErrors()` set, the sync sets the flag; without, it clears it as before. The port has no `NVolHibernated()`: a hibernated volume stays read-only here, so no sync reaches it, except after a failed discard of its hibernation image, which leaves it writable (a separate bug). `PORT:` comment. `test_errors_rw_unmount` in `test_mount.c`. Finding 33. |
 
 U13 and U14 were backported on 2026-11-24. What was measured here, beyond the
 table:
@@ -1435,3 +1436,151 @@ Still open, not fixed:
   refuse reads and writes, but the bitmap and the run lists are in memory by
   the time they are used, and the only update failure it reaches comes before
   anything is written. Only the hooks reached the rest.
+
+## Finding 33 **FIXED**: unmounting a read-only volume wrote to it
+
+Found 2026-11-25 while measuring U22, and reproduced here. Present in 0.4.2.
+U23 is the upstream half.
+
+`ntfs_unmount()` skips its sync on a read-only volume, but
+`ntfs_glue_teardown()` then called the platform's `sync_filesystem()`, which,
+unlike Linux's, does not return early for a read-only super block. It wrote
+every dirty inode, and `ntfs_sync_fs()` cleared `VOLUME_IS_DIRTY`.
+
+* **A read-only mount of a volume marked dirty.** `VOLUME_IS_DIRTY` is still
+  set after a session on this Mac that was cut off mid-write, or one that hit
+  an error, and Windows sets it when it flags a disk for chkdsk. The mount
+  keeps such a volume read-only ("run chkdsk in Windows") when asked with
+  `NTFS_MOUNT_RDONLY_FALLBACK`, as the app always asks. Its unmount wrote
+  `$Volume`'s record and its `$MFTMirr` copy with the flag cleared, so Windows
+  would not run chkdsk. Measured on `empty.img` with the flag set: 2 device
+  writes at unmount, and the flags went from 0x0001 to 0x0000. The same with a
+  read-only mount by request, and when the flag made a read-write mount fail,
+  since the failed mount's teardown synced as well.
+* **A probe.** `ntfs_probe()` mounts read-only by request and unmounts, and the
+  extension's check runs it. So in 0.4.2, merely checking a volume marked
+  dirty cleared the mark.
+* **A read-write volume that an error took read-only.** Its unmount wrote
+  whatever was dirty in memory, including what the failed operation had left
+  half done, and cleared the flag. U22 measured the cost: a compressed block
+  that a failed rewrite had punched out reached the disk as a hole.
+
+The teardown also left the inodes nothing held to `sb_free()`, which evicted
+them after `put_super` had freed the volume. Evicting a clean inode does not use
+the volume, so this did no harm while the sync came first. Skipping the sync
+alone leaves dirty inodes to that eviction, which writes them through
+`ni->vol`, and the process crashed.
+
+The fix is in `core/vfs/super_glue.c`, with one change in
+`platform/src/inode.c`; U23's is in `core/ntfs/super.c`:
+
+* The teardown of a read-only volume skips the sync. After the sync of a
+  read-write volume it tests for read-only again, since an error in that sync
+  takes the volume read-only.
+* If the mount had ended read-write, so that an error took the volume
+  read-only, `ntfs_glue_stop_writes()` sets `VOLUME_IS_DIRTY` and writes
+  `$Volume`'s record alone, with its mirror copy, through
+  `__ntfs_write_inode()`. It writes the record even when it is not marked
+  dirty: the error may have been that record's own write failing part way,
+  which leaves the record torn on the disk.
+* `NVolSetShutdown()` then makes `__ntfs_write_inode()` and the `$MFT` and
+  page-cache writeback refuse, which is how `ntfs_put_super()`'s commits and
+  the evictions write.
+* The inodes nothing holds are evicted before `put_super`, as Linux's
+  `generic_shutdown_super()` does. The platform's `evict_inodes()` now skips
+  an inode still held without a warning, as Linux's does, since the volume
+  still holds its system inodes then; `sb_free()` reports any left at the end.
+* A read-write unmount is unchanged.
+
+Untouched: the read-write cycle and the journal. A read-write session sets
+`VOLUME_IS_DIRTY` on its first write and clears it when it syncs or unmounts
+cleanly, as upstream's `ntfs_put_super()` does and as 0.4.2 was checked to
+match on Windows. The journal is still marked clean on a read-write mount, and
+Replay and Close Journal are unchanged. Windows itself does not use this flag
+for an unsafe removal, a crash or Fast Startup: in every phase-4 capture of
+such a disk (`tools/phase4-capture/captures`, record 3), `$Volume`'s flags were
+0x0080 with the dirty bit clear, and Windows marked the disk dirty through the
+journal only. So the read-only mounts this fix concerns are of a disk whose
+session on this Mac was cut off mid-write, a session that hit an error, or a
+disk Windows itself flagged for chkdsk.
+
+The read-write unmount was measured against main, on `empty.img`, in three
+sessions: a file written and fsynced; a file written and left dirty for the
+unmount; and a directory made, a file written into it with an xattr, renamed
+out, and a second file written and deleted. Each unmount made the same device
+writes as main's, in offset, length and order (4, 23 and 25 writes). The
+images matched byte for byte except for timestamps, in records, in their
+index entries, and in the third session in 16 bytes of an index block's slack,
+where the deleted file's entry had been.
+
+After an error, the unmount adds nothing to the disk but the flag, and chkdsk
+is asked to check what is there. Changes not yet on the disk are lost, as in a
+crash, and what is there need not be consistent: see the first item under
+"Still open". The old unmount completed the picture by writing everything,
+whatever a failed operation had left half done included, and then marked the
+volume clean.
+
+What the user sees: after an error of ours, the next mount is read-only, and
+the app shows read-only reason 3, whose advice ("Run chkdsk /f in Windows, or
+eject it properly there") assumes that Windows set the flag.
+
+The tests are in `core/tests/test_mount.c`:
+
+* `test_ro_unmount_keeps_dirty`: `empty.img`, with `VOLUME_IS_DIRTY` set in both
+  copies of `$Volume`'s record, opened four ways: mounted with
+  `NTFS_MOUNT_RDONLY_FALLBACK`, mounted with `NTFS_MOUNT_RDONLY`, refused a
+  read-write mount, and probed with `ntfs_probe()`. None of them may make a
+  device write, the flag must still be set in both copies, and `ntfsck -n`
+  must be clean.
+* `test_error_ro_unmount`: a read-write mount, a file written and synced, then
+  more of it written and a second file created, with no sync. The device
+  refuses the next write into `$MFT`, during an fsync, which must fail and
+  leave the volume read-only for `NTFS_RO_ERRORS`. The image is copied when
+  the fsync has returned. The unmount must then write `$Volume`'s record and
+  its copy and nothing else: two device writes, no byte changed outside those
+  records, and the flag set in both. The second file's inode is dirty and
+  unreferenced at the unmount, so the eviction order is exercised: a teardown
+  that skips the sync but evicts after `put_super` crashes here, with a
+  segmentation fault, or an abort under UBSan. The test also runs with
+  `MallocScribble=1`, so that a quieter use of freed memory is likely to crash
+  too.
+* `test_errors_rw_unmount`, for U23: x.bin's bit is cleared in `$MFT`'s bitmap
+  on the image, so the next create is offered x.bin's record, finds it in use,
+  and takes another. The volume stays writable with `NVolErrors()` set. A sync
+  and the unmount must both leave the flag set, in both copies, and `ntfsck -n`
+  must be clean.
+* The whole of `test_mount` counts the warnings that an inode outlived its
+  unmount, and there must be none. Evicting before `put_super` without the
+  quieter `evict_inodes()` logged 231 of them.
+
+Without the fix they fail 19 checks, 3 of them U23's.
+`test_write_fail_midtransfer` in `test_faults.c` passes as before. Its torn
+transfer is `$Volume`'s own record, which the unmount now writes whole again.
+
+A consequence for tests that inject an error and then remount: the volume now
+comes back marked dirty, and a read-write mount of it is refused unless
+`NTFS_MOUNT_RDONLY_FALLBACK` is set (see `docs/TESTING.md`).
+
+Not taken from mainline: its `ntfs_sync_fs()` no longer clears the flag on a
+healthy volume either. The flag then stays set on the disk from the first write
+until a clean unmount, so a crash or a removal without eject asks Windows for
+chkdsk. That is a change of policy, left for a decision of its own.
+
+Still open:
+
+* **Writes after an error, before the unmount.** Finding 35 is to stop them.
+  None of these paths tests the read-only state: the page-cache and `$MFT`
+  writeback test only `NVolShutdown()`, which the teardown sets, and
+  `write_mft_record()` tests neither. Measured on a volume an error had taken
+  read-only:
+  * The rest of the failing operation. In `test_error_ro_unmount` the device
+    refused a.bin's record, and the fsync made 8 more writes after it, root's
+    index among them. That index names b.bin, whose record never reached the
+    disk: `ntfsck -n` reports "Index entry is corrupted" and offers to remove
+    the entry.
+  * The page cache's background writer wrote another file's dirty page 3 s
+    after the error.
+  * The last put of a deleted file that was still open freed its record
+    through `write_mft_record()`. FSKit's reclaimItem makes that last put.
+  * From reading only: the inode cache's shrink past 4096 inodes writes dirty
+    records.

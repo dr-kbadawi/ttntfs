@@ -1965,8 +1965,21 @@ static int ntfs_sync_fs(struct super_block *sb, int wait)
 	if (!wait)
 		return 0;
 
-	/* If there are some dirty buffers in the bdev inode */
-	if (ntfs_clear_volume_flags(vol, VOLUME_IS_DIRTY)) {
+	/*
+	 * PORT: v7.1 cleared VOLUME_IS_DIRTY here on every sync. A volume with
+	 * errors, which ntfs_put_super() leaves marked dirty, was marked clean
+	 * by the sync that comes before put_super at unmount, or by any earlier
+	 * one, so Windows did not run chkdsk. Mainline no longer clears the
+	 * flag in a sync at all, and persists it while NVolErrors() is set. The
+	 * port takes the second half: with errors the flag is set, without
+	 * them it is cleared as before. U23 in docs/UPSTREAM-BUGS.md.
+	 */
+	if (NVolErrors(vol)) {
+		if (ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY)) {
+			ntfs_warning(sb, "Failed to set dirty bit in volume information flags.  Run chkdsk.");
+			err = -EIO;
+		}
+	} else if (ntfs_clear_volume_flags(vol, VOLUME_IS_DIRTY)) {
 		ntfs_warning(sb, "Failed to clear dirty bit in volume information flags.  Run chkdsk.");
 		err = -EIO;
 	}
