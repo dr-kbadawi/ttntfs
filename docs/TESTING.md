@@ -59,7 +59,9 @@ tools/ci.sh --list       # what it will run
   record safe to give to the next file (finding 27), and that a record freed
   on a full volume can be given out again (finding 28). A write into a hole
   whose data the device refuses must leave the hole a hole on the disk and in
-  the page cache, without losing an earlier write in the same page (finding 29).
+  the page cache, without losing an earlier write in the same page (finding 29),
+  and an allocation whose mapping pairs cannot be written must not stay in the
+  run list (U20).
 * **`geometry`** (1271) — 4Kn sectors, cluster sizes either side of the sector
   size, a 16 TiB sparse volume, and writes into holes, which must read back
   zeroes around them after a remount on every cluster size, and give their

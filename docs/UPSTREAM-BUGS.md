@@ -39,6 +39,7 @@ fixing one means updating the test that documents it.
 | U17 | `__ntfs_cluster_free()` (`lcnalloc.c`) | When freeing fails partway and the rollback fails too, the rollback returns a negative errno, and `ntfs_dec_free_clusters()` subtracts it: the count grows by the errno's value, on a volume that is already failing. | Backport of upstream 5f2a22b36fe3 (mainline, 2026-08-26), identical apart from a `PORT:` comment. No test reaches it. The rollback re-sets only bits the forward pass has just cleared, in `$Bitmap` pages that pass has just read and dirtied, and the page cache never drops a dirty page itself (`__reclaim_from()`). The rollback fails only if the writer thread cleans that page and reclaim evicts it between two bitmap updates in one call, on a disk that then fails the read. That is a race, not a state a test can set up. |
 | U18 | `ntfs_write_cb()` (`compress.c`) | Asks `ntfs_cluster_alloc()` for a compression block's clusters as one contiguous run and writes the whole block from `rlc->lcn`. A contiguous request comes back short when a cluster in use ends the longest free range the allocator found, and in two runs when that range reaches the end of a bitmap page or a zone. On fragmented free space the end of the block then goes onto clusters the file does not own. Measured: a block of random bytes rewritten where only 8-cluster gaps were free returned 65536, and after a remount it read back `-EILSEQ`, the file after the gap had lost its 8 clusters to the block's second half, and `ntfsck -n` was clean. Mainline still writes from `rlc->lcn`, though it now allocates and writes before it punches the old block. | The writer asks again for the clusters still missing and writes each run its own part of the block, looking the runs up in the merged run list. `PORT:` comments. Finding 30. |
 | U19 | `ntfs_mft_bitmap_find_and_alloc_free_rec_nolock()` (`mft.c`) | The search for a free MFT record takes the first zero bit in a byte without checking that it is below the end of `$MFT`. When `$MFT`'s allocation is not a multiple of eight records, the bitmap byte that holds its last records also holds zero bits for records past its end, and a search that reaches that byte returns one of them. `ntfs_mft_record_alloc()` then extends `$MFT` instead of wrapping round to the free records below where the search started. On a full volume the extension fails, so a create gets ENOSPC while MFT records are free. Already fixed in mainline: 6d8c197c9992 rewrote the search (`mft_bitmap_alloc_free_rec()`) to check the found bit against the end. | The same check in v7.1's function: a found bit at or past the end ends the pass, so the search wraps round. `PORT:` comment. Finding 28. |
+| U20 | `ntfs_attr_map_cluster()` (`attrib.c`) | When `ntfs_attr_update_mapping_pairs()` fails after the allocator has succeeded and the new run is merged into the run list, `ntfs_cluster_free()` clears the run's bits in `$Bitmap` and leaves the run in the run list, which `__ntfs_cluster_free()` never changes. The file then maps clusters it no longer owns: they read back whatever is on the disk, and the next mapping-pairs update writes them into the attribute, over clusters another file can allocate. Without U14 a contiguous request can come back in two runs, and only the first was freed. Measured: a write into the hole of a file whose base record was full needed an attribute list, whose extent record could not be read; the write returned -EIO, and on the same mount the hole read back 4,096 bytes of a deleted file. `errors=remount-ro` had taken the volume read-only, so nothing reached the disk. | Backport of the `ntfs_attr_map_cluster()` part of upstream 91709ba5d6d7 (mainline, 2026-09-13): a copy of the run list from before the merge, restored once the clusters are freed, then the mapping pairs written again, with `NVolSetErrors()` when either step fails. The rest of that commit, the run-list locking and `ntfs_attr_update_mapping_pairs_locked()`, is not taken: that variant differs from the plain one only for the `$ATTRIBUTE_LIST` inode, and the second update runs under the locks the callers hold for the first. `PORT:` the free covers everything the allocator returned, not only the run it reported, for 0.4.2's allocator without U14. `test_faults`: `test_failed_mapping_pairs_update` (2 failures without the fix). It reaches neither the `PORT:` part nor the second update: it allocates one cluster at a time, and its first update fails inside `ntfs_inode_add_attrlist()` before any mapping pairs are written. The review checked both with failure hooks in a scratch copy: freeing only the reported run of a two-run allocation leaked the second, and `ntfsck -n` found `$Bitmap` wrong. It closed finding 29's open item about this call. |
 
 U13 and U14 were backported on 2026-11-24. What was measured here, beyond the
 table:
@@ -1117,8 +1118,8 @@ same mount and after a remount, the file keeps two zeroed clusters, and
 `ntfsck -n` is clean. No test in the tree reaches them.
 
 A range never takes in what a call that fails may have left behind. That is
-the call's to clean up, and freeing it here could free clusters another file
-has taken since. The first open item below is where the call falls short.
+the call's to clean up, which it does since U20, and freeing it here could free
+clusters another file has taken since.
 
 Two tests. Each fails without the fix and passes with it, on main's allocator
 and with the allocator branch's `lcnalloc.c` and `runlist.c` (U13-U17):
@@ -1159,21 +1160,13 @@ allocator fills the stream's one hole entirely or, with `-ENOSPC`, refuses it
 before anything is mapped. Another file allocating between the calls could
 leave it part filled.
 
+`ntfs_attr_map_cluster()` itself, when its mapping-pairs update failed, freed the
+clusters (before U14, only the first of two runs) and left them in the run list,
+where `release_holes()` could write them into the attribute. Found by reading while fixing this path; it is U20, fixed by
+backporting mainline's rollback.
+
 Still open:
 
-* **From reading the code: `ntfs_attr_map_cluster()` keeps clusters it has
-  freed.** When `ntfs_attr_update_mapping_pairs()` fails after the allocation,
-  `ntfs_cluster_free()` clears the bits of the run the call reports in
-  `$Bitmap`. It leaves the run in the run list, because `__ntfs_cluster_free()`
-  never changes the run list. The next mapping-pairs update writes the run into
-  the attribute, over clusters another file can then allocate. That next update
-  can be `do_write()`'s truncate, or `release_holes()` giving back the holes
-  before it. Without U14 it is worse. When the allocator returned the request
-  in two runs, only the first is freed, and the second stays allocated and
-  mapped with its old contents, where `release_holes()` cannot know of it. Same
-  in v7.1. The call needs to free every run it allocated and punch them out of
-  the run list. No test reaches it: the update has to fail after the allocator
-  has succeeded.
 * **From reading the code: `ntfs_attr_fallocate()` drops a failed zeroing.** It
   tests `if (err > 0)` after `ntfs_dio_zero_range()`, which returns a negative
   errno, so on an I/O error the clusters it maps under `initialized_size` keep

@@ -4897,10 +4897,11 @@ int ntfs_attr_map_cluster(struct ntfs_inode *ni, s64 vcn_start, s64 *lcn_start,
 	struct ntfs_volume *vol = ni->vol;
 	struct ntfs_attr_search_ctx *ctx;
 	struct runlist_element *rl, *rlc;
-	s64 vcn = vcn_start, lcn, clu_count;
+	struct runlist_element *old_rl = NULL;
+	s64 vcn = vcn_start, lcn, clu_count, alloc_count;
 	s64 lcn_seek_from = -1;
 	int err = 0;
-	size_t new_rl_count;
+	size_t new_rl_count, old_rl_count;
 
 	err = ntfs_attr_map_whole_runlist(ni);
 	if (err)
@@ -4993,6 +4994,28 @@ int ntfs_attr_map_cluster(struct ntfs_inode *ni, s64 vcn_start, s64 *lcn_start,
 	WARN_ON(rlc->vcn != vcn);
 	lcn = rlc->lcn;
 	clu_count = rlc->length;
+	/*
+	 * PORT: U20 frees everything the allocator returned, which without U14
+	 * (b05a67615b98) can be a second run after the one reported. Mainline
+	 * frees @clu_count, which with U14 is all of it.
+	 */
+	for (alloc_count = 0, rl = rlc; rl->length; rl++)
+		alloc_count += rl->length;
+	/* PORT: backport of the ntfs_attr_map_cluster() part of upstream
+	 * 91709ba5d6d7 (U20). */
+	old_rl_count = ni->runlist.count;
+	old_rl = kmemdup(ni->runlist.rl,
+			 old_rl_count * sizeof(*old_rl), GFP_NOFS);
+	if (!old_rl) {
+		err = -ENOMEM;
+		if (ntfs_cluster_free_from_rl(vol, rlc)) {
+			ntfs_error(vol->sb,
+				   "Failed to free cluster allocation after runlist backup failure.");
+			NVolSetErrors(vol);
+		}
+		kvfree(rlc);
+		goto out;
+	}
 
 	rl = ntfs_runlists_merge(&ni->runlist, rlc, 0, &new_rl_count);
 	if (IS_ERR(rl)) {
@@ -5020,11 +5043,27 @@ int ntfs_attr_map_cluster(struct ntfs_inode *ni, s64 vcn_start, s64 *lcn_start,
 		if (err) {
 			int err2;
 
-			err2 = ntfs_cluster_free(ni, vcn, clu_count, ctx);
-			if (err2 < 0)
+			err2 = ntfs_cluster_free(ni, vcn, alloc_count, ctx);
+			if (err2 < 0 || err2 != alloc_count) {
 				ntfs_error(vol->sb,
-					   "Failed to free cluster allocation. Leaving inconstant metadata.\n");
-			goto out;
+					   "Failed to free cluster allocation. Leaving inconsistent metadata.\n");
+				NVolSetErrors(vol);
+				goto out;
+			}
+
+			/*
+			 * Restore the runlist before repairing the on-disk
+			 * mapping pairs.
+			 */
+			kvfree(ni->runlist.rl);
+			ni->runlist.rl = old_rl;
+			ni->runlist.count = old_rl_count;
+			old_rl = NULL;
+			if (ntfs_attr_update_mapping_pairs(ni, 0)) {
+				ntfs_error(vol->sb,
+					   "Failed to restore mapping pairs after allocation rollback.\n");
+				NVolSetErrors(vol);
+			}
 		}
 	} else {
 		VFS_I(ni)->i_blocks += clu_count << (vol->cluster_size_bits - 9);
@@ -5036,6 +5075,7 @@ int ntfs_attr_map_cluster(struct ntfs_inode *ni, s64 vcn_start, s64 *lcn_start,
 	*lcn_count = clu_count;
 	*balloc = true;
 out:
+	kvfree(old_rl);
 	ntfs_attr_put_search_ctx(ctx);
 	return err;
 }

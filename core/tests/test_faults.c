@@ -2289,6 +2289,193 @@ unmount:
 	printf("test_failed_create_record_reuse\n");
 }
 
+/*
+ * U20 in docs/UPSTREAM-BUGS.md: ntfs_attr_map_cluster() when the update of
+ * the mapping pairs fails after the allocator has succeeded. v7.1 freed the
+ * new clusters in $Bitmap and left them in the run list, so the file went on
+ * mapping clusters it no longer owned: they read back what was on the disk,
+ * and the next mapping-pairs update would write them into the attribute, over
+ * clusters another file can allocate. Mainline (91709ba5d6d7) restores the run
+ * list from a copy and writes the mapping pairs again.
+ *
+ * The update fails here as it does when an MFT record cannot be had. The base
+ * record of full.bin is full: clusters at 0 and HOLE_END, and a resident
+ * stream ("fill") as large as the record holds. Single clusters then go into
+ * the hole, every other one, each adding runs, until the mapping pairs
+ * outgrow the room they have and need an attribute list, which needs an
+ * extent record. Four files made after full.bin put the free record that the
+ * allocator picks in another page of $MFT than full.bin's, and on a fresh
+ * mount nothing has read that page: the device refuses every read during the
+ * writes, so the record cannot be mapped. With clusters of a page or more the
+ * writes before it read nothing, and everything the allocation needs is
+ * cached by then. With smaller clusters the first write would fail reading
+ * its own page instead, so the refused read has to be one of $MFT's.
+ *
+ * The case reaches neither U20's free of a second run (it allocates one
+ * cluster at a time) nor its second update (the first fails inside
+ * ntfs_inode_add_attrlist(), before any mapping pairs are written): the
+ * review checked those with failure hooks in a scratch copy.
+ *
+ * The free clusters hold 'D' first. Without the fix, the run list still maps
+ * the cluster of the write that failed, and a read on the same mount returns
+ * 'D'. ntfs_error() takes the volume read-only meanwhile (errors=remount-ro),
+ * so nothing reaches the disk and a remount reads the hole either way: the
+ * same-mount read is the evidence.
+ */
+#define FILL_XATTR "fill"
+#define HOLE_END 64	/* full.bin's hole is [1, HOLE_END) */
+
+static void test_failed_mapping_pairs_update(void)
+{
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol;
+	ntfs_inode_t *root, *f;
+	struct ntfs_volume_info info;
+	uint8_t *buf = NULL;
+	uint64_t cs, lo, hi, before, r, vcn = 0;
+	char name[16];
+	size_t stale = 0, nonzero = 0;
+	ssize_t wn = 0;
+	int err;
+
+	if (make_image("mapfail", 8) != 0)
+		return;
+	fault_clear();
+	err = mount_rw(&dev, &vol);
+	CHECK(err == 0);
+	if (err) { drop_image(); return; }
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	cs = info.cluster_size;
+	buf = malloc(cs > 4096 ? cs : 4096);
+	err = buf ? ntfs_create(root, "full.bin", 0100644, &f) : -ENOMEM;
+	CHECK(err == 0);
+	if (err) {
+		ntfs_inode_put(root);
+		ntfs_unmount(vol);
+		ntfs_bdev_close(dev);
+		goto out;
+	}
+	memset(buf, 'F', cs);
+	CHECK(ntfs_write(f, buf, cs, 0) == (ssize_t)cs);
+	CHECK(ntfs_write(f, buf, cs, HOLE_END * cs) == (ssize_t)cs);
+	CHECK(ntfs_fsync(f, false) == 0);
+	/* The largest resident "fill": a size is resident if it costs no
+	 * cluster. */
+	memset(buf, 'x', 4096);
+	for (lo = 0, hi = info.mft_record_size; lo + 1 < hi; ) {
+		uint64_t mid = (lo + hi) / 2;
+
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		before = info.free_clusters;
+		err = ntfs_setxattr(f, FILL_XATTR, buf, mid, 0);
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		if (!err && info.free_clusters == before)
+			lo = mid;
+		else
+			hi = mid;
+		ntfs_removexattr(f, FILL_XATTR);
+	}
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	before = info.free_clusters;
+	CHECK_MSG(lo > 0 && ntfs_setxattr(f, FILL_XATTR, buf, lo, 0) == 0,
+		  "the record of full.bin could not be filled (%" PRIu64 ")", lo);
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	CHECK_MSG(info.free_clusters == before, "\"fill\" did not stay resident");
+	CHECK(ntfs_fsync(f, false) == 0);
+	ntfs_inode_put(f);
+	for (int i = 0; i < 4; i++) {
+		snprintf(name, sizeof(name), "n%d", i);
+		CHECK(ntfs_create(root, name, 0100644, &f) == 0);
+		ntfs_inode_put(f);
+	}
+	CHECK(stain_free_space(vol, root, 'D', cs) == 0);
+	ntfs_inode_put(root);
+	CHECK(ntfs_volume_sync(vol) == 0);
+	ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+
+	/* The writes, with every uncached page out of reach. */
+	err = mount_rw(&dev, &vol);
+	CHECK(err == 0);
+	if (err)
+		goto out;
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	err = ntfs_lookup(root, "full.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		memset(buf, 'W', cs);
+		fi.mode = FAULT_READ;
+		for (vcn = 2; vcn < HOLE_END - 1; vcn += 2) {
+			wn = ntfs_write(f, buf, cs, vcn * cs);
+			if (wn != (ssize_t)cs)
+				break;
+		}
+		printf("  failed_mapping_pairs_update: \"fill\" %" PRIu64 " bytes, the "
+		       "write at cluster %" PRIu64 " returned %zd, %d read(s) refused\n",
+		       lo, vcn, wn, fi.fired);
+		CHECK_MSG(wn < 0, "every write into full.bin's hole found room for its "
+			  "mapping pairs, so this case tested nothing");
+		CHECK_MSG(fi.fired > 0, "no read was refused during the writes: this case "
+			  "tested nothing");
+		{
+			struct geom g;
+			bool in_mft = false;
+
+			if (read_geom(&g) == 0 && ntfs_volume_get_info(vol, &info) == 0)
+				in_mft = fi.fired_off >= g.mft_off &&
+					 fi.fired_off < g.mft_off + info.total_mft_records *
+					 (uint64_t)info.mft_record_size;
+			CHECK_MSG(in_mft, "the read refused during the writes, at byte %" PRIu64
+				  ", is not $MFT's: the write failed before its mapping pairs, "
+				  "so this case tested nothing", fi.fired_off);
+		}
+		fault_clear();
+		CHECK(ntfs_read(f, buf, cs, vcn * cs) == (ssize_t)cs);
+		for (uint64_t b = 0; b < cs; b++) {
+			nonzero += buf[b] != 0;
+			stale += buf[b] == 'D';
+		}
+		CHECK_MSG(nonzero == 0, "after the failed write, the hole of full.bin "
+			  "reads %zu non-zero bytes on the same mount, %zu of them a deleted "
+			  "file's 'D'", nonzero, stale);
+		CHECK_MSG(ntfs_seek_data_hole(f, vcn * cs, false, &r) == 0 &&
+			  r == HOLE_END * cs,
+			  "full.bin maps a cluster at %" PRIu64 " after the failed write", vcn);
+		ntfs_inode_put(f);
+	}
+	fault_clear();
+	ntfs_inode_put(root);
+	ntfs_volume_sync(vol);
+	ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+
+	/* After a remount: the hole, and a clean volume. */
+	err = mount_rw(&dev, &vol);
+	CHECK(err == 0);
+	if (err)
+		goto out;
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	err = ntfs_lookup(root, "full.bin", &f);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_read(f, buf, cs, vcn * cs) == (ssize_t)cs);
+		for (r = 0; r < cs && !buf[r]; r++)
+			;
+		CHECK_MSG(r == cs, "after a remount, cluster %" PRIu64 " of full.bin is not "
+			  "zero", vcn);
+		ntfs_inode_put(f);
+	}
+	ntfs_inode_put(root);
+	ntfs_unmount(vol);
+	ntfs_bdev_close(dev);
+	check_image("failed_mapping_pairs_update");
+out:
+	free(buf);
+	drop_image();
+	printf("test_failed_mapping_pairs_update\n");
+}
+
 /* A case that bails out early still owns an image; do not litter CI's /tmp. */
 static void cleanup(void) { drop_image(); }
 
@@ -2311,6 +2498,7 @@ int main(void)
 	test_enospc();
 	test_enospc_names();
 	test_failed_create_record_reuse();
+	test_failed_mapping_pairs_update();
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;
 }

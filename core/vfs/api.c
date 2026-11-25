@@ -1117,10 +1117,9 @@ static int zero_new_edges(struct ntfs_inode *ni, s64 vcn, s64 end_vcn,
  * (release_holes()). After each ntfs_attr_map_cluster() call a range takes in
  * all that is mapped from its start, which includes a second run the
  * allocator can return without the call reporting it (no U14). It never takes
- * in what a call that fails may have left: that is the call's to clean up,
- * and freeing it here could free clusters another file has taken since.
- * Finding 29's open items in docs/UPSTREAM-BUGS.md say where the call falls
- * short.
+ * in what a call that fails may have left: the call cleans up after itself
+ * (U20; if even its own free fails, it marks the volume in error), and
+ * freeing it here could free clusters another file has taken since.
  */
 struct vcn_range {
 	s64 start, end;
