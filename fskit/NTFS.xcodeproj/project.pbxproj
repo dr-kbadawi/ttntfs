@@ -11,6 +11,7 @@
 		121312321DF34FF9FD4A2614 /* MountStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 49CC0869C89E4C38774395AC /* MountStatus.swift */; };
 		1D98488B3CCD85AE5E2FE4D0 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
 		26B443FBBC3143E710CDD55F /* SharedSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0F30CB423189222B7D3898A /* SharedSettings.swift */; };
+		281D32CF5DA77036622CADD2 /* ModuleEnablerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6F1554338580B0154749ACB8 /* ModuleEnablerTests.swift */; };
 		3500F49BD21BA35F05C9F840 /* NTFSItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC7B47B33AFC479F9D7E38A3 /* NTFSItem.swift */; };
 		4888F91B5969DE5DA1D96C3D /* ntfscore_stub.c in Sources */ = {isa = PBXBuildFile; fileRef = 21592494DAEE07BF86761556 /* ntfscore_stub.c */; };
 		50638278315C30661B0EB14E /* ModuleEnabler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 46E9124D88A86CA415124E8A /* ModuleEnabler.swift */; };
@@ -42,6 +43,7 @@
 		2083108A0772CF7D896F6002 /* UnicodeNameAlternatives.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2083108A0772CF7D896F6003 /* UnicodeNameAlternatives.swift */; };
 		D4A3F78A4FD0D3D3D2E8C73A /* ExtensionStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6EBA193D199A8D45BA967F8 /* ExtensionStatus.swift */; };
 		D77B962DC4E90FE1E6728BB8 /* NTFSFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22E6EF4E5070D18D17D4A46C /* NTFSFileSystem.swift */; };
+		DB3D5FF28D46F2D9036AEA55 /* ExtensionStatusTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 850D36D104432FE520F85B1C /* ExtensionStatusTests.swift */; };
 		DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B26FF508F1A90A37416CBD99 /* DiskInventory.swift */; };
 		F0989E06E6B8D261A2BE925E /* ntfs_bdev_fskit.m in Sources */ = {isa = PBXBuildFile; fileRef = 3D7CDA1347A527D1CA56AAC8 /* ntfs_bdev_fskit.m */; settings = {COMPILER_FLAGS = "-fno-modules"; }; };
 		F7D2F268BFD3B75AB4F86B1A /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 223EFAF44C74CB35E5902EFC /* SettingsView.swift */; };
@@ -88,9 +90,11 @@
 		2083108A0772CF7D896F6005 /* UnicodeNameAlternativesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnicodeNameAlternativesTests.swift; sourceTree = "<group>"; };
 		EA5D8258D4CB0AA5C26901E7 /* StarLineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StarLineTests.swift; sourceTree = "<group>"; };
 		67642D3967176F0F3848BF48 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		6F1554338580B0154749ACB8 /* ModuleEnablerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleEnablerTests.swift; sourceTree = "<group>"; };
 		7A89785ABD0C6A5D4BE75297 /* Options.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Options.swift; sourceTree = "<group>"; };
 		7D80DAAE4977838464ED6255 /* NTFSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NTFSApp.swift; sourceTree = "<group>"; };
 		8405521593E3450B24B859E3 /* Shared.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Shared.xcconfig; sourceTree = "<group>"; };
+		850D36D104432FE520F85B1C /* ExtensionStatusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExtensionStatusTests.swift; sourceTree = "<group>"; };
 		88488AA353AAC885FE74E9F9 /* MenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuView.swift; sourceTree = "<group>"; };
 		8BF1C94C6B52C334F29A4BD8 /* NTFSExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.extensionkit-extension"; includeInIndex = 0; path = NTFSExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		9B0B51465CA38950094AABD2 /* LoginItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginItem.swift; sourceTree = "<group>"; };
@@ -152,6 +156,8 @@
 		168529527E28750DBE6E50CD /* NTFSTests */ = {
 			isa = PBXGroup;
 			children = (
+				850D36D104432FE520F85B1C /* ExtensionStatusTests.swift */,
+				6F1554338580B0154749ACB8 /* ModuleEnablerTests.swift */,
 				9F0EECD48947D4F9073B01BC /* MountOptionsTests.swift */,
 				59E35CFA95134137ACE993DB /* MountStatusTests.swift */,
 				2083108A0772CF7D896F6005 /* UnicodeNameAlternativesTests.swift */,
@@ -337,7 +343,9 @@
 				DC3222E39A2AF824247C1451 /* DiskInventory.swift in Sources */,
 				69C51FCF74DDC791DF9FB88B /* Errors.swift in Sources */,
 				D4A3F78A4FD0D3D3D2E8C73A /* ExtensionStatus.swift in Sources */,
+				DB3D5FF28D46F2D9036AEA55 /* ExtensionStatusTests.swift in Sources */,
 				50638278315C30661B0EB14E /* ModuleEnabler.swift in Sources */,
+				281D32CF5DA77036622CADD2 /* ModuleEnablerTests.swift in Sources */,
 				B9A9FCB9074172A708781239 /* MountOptionsTests.swift in Sources */,
 				9A6F914F0B807B9FE9107F45 /* MountStatus.swift in Sources */,
 				72C3503AE9116F41E484B5D4 /* MountStatusTests.swift in Sources */,

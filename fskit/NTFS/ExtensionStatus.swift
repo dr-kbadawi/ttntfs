@@ -14,20 +14,14 @@ final class ExtensionStatus: ObservableObject {
 
     static let extensionBundleID = "ch.techtag.ntfs.extension"
 
-    /// Refreshes run on their own and can finish out of order: one started
-    /// just after `fskit_agent` was restarted can answer late. Each answer is
-    /// used only if no newer refresh has answered already.
-    private var started = 0
-    private var answered = 0
+    private var order = RefreshOrder()
 
     func refresh() {
-        started += 1
-        let mine = started
+        let mine = order.start()
         Task {
             do {
                 let modules = try await FSClient.shared.installedExtensions
-                guard mine > answered else { return }
-                answered = mine
+                guard order.accept(mine) else { return }
                 if let m = modules.first(where: { $0.bundleIdentifier == Self.extensionBundleID }) {
                     state = m.isEnabled ? .enabled : .disabled
                 } else {
@@ -35,13 +29,18 @@ final class ExtensionStatus: ObservableObject {
                 }
             } catch {
                 NSLog("FSClient: %@", error.localizedDescription)
-                // FSClient fails for a moment while fskit_agent restarts, and
-                // the menu refreshes every time it opens. An error is no
-                // answer, so keep what is known; only with nothing known yet
-                // is "not registered" the best guess.
-                if state == .unknown { state = .notInstalled }
+                let next = Self.stateAfterFailedRefresh(state)
+                if next != state { state = next }
             }
         }
+    }
+
+    /// What a refresh that could not ask FSClient leaves. FSClient fails for a
+    /// moment while fskit_agent restarts, and the menu refreshes every time it
+    /// opens. An error is no answer, so what is known stays; only with nothing
+    /// known yet is "not registered" the best guess.
+    nonisolated static func stateAfterFailedRefresh(_ state: State) -> State {
+        state == .unknown ? .notInstalled : state
     }
 
     static func openSettings() {
@@ -54,5 +53,26 @@ final class ExtensionStatus: ObservableObject {
         for u in urls {
             if let url = URL(string: u), NSWorkspace.shared.open(url) { return }
         }
+    }
+}
+
+/// Refreshes run on their own and can finish out of order: one started just
+/// after `fskit_agent` was restarted can answer late. Each refresh takes a
+/// number as it starts, and its answer is used only if no newer refresh has
+/// answered already.
+struct RefreshOrder {
+    private var started = 0
+    private var answered = 0
+
+    mutating func start() -> Int {
+        started += 1
+        return started
+    }
+
+    /// Whether the answer of the refresh that took `ticket` is still news.
+    mutating func accept(_ ticket: Int) -> Bool {
+        guard ticket > answered else { return false }
+        answered = ticket
+        return true
     }
 }

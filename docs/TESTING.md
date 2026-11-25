@@ -22,7 +22,7 @@ tools/ci.sh --list       # what it will run
 |---|---|---|
 | `ctest` (16 targets, ~2,800 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the cluster allocator, the enable script | `ctest --test-dir build` |
 | `tools/run-tests.sh` (265 checks) | read and write against 7 NTFS fixtures, compared with ntfsprogs as ground truth, then structurally checked | `tools/run-tests.sh all` |
-| `NTFSTests` (60 tests) | the app's Swift logic: option parsing, status decoding, note expiry | `xcodebuild test -scheme NTFSTests` |
+| `NTFSTests` (102 tests) | the app's Swift logic: option parsing, status decoding, note expiry, name alternatives, turning the extension on (the module list, when System Settings takes over), how the menu reads its state, when to ask for a star | `xcodebuild test -scheme NTFSTests` |
 | `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end, then `fsck` on the result | by hand |
 
 ### ctest, in detail

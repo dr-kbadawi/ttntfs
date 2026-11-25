@@ -69,7 +69,41 @@ final class ModuleEnabler: ObservableObject {
     /// effect. On 26 it cannot, and only a permission error sends the user
     /// there.
     static var settingsSwitchWorks: Bool {
-        ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 27
+        settingsSwitchWorks(onMacOS: macOSMajor)
+    }
+
+    nonisolated static func settingsSwitchWorks(onMacOS major: Int) -> Bool {
+        major >= 27
+    }
+
+    private static var macOSMajor: Int {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    }
+
+    /// Whether a failed edit of the list hands over to the System Settings
+    /// switch. A permission error means the list is protected: on macOS 27
+    /// whenever the app lacks Full Disk Access, and possibly on a 26.x update.
+    /// The switch is then the only route left. On 27 it also answers any other
+    /// failure, since the switch works there.
+    nonisolated static func editFailureGoesToSettings(_ error: Error, onMacOS major: Int) -> Bool {
+        isPermissionDenied(error) || settingsSwitchWorks(onMacOS: major)
+    }
+
+    /// What follows an edit of the list that FSKit did not act on within the
+    /// wait. On 27 the switch is known to work, so the edit hands over to it
+    /// rather than ending in an error. Before 27 it is a failure, worded by
+    /// whether there was an fskit_agent to restart.
+    enum AfterIgnoredEdit: Equatable {
+        case systemSettings
+        case failed(String)
+    }
+
+    nonisolated static func afterIgnoredEdit(onMacOS major: Int, agentsRestarted: Int) -> AfterIgnoredEdit {
+        if settingsSwitchWorks(onMacOS: major) { return .systemSettings }
+        if agentsRestarted == 0 {
+            return .failed("The module list was updated but fskit_agent was not running to restart. Log out and back in, then re-check.")
+        }
+        return .failed("The module list was updated but FSKit still reports the extension as disabled.")
     }
 
     static let systemSettingsHint = "macOS did not let this app turn the extension on by itself, so turn it on in System Settings → General → Login Items & Extensions. Under Extensions, choose By Category, then File System Extensions, and turn TT NTFS Native on there; the switch in the By App list does not stay on. This app will notice when it is enabled."
@@ -83,9 +117,16 @@ final class ModuleEnabler: ObservableObject {
     /// that on macOS 27), the menu then starts again from the Enable button
     /// instead of showing an old message next to "Extension is disabled".
     func settle() {
+        let next = Self.settled(outcome)
+        if next != outcome { outcome = next }
+    }
+
+    /// `settle()`'s rule: a finished attempt's result is cleared; an attempt
+    /// still running, or waiting for the user in System Settings, is left alone.
+    nonisolated static func settled(_ outcome: Outcome) -> Outcome {
         switch outcome {
-        case .succeeded, .failed, .blocked: outcome = .idle
-        case .idle, .working, .needsSettings: break
+        case .succeeded, .failed, .blocked: return .idle
+        case .idle, .working, .needsSettings: return outcome
         }
     }
 
@@ -115,11 +156,7 @@ final class ModuleEnabler: ObservableObject {
         do {
             try Self.addToEnabledList()
         } catch {
-            // A permission error means the list is protected: on macOS 27
-            // whenever the app lacks Full Disk Access, and possibly on a 26.x
-            // update. The Settings route is then the only one left. On 27 it
-            // also answers any other failure, since the switch works there.
-            if Self.isPermissionDenied(error) || Self.settingsSwitchWorks {
+            if Self.editFailureGoesToSettings(error, onMacOS: Self.macOSMajor) {
                 await requireSystemSettings()
                 return
             }
@@ -135,14 +172,13 @@ final class ModuleEnabler: ObservableObject {
             // Disk Arbitration only picks a module when it probes, and it
             // probes on mount. DiskInventory shows what can be handed over.
             outcome = .succeeded
-        } else if Self.settingsSwitchWorks {
-            // On 27 the switch is known to work, so an edit FSKit does not act
-            // on hands over to it rather than ending in an error.
+            return
+        }
+        switch Self.afterIgnoredEdit(onMacOS: Self.macOSMajor, agentsRestarted: killed) {
+        case .systemSettings:
             await requireSystemSettings()
-        } else if killed == 0 {
-            outcome = .failed("The module list was updated but fskit_agent was not running to restart. Log out and back in, then re-check.")
-        } else {
-            outcome = .failed("The module list was updated but FSKit still reports the extension as disabled.")
+        case .failed(let message):
+            outcome = .failed(message)
         }
     }
 
@@ -158,7 +194,7 @@ final class ModuleEnabler: ObservableObject {
         } catch {
             // As in `enable()`: if the app may not edit the list, or on 27
             // cannot for any other reason, the Settings switch is the way left.
-            if Self.isPermissionDenied(error) || Self.settingsSwitchWorks {
+            if Self.editFailureGoesToSettings(error, onMacOS: Self.macOSMajor) {
                 return await switchOffInSystemSettings()
             }
             return "could not update the FSKit module list: \(error.localizedDescription)"
@@ -191,10 +227,18 @@ final class ModuleEnabler: ObservableObject {
         var format = PropertyListSerialization.PropertyListFormat.binary
         let data = try Data(contentsOf: url)
         let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
-        guard var modules = plist as? [String], modules.contains(moduleID) else { return }
-        modules.removeAll { $0 == moduleID }
+        guard let modules = listRemoving(moduleID, from: plist) else { return }
         let out = try PropertyListSerialization.data(fromPropertyList: modules, format: format, options: 0)
         try out.write(to: url, options: .atomic)
+    }
+
+    /// The list without `id`, or nil when there is nothing to write: no list,
+    /// a list without it, or a list in a shape this app does not know, which
+    /// is left alone.
+    nonisolated static func listRemoving(_ id: String, from plist: Any?) -> [String]? {
+        guard var modules = plist as? [String], modules.contains(id) else { return nil }
+        modules.removeAll { $0 == id }
+        return modules
     }
 
     // MARK: Steps
@@ -203,20 +247,11 @@ final class ModuleEnabler: ObservableObject {
     private static func addToEnabledList() throws {
         let url = listURL
         var format = PropertyListSerialization.PropertyListFormat.binary
-        var modules: [String] = []
+        var plist: Any?
 
         if FileManager.default.fileExists(atPath: url.path) {
             let data = try Data(contentsOf: url)
-            let plist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
-            // Edit only a list in the shape we know. Anything else is FSKit's
-            // data in a form we do not understand, and writing our one entry
-            // over it would drop every other module.
-            guard let existing = plist as? [String] else {
-                throw CocoaError(.propertyListReadCorrupt, userInfo: [
-                    NSLocalizedDescriptionKey: "it is not in the format this app knows, so it was left unchanged",
-                ])
-            }
-            modules = existing
+            plist = try PropertyListSerialization.propertyList(from: data, options: [], format: &format)
         } else {
             // The list appears the first time System Settings shows the pane. If it
             // is absent, creating it with only our ID is correct: fskit_agent
@@ -225,10 +260,26 @@ final class ModuleEnabler: ObservableObject {
                                                     withIntermediateDirectories: true)
         }
 
-        guard !modules.contains(moduleID) else { return }
-        modules.append(moduleID)
+        guard let modules = try listAdding(moduleID, to: plist) else { return }
         let out = try PropertyListSerialization.data(fromPropertyList: modules, format: format, options: 0)
         try out.write(to: url, options: .atomic)
+    }
+
+    /// The list with `id` added at the end, or nil when it is there already and
+    /// nothing needs writing. `plist` is what the file held, nil when there is
+    /// no file.
+    nonisolated static func listAdding(_ id: String, to plist: Any?) throws -> [String]? {
+        guard let plist else { return [id] }
+        // Edit only a list in the shape we know. Anything else is FSKit's
+        // data in a form we do not understand, and writing our one entry
+        // over it would drop every other module.
+        guard let modules = plist as? [String] else {
+            throw CocoaError(.propertyListReadCorrupt, userInfo: [
+                NSLocalizedDescriptionKey: "it is not in the format this app knows, so it was left unchanged",
+            ])
+        }
+        guard !modules.contains(id) else { return nil }
+        return modules + [id]
     }
 
     /// SIGKILLs every fskit_agent belonging to this user; launchd brings it back
@@ -264,7 +315,7 @@ final class ModuleEnabler: ObservableObject {
 
     /// Whether the failure is the OS refusing access to the list, which means
     /// the Settings route is the only one left.
-    private static func isPermissionDenied(_ error: Error) -> Bool {
+    nonisolated static func isPermissionDenied(_ error: Error) -> Bool {
         let nsError = error as NSError
         switch nsError.domain {
         case NSPOSIXErrorDomain:
