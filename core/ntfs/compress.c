@@ -1356,6 +1356,129 @@ static int ntfs_write_cb_runs(struct ntfs_volume *vol, struct runlist *runlist, 
 	return 0;
 }
 
+/*
+ * ntfs_write_cb_swap - put a compression block's new runs in place of its old ones
+ * @ni:		compressed attribute
+ * @vcn:	first vcn of the block
+ * @new_rl:	the block's new runs, already written, or NULL to leave a hole
+ *		there; the caller keeps them
+ * @keep:	set when the new clusters must stay allocated
+ *
+ * PORT: v7.1 and mainline punch the old block out, which writes the mapping
+ * pairs, then merge the new runs in and write the mapping pairs again. A
+ * failure between the two left a hole in the run list where the block was:
+ * the block read back as zeroes on the same mount, and the next write of the
+ * file's mapping pairs put the hole on the disk. The sync at unmount is one,
+ * even after an error has taken the volume read-only. A punch whose update
+ * failed also left behind the compressed size it had already rewritten,
+ * because ntfs_attr_update_meta() runs first. Swap the runs in memory
+ * instead, and write the mapping pairs once. If that fails, put the run list
+ * back from a copy and write the mapping pairs again, as mainline's
+ * ntfs_attr_map_cluster() does since 91709ba5d6d7, so that the record
+ * describes the old block again, sizes included. The old block's clusters are
+ * freed only once the new runs are recorded. U22 in docs/UPSTREAM-BUGS.md.
+ *
+ * Return 0 once the new runs are recorded, with *keep set. If freeing the old
+ * clusters fails after that, they leak, and the error is returned with *keep
+ * still set. If writing the mapping pairs fails and the old ones are written
+ * back, the run list is as it was, *keep is clear, and the caller gives the
+ * new clusters back. If writing them back fails too, the record may map the
+ * old runs, the new ones, or part of either. Then *keep is set, and neither
+ * set of clusters is freed: a leak can be reclaimed, but a freed cluster that
+ * a record still maps can be given to another file.
+ */
+static int ntfs_write_cb_swap(struct ntfs_inode *ni, s64 vcn, struct runlist *new_rl,
+		bool *keep)
+{
+	struct ntfs_volume *vol = ni->vol;
+	struct runlist_element *saved, *new_copy = NULL, *punch_rl = NULL, *rl;
+	bool tried = false;
+	size_t count;
+	int n, err, err2;
+
+	*keep = false;
+	if (new_rl) {
+		/* The merge below takes its source over, so it merges a copy. */
+		for (rl = new_rl->rl, n = 1; rl->length; rl++)
+			n++;
+		new_copy = kvcalloc(n, sizeof(*new_copy), GFP_NOFS);
+		if (!new_copy)
+			return -ENOMEM;
+		memcpy(new_copy, new_rl->rl, n * sizeof(*new_copy));
+	}
+
+	down_write(&ni->runlist.lock);
+	err = ntfs_attr_map_whole_runlist(ni);
+	if (err)
+		goto unlock;
+	/* ntfs_rl_punch_hole() frees the array it is given. */
+	for (rl = ni->runlist.rl, n = 1; rl && rl->length; rl++)
+		n++;
+	saved = kvcalloc(n, sizeof(*saved), GFP_NOFS);
+	if (!saved) {
+		err = -ENOMEM;
+		goto unlock;
+	}
+	memcpy(saved, ni->runlist.rl, n * sizeof(*saved));
+
+	rl = ntfs_rl_punch_hole(ni->runlist.rl, n, vcn,
+			ni->itype.compressed.block_clusters, &punch_rl, &count);
+	if (IS_ERR(rl)) {
+		err = PTR_ERR(rl);
+		kvfree(saved);
+		goto unlock;
+	}
+	ni->runlist.rl = rl;
+	ni->runlist.count = count;
+	ni->runlist.rl_hint = -1;
+
+	if (new_copy) {
+		rl = ntfs_runlists_merge(&ni->runlist, new_copy, 0, &count);
+		if (IS_ERR(rl)) {
+			err = PTR_ERR(rl);
+			goto restore;
+		}
+		new_copy = NULL;	/* the merge took it over */
+		ni->runlist.rl = rl;
+		ni->runlist.count = count;
+		ni->runlist.rl_hint = -1;
+	}
+
+	tried = true;
+	err = ntfs_attr_update_mapping_pairs(ni, 0);
+	if (!err) {
+		*keep = true;
+		up_write(&ni->runlist.lock);
+		kvfree(saved);
+		err = ntfs_cluster_free_from_rl(vol, punch_rl);
+		if (err)
+			ntfs_error(vol->sb, "Failed to free a compression block's old clusters (%d).",
+				   err);
+		kvfree(punch_rl);
+		return err;
+	}
+restore:
+	kvfree(ni->runlist.rl);
+	ni->runlist.rl = saved;
+	ni->runlist.count = n;
+	ni->runlist.rl_hint = -1;
+	if (tried) {
+		/* The failed update may have changed the record already. */
+		err2 = ntfs_attr_update_mapping_pairs(ni, 0);
+		if (err2) {
+			NVolSetErrors(vol);
+			ntfs_error(vol->sb, "Failed to restore a compression block's mapping pairs (%d).",
+				   err2);
+			*keep = true;
+		}
+	}
+	kvfree(punch_rl);
+unlock:
+	up_write(&ni->runlist.lock);
+	kvfree(new_copy);
+	return err;
+}
+
 static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 		int pages_per_cb)
 {
@@ -1375,6 +1498,7 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 	s64 got = 0, rlc_length = 0;
 	struct runlist_element *rlc, *rl;
 	struct runlist new_rl;
+	bool keep;
 	int i, err;
 	int pages_count = (round_up(ni->itype.compressed.block_size + 2 *
 		(ni->itype.compressed.block_size / NTFS_SB_SIZE) + 2, PAGE_SIZE)) / PAGE_SIZE;
@@ -1467,19 +1591,39 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 		 * were reported written and the old data read back byte for
 		 * byte after a remount. Keep the shortcut for the case it was
 		 * written for and punch the block out when it holds data.
+		 *
+		 * PORT: punch it with ntfs_write_cb_swap(), which writes the
+		 * mapping pairs once and puts them back if that fails.
+		 * ntfs_non_resident_attr_punch_hole() left the hole in the run
+		 * list and the rewritten compressed size behind a failed update
+		 * (U22). What that function refuses is refused here.
 		 */
 		err = 0;
-		if (cb_is_allocated(ni, new_vcn))
-			err = ntfs_non_resident_attr_punch_hole(ni, new_vcn,
-					ni->itype.compressed.block_clusters);
-		if (err > 0)
-			err = 0;
+		if (cb_is_allocated(ni, new_vcn)) {
+			if (NInoAttr(ni) || ni->type != AT_DATA)
+				err = -EOPNOTSUPP;
+			else
+				err = ntfs_write_cb_swap(ni, new_vcn, NULL, &keep);
+		}
 		goto out;
 	} else {
 		bio_size = insz;
 	}
 
 	new_length = ntfs_bytes_to_cluster(vol, round_up(bio_size, vol->cluster_size));
+
+	/*
+	 * PORT: ntfs_non_resident_attr_punch_hole() refuses a named stream and
+	 * any attribute but $DATA, so every rewrite of a compressed named stream
+	 * failed with -EOPNOTSUPP, once its block had been allocated and written.
+	 * ntfs_write_cb_swap() does not need the punch, but a compressed named
+	 * stream has never been written here, so it stays refused, now before
+	 * anything is allocated.
+	 */
+	if (NInoAttr(ni) || ni->type != AT_DATA) {
+		err = -EOPNOTSUPP;
+		goto out;
+	}
 
 	/*
 	 * PORT: v7.1 punched the old block out here, before it asked for the
@@ -1489,9 +1633,9 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 	 * Mainline allocates and writes the new block first and punches the old
 	 * one last, and so does the port now. The new clusters are asked for
 	 * while the old block still holds its own, so they cannot be the same
-	 * clusters, and a rewrite needs room for both. Until the punch, a
-	 * failure gives the new clusters back and leaves the old block as it
-	 * was. Finding 32 in docs/UPSTREAM-BUGS.md.
+	 * clusters, and a rewrite needs room for both. A failure gives the new
+	 * clusters back and leaves the old block as it was. Finding 32 in
+	 * docs/UPSTREAM-BUGS.md.
 	 *
 	 * PORT: upstream (7.1 and mainline) asks once for new_length contiguous
 	 * clusters and writes the whole block from rlc->lcn. A contiguous
@@ -1539,59 +1683,21 @@ static int ntfs_write_cb(struct ntfs_inode *ni, loff_t pos, struct page **pages,
 	if (err)
 		goto free_new;
 
-	/* Do not discard the old compression block until the new one is safe. */
-	err = ntfs_non_resident_attr_punch_hole(ni, new_vcn,
-			ni->itype.compressed.block_clusters);
-	if (err < 0)
-		goto free_new;
-
-	down_write(&ni->runlist.lock);
-	rl = ntfs_runlists_merge(&ni->runlist, new_rl.rl, 0, &new_rl_count);
-	if (IS_ERR(rl)) {
-		up_write(&ni->runlist.lock);
-		ntfs_error(vol->sb, "Failed to merge runlists");
-		err = PTR_ERR(rl);
-		goto free_new;
-	}
-	ni->runlist.count = new_rl_count;
-	ni->runlist.rl = rl;
-	new_rl.rl = NULL;	/* the merge took it over */
-	err = ntfs_attr_update_mapping_pairs(ni, 0);
-	up_write(&ni->runlist.lock);
-	if (!err)
-		goto out;
-	err = -EIO;
 	/*
-	 * PORT: the punch wrote the block's mapping pairs as a hole and freed
-	 * the old clusters. The new ones are in the run list but not in the
-	 * mapping pairs on the disk. Punch the block again, so that the run
-	 * list, the mapping pairs and the bitmap agree that it is a hole; the
-	 * block is lost. Mainline keeps the new runs in the run list, where the
-	 * next mapping-pairs update of the file may still save the block. Until
-	 * then the bitmap holds clusters that nothing on the disk points to,
-	 * and they leak if no update comes.
+	 * Do not discard the old compression block until the new one is safe.
+	 * PORT: mainline punches the old block out and then merges the new runs
+	 * in, with a mapping-pairs update each. ntfs_write_cb_swap() does it in
+	 * one, and puts everything back if that fails.
 	 */
-	{
-		int err2 = ntfs_non_resident_attr_punch_hole(ni, new_vcn,
-				ni->itype.compressed.block_clusters);
-
-		if (err2 < 0)
-			ntfs_error(vol->sb, "Failed to release a compression block's clusters (%d).",
-				   err2);
+	err = ntfs_write_cb_swap(ni, new_vcn, &new_rl, &keep);
+	if (keep) {
+		kvfree(new_rl.rl);	/* the clusters stay allocated */
+		goto out;
 	}
-	goto out;
 free_new:
 	/*
-	 * The new clusters never reached the attribute's run list. Give them
-	 * back. A failure before the punch leaves the old block as it was.
-	 * The punch itself can fail after it has taken the old block out of
-	 * the run list, as in mainline. If writing the mapping pairs failed,
-	 * the block reads as a hole on this mount. It can come back after a
-	 * remount, if the failed update had not yet changed the MFT record
-	 * and nothing writes the file's mapping pairs first. Otherwise it is
-	 * lost and its clusters leak. If freeing the old clusters failed, they
-	 * leak, and the block is lost. It is lost too if the merge after the
-	 * punch fails, which only a failed memory allocation can cause.
+	 * The new clusters never reached the attribute's run list, and the old
+	 * block is as it was. Give the new clusters back.
 	 */
 	if (new_rl.rl) {
 		if (ntfs_cluster_free_from_rl(vol, new_rl.rl))

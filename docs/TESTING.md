@@ -43,11 +43,12 @@ tools/ci.sh --list       # what it will run
 * **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
   Windows-illegal names refused, case-insensitive and case-preserving lookup
   through a real `$UpCase` table, and xattrs as alternate data streams.
-* **`compress`** (559) — compressed writes, including appending across
+* **`compress`** (675) — compressed writes, including appending across
   compression-block boundaries, a block rewritten where no free run can hold
-  it (finding 30), and rewrites that fail for want of space or on a write error
-  and must leave the old block (finding 32), and the sparse read, seek and
-  `fallocate` paths.
+  it (finding 30), and rewrites that fail and must leave the old block: for
+  want of space, on a write error (finding 32), or because the new mapping
+  pairs cannot be written (U22). Also the sparse read, seek and `fallocate`
+  paths.
 * **`bigdir`** (480) — the index B-tree: growth to four levels, deletion in
   creation, reverse and shuffled order, and six collation shapes.
 * **`crash`** (217) — the write ordering, asserted by mapping a sync's device
@@ -262,6 +263,19 @@ extraction moved the comment with it and changed nothing else.
   requires a cluster that held `D` before to hold zeroes after, which only the
   failed write's edge zeroing does. `test_write_fail_into_hole` checks the
   cluster its refused data was aimed at.
+* **`ntfsck -n` does not check a compressed size against the runs.** A failed
+  mapping-pairs update left `random-1m.bin` on the disk with a compressed size
+  64 KiB short of its runs, and `ntfsck -n` was clean (U22). Compare the
+  compressed size before and after a remount; `ntfs_getattr()` reports it in
+  `alloc_size` for a compressed file.
+* **A volume that an error took read-only still writes at unmount.**
+  `ntfs_unmount()` skips its own sync then, but `ntfs_glue_teardown()` calls the
+  platform's `sync_filesystem()`, which, unlike Linux's, does not return early
+  for a read-only volume: every dirty inode is written, and `VOLUME_IS_DIRTY`
+  is cleared. So whatever is dirty at unmount reaches the disk, what a failed
+  operation left before the error and what was written after it alike. A
+  remount after a failure shows what reached the disk; it does not show that
+  the error kept anything off it (U22).
 * **A sandboxed extension reads the app-group container, not `~/Library/Preferences`.**
   `defaults write group.ch.techtag.ntfs …` from a shell lands in
   `~/Library/Preferences/group.ch.techtag.ntfs.plist`; the extension reads

@@ -52,6 +52,9 @@
  *                        even when the old block's clusters could hold it.
  *   rewrite_write_error  The same when the device refuses the block's write,
  *                        after its new clusters were allocated.
+ *   *_update_fails       The same when the new mapping pairs cannot be
+ *                        written: the record must describe the old block
+ *                        again, sizes included.
  *
  * Three bugs were found while writing this, and between them they meant that
  * appending to a compressed file did not work at all. All three exist verbatim
@@ -157,8 +160,9 @@ static int copy_fixture(const char *name)
 /*
  * ntfsck -n on the scratch image. This is what catches the damage a read-back
  * comparison cannot see: freed clusters still marked in use, mapping pairs that
- * no longer describe the allocation, a compressed_size that disagrees with the
- * run list. Never without -n.
+ * no longer describe the allocation. It does not compare a compressed size with
+ * the run list (U22), so the cases that can break that check it themselves.
+ * Never without -n.
  */
 static void fsck(const char *stage)
 {
@@ -188,15 +192,19 @@ static struct ntfs_bdev *g_dev;
 static ntfs_volume_t *g_vol;
 
 /*
- * A device that refuses some writes, for the cases that need one to fail.
- * While g_refusing is set, mount_scratch() splices refuse_pwrite() in front of
- * the image's ops, as test_faults.c does, and every write that starts with the
- * first 4 KiB of refuse_data fails with -EIO. A case picks out the one write it
- * wants refused by what that write carries.
+ * A device that refuses some transfers, for the cases that need one to fail.
+ * While g_refusing is set, mount_scratch() splices refuse_pwrite() and
+ * refuse_pread() in front of the image's ops, as test_faults.c does. Every
+ * write that starts with the first 4 KiB of refuse_data fails with -EIO: a
+ * case picks out the one write it wants refused by what that write carries.
+ * Every read that touches [refuse_read_lo, refuse_read_hi) fails with -EIO
+ * while that range is set, and the first such read's offset is kept.
  */
 static bool g_refusing;
 static const unsigned char *refuse_data;
 static int refused;
+static uint64_t refuse_read_lo, refuse_read_hi, refused_read_off;
+static int refused_reads;
 static const struct ntfs_bdev_ops *real_ops;
 static struct ntfs_bdev_ops refuse_ops;
 
@@ -207,6 +215,16 @@ static ssize_t refuse_pwrite(struct ntfs_bdev *d, const void *b, size_t c, u64 o
 		return -EIO;
 	}
 	return real_ops->pwrite(d, b, c, o);
+}
+
+static ssize_t refuse_pread(struct ntfs_bdev *d, void *b, size_t c, u64 o)
+{
+	if (o < refuse_read_hi && o + c > refuse_read_lo) {
+		if (!refused_reads++)
+			refused_read_off = o;
+		return -EIO;
+	}
+	return real_ops->pread(d, b, c, o);
 }
 
 static int mount_scratch(void)
@@ -223,6 +241,7 @@ static int mount_scratch(void)
 		real_ops = g_dev->ops;
 		refuse_ops = *real_ops;
 		refuse_ops.pwrite = refuse_pwrite;
+		refuse_ops.pread = refuse_pread;
 		g_dev->ops = &refuse_ops;
 	}
 	err = ntfs_mount(g_dev, &o, &g_vol);
@@ -1632,32 +1651,54 @@ static const char *label(const char *tag, const char *what)
 	return buf;
 }
 
+/* A rewrite of block 1 that must fail and leave the block as it was. */
+struct refused_rewrite {
+	const char *tag;
+	const char *file;		/* a 1 MiB file in /compressed */
+	const unsigned char *blk;	/* the new block 1 */
+	ssize_t want;			/* what the rewrite returns */
+	bool poke;			/* a small write into the block follows */
+	bool read_only;			/* the failure takes the volume read-only */
+	uint64_t refuse_lo, refuse_hi;	/* device reads refused during the rewrite */
+};
+
 /*
- * Rewrite block 1 of text-1m.txt with @blk on the mounted scratch volume. The
- * write must fail with @want and leave the block as it was. With @poke, a
- * small write into the block follows on the same mount, and @orig is updated
- * to match. @orig is the whole file before the writes, and @rb is 1 MiB of
- * scratch. Leaves the volume mounted again after the remount.
+ * Run @r on the mounted scratch volume and check that the block is as it was:
+ * in the free count, on the same mount, and after a remount, with ntfsck -n
+ * in between. With r->poke, a small write into the block follows on the same
+ * mount, and @orig is updated to match. @orig is the whole file before the
+ * writes, and @rb is 1 MiB of scratch. Leaves the volume mounted again after
+ * the remount.
  */
-static void rewrite_refused(const char *tag, const unsigned char *blk, ssize_t want,
-			    bool poke, unsigned char *orig, unsigned char *rb)
+static void rewrite_refused(const struct refused_rewrite *r, unsigned char *orig,
+			    unsigned char *rb)
 {
 	const size_t mib = 1u << 20;
+	const char *tag = r->tag;
 	struct ntfs_volume_info info;
 	ntfs_inode_t *f;
-	uint64_t free0;
+	uint64_t free0, csize0;
+	ssize_t w;
 
-	f = g_vol ? open_file("compressed", "text-1m.txt") : NULL;
+	f = g_vol ? open_file("compressed", r->file) : NULL;
 	CHECK(f != NULL);
 	if (!f)
 		return;
 	ntfs_volume_get_info(g_vol, &info);
 	free0 = info.free_clusters;
-	CHECK_EQ(ntfs_write(f, blk, CB_SIZE, CB_SIZE), want, label(tag, "rewrite block 1"));
+	/* A failed mapping-pairs update may have rewritten this already. */
+	csize0 = on_disk_size(f);
+	refused_reads = 0;
+	refuse_read_lo = r->refuse_lo;
+	refuse_read_hi = r->refuse_hi;
+	w = ntfs_write(f, r->blk, CB_SIZE, CB_SIZE);
+	refuse_read_lo = refuse_read_hi = 0;
+	CHECK_EQ(w, r->want, label(tag, "rewrite block 1"));
 	ntfs_volume_get_info(g_vol, &info);
 	CHECK_EQ(info.free_clusters, free0, label(tag, "free clusters after the failed rewrite"));
-	CHECK_EQ(info.read_only, 0, label(tag, "read-only after the failed rewrite"));
-	if (poke) {
+	CHECK_EQ(info.read_only, r->read_only, label(tag, "read-only after the failed rewrite"));
+	CHECK_EQ(on_disk_size(f), csize0, label(tag, "compressed size after the failed rewrite"));
+	if (r->poke) {
 		/* It takes the rest of the block from the block's pages, so
 		 * they must hold the old bytes again: if they still held the
 		 * refused ones, this write would put them on the disk. */
@@ -1679,12 +1720,14 @@ static void rewrite_refused(const char *tag, const unsigned char *blk, ssize_t w
 	fsck(tag);
 
 	CHECK_EQ(mount_scratch(), 0, label(tag, "remount"));
-	f = g_vol ? open_file("compressed", "text-1m.txt") : NULL;
+	f = g_vol ? open_file("compressed", r->file) : NULL;
 	CHECK(f != NULL);
 	if (!f)
 		return;
-	CHECK_EQ(read_exact(f, rb, mib, 0), 0, label(tag, "read text-1m.txt after a remount"));
-	compare(label(tag, "text-1m.txt after a remount"), rb, orig, mib);
+	CHECK_EQ(read_exact(f, rb, mib, 0), 0, label(tag, "read the file after a remount"));
+	compare(label(tag, "the file after a remount"), rb, orig, mib);
+	if (!r->poke)
+		CHECK_EQ(on_disk_size(f), csize0, label(tag, "compressed size after a remount"));
 	ntfs_inode_put(f);
 	ntfs_volume_get_info(g_vol, &info);
 	CHECK_EQ(info.free_clusters, free0, label(tag, "free clusters after a remount"));
@@ -1738,7 +1781,8 @@ static void test_full_volume_rewrite(void)
 	 * beside the old block and succeed. */
 	CHECK_EQ(free0, 0, "free clusters after the fill");
 	fill_random(blk, CB_SIZE, 32);
-	rewrite_refused("full_volume_rewrite", blk, -ENOSPC, false, orig, rb);
+	rewrite_refused(&(struct refused_rewrite){ .tag = "full_volume_rewrite",
+			.file = "text-1m.txt", .blk = blk, .want = -ENOSPC }, orig, rb);
 
 	/*
 	 * One repeated byte compresses to a single cluster, which the block's
@@ -1748,7 +1792,8 @@ static void test_full_volume_rewrite(void)
 	 * old block safe instead.
 	 */
 	memset(blk, 'x', CB_SIZE);
-	rewrite_refused("full_volume_small_rewrite", blk, -ENOSPC, false, orig, rb);
+	rewrite_refused(&(struct refused_rewrite){ .tag = "full_volume_small_rewrite",
+			.file = "text-1m.txt", .blk = blk, .want = -ENOSPC }, orig, rb);
 
 	/*
 	 * What the old order had to work with: the free clusters, and the
@@ -1816,7 +1861,9 @@ static void test_rewrite_write_error(void)
 	fill_random(blk, CB_SIZE, 33);
 	refuse_data = blk;
 	refused = 0;
-	rewrite_refused("rewrite_write_error", blk, -EIO, true, orig, rb);
+	rewrite_refused(&(struct refused_rewrite){ .tag = "rewrite_write_error",
+			.file = "text-1m.txt", .blk = blk, .want = -EIO, .poke = true },
+			orig, rb);
 	/* A device that never refused anything tested nothing. */
 	CHECK_EQ(refused, 1, "writes of the new block refused");
 out:
@@ -1828,6 +1875,252 @@ free:
 	free(rb);
 	free(orig);
 	free(blk);
+}
+
+/* ---- 11. a rewrite whose mapping pairs cannot be written --------------- */
+
+/*
+ * U22 in docs/UPSTREAM-BUGS.md, finding 32's last open path. Finding 32's fix
+ * wrote the new block first, then punched the old block out and merged the
+ * new runs in, two mapping-pairs updates. A failure after the punch lost the
+ * block. The punch's own update fails when taking the block out of the middle
+ * of a run splits the run and the record has no room for the extra pairs. The
+ * second update fails when the new block lies in more runs than the old one
+ * and its pairs no longer fit. Either way the run list was left with a hole
+ * there: the block read back as zeroes on the same mount, and the next write
+ * of the file's mapping pairs could put the hole on the disk. A block of
+ * zeroes over one that holds data is punched alone (U7), and its punch had
+ * the same single update.
+ *
+ * The update fails here as it does when an MFT record cannot be had. The
+ * file's base record is filled with the largest resident xattr, so more pairs
+ * need an attribute list, which needs an extent record. Every read of $MFT is
+ * refused during the rewrite, on a fresh mount, so that record cannot be
+ * mapped. That fails inside ntfs_inode_add_attrlist(), before any mapping
+ * pairs are written, and ntfs_error() takes the volume read-only. So these
+ * cases check that the run list and the sizes are put back; putting back
+ * pairs that a failed update had already written is reached only by hooks.
+ *
+ * split_run_update_fails: random-1m.bin is one run of 256 clusters, so taking
+ * block 1 out of it splits the run. zero_block_update_fails: the same with
+ * zeroes, which the U7 path punches. fragmented_update_fails: block 1 of
+ * text-1m.txt is 2 clusters and a hole, and with the free space in 2-cluster
+ * gaps the new raw block lies in 8 runs. In each, the rewrite must fail with
+ * -EIO, the block must read back as it was on the same mount and after a
+ * remount, the free count and the compressed size must not move, and ntfsck
+ * -n must be clean. A case that refused no read of $MFT tested nothing.
+ */
+#define FILL_XATTR	"fill"
+#define GAP_FILES	24
+#define GAP_CLUSTERS	2
+
+/* $MFT on the scratch image, from the boot sector and the record count, with
+ * room for the records the allocator may add: [*lo, *hi). */
+static int mft_range(uint64_t *lo, uint64_t *hi)
+{
+	struct ntfs_volume_info info;
+	uint8_t bs[512];
+	uint64_t lcn = 0;
+	ssize_t n;
+	int fd, i;
+
+	if (!g_vol || ntfs_volume_get_info(g_vol, &info))
+		return -EINVAL;
+	fd = open(scratch, O_RDONLY);
+	if (fd < 0)
+		return -errno;
+	n = pread(fd, bs, sizeof(bs), 0);
+	close(fd);
+	if (n != (ssize_t)sizeof(bs))
+		return -EIO;
+	for (i = 7; i >= 0; i--)
+		lcn = lcn << 8 | bs[0x30 + i];
+	*lo = lcn * info.cluster_size;
+	*hi = *lo + (info.total_mft_records + 64) * (uint64_t)info.mft_record_size;
+	return 0;
+}
+
+/*
+ * Fill @f's base MFT record with the largest resident xattr, found by halving:
+ * a size is resident if it costs no cluster. Returns the size, or 0. @buf is
+ * 4 KiB of scratch.
+ */
+static uint64_t fill_base_record(ntfs_inode_t *f, unsigned char *buf)
+{
+	struct ntfs_volume_info info;
+	uint64_t lo = 0, hi, before;
+
+	if (ntfs_volume_get_info(g_vol, &info))
+		return 0;
+	memset(buf, 'x', 4096);
+	for (hi = info.mft_record_size; lo + 1 < hi; ) {
+		uint64_t mid = (lo + hi) / 2;
+		int err;
+
+		ntfs_volume_get_info(g_vol, &info);
+		before = info.free_clusters;
+		err = ntfs_setxattr(f, FILL_XATTR, buf, mid, 0);
+		ntfs_volume_get_info(g_vol, &info);
+		if (!err && info.free_clusters == before)
+			lo = mid;
+		else
+			hi = mid;
+		ntfs_removexattr(f, FILL_XATTR);
+	}
+	if (!lo)
+		return 0;
+	ntfs_volume_get_info(g_vol, &info);
+	before = info.free_clusters;
+	if (ntfs_setxattr(f, FILL_XATTR, buf, lo, 0))
+		return 0;
+	ntfs_volume_get_info(g_vol, &info);
+	return info.free_clusters == before ? lo : 0;
+}
+
+/*
+ * Leave the free space in GAP_CLUSTERS-cluster gaps, as test_fragmented_rewrite
+ * does with larger ones: GAP_FILES small files, the rest of the volume filled,
+ * then every other small file deleted on a fresh mount. @buf is 1 MiB of
+ * scratch.
+ */
+static void fragment_free_space(unsigned char *buf)
+{
+	const size_t small = GAP_CLUSTERS * FRAG_CS;
+	ntfs_inode_t *root = NULL, *dir = NULL, *f;
+	char name[32];
+	int i;
+
+	CHECK_EQ(ntfs_volume_root(g_vol, &root), 0, "root");
+	CHECK_EQ(ntfs_mkdir(root, "gaps", 0755, &dir), 0, "mkdir /gaps");
+	if (!root || !dir)
+		goto out;
+	memset(buf, 'g', small);
+	for (i = 0; i < GAP_FILES; i++) {
+		snprintf(name, sizeof(name), "g%02d", i);
+		if (ntfs_create(dir, name, 0100644, &f)) {
+			CHECK(!"create a small file");
+			break;
+		}
+		CHECK_EQ(ntfs_write(f, buf, small, 0), small, "write a small file");
+		ntfs_inode_put(f);
+	}
+	fill_volume(dir, buf);
+	ntfs_inode_put(dir);
+	dir = NULL;
+	ntfs_inode_put(root);
+	root = NULL;
+	CHECK_EQ(ntfs_volume_sync(g_vol), 0, "sync after the fill");
+	umount_scratch();
+
+	CHECK_EQ(mount_scratch(), 0, "remount");
+	if (!g_vol)
+		return;
+	CHECK_EQ(ntfs_volume_root(g_vol, &root), 0, "root");
+	CHECK_EQ(ntfs_lookup(root, "gaps", &dir), 0, "lookup /gaps");
+	if (!dir)
+		goto out;
+	for (i = 0; i < GAP_FILES; i += 2) {
+		snprintf(name, sizeof(name), "g%02d", i);
+		CHECK_EQ(ntfs_unlink(dir, name), 0, "unlink every other small file");
+	}
+out:
+	if (dir)
+		ntfs_inode_put(dir);
+	if (root)
+		ntfs_inode_put(root);
+}
+
+static void rewrite_update_fails(const char *tag, const char *file, bool fragment,
+				 unsigned seed)
+{
+	const size_t mib = 1u << 20;
+	unsigned char *buf = malloc(mib), *rb = malloc(mib), *orig = malloc(mib);
+	unsigned char *blk = malloc(CB_SIZE);
+	struct ntfs_volume_info info;
+	ntfs_inode_t *f;
+	uint64_t fill, lo = 0, hi = 0;
+
+	if (!buf || !rb || !orig || !blk) {
+		CHECK(!"out of memory");
+		goto free;
+	}
+	if (copy_fixture("compressed-sparse.img") != 0) {
+		fprintf(stderr, "SKIP %s: no fixture\n", tag);
+		goto free;
+	}
+	g_refusing = true;
+	if (mount_scratch()) { failures++; checks++; goto out; }
+	ntfs_volume_get_info(g_vol, &info);
+	CHECK_EQ(info.cluster_size, FRAG_CS, "the fixture's cluster size");
+	if (info.cluster_size != FRAG_CS)
+		goto out;
+
+	f = open_file("compressed", file);
+	CHECK(f != NULL);
+	if (!f)
+		goto out;
+	CHECK_EQ(read_exact(f, orig, mib, 0), 0, label(tag, "read the file"));
+	fill = fill_base_record(f, buf);
+	ntfs_inode_put(f);
+	checks++;
+	if (!fill) {
+		failures++;
+		fprintf(stderr, "FAIL %s: the base record could not be filled\n", tag);
+		goto out;
+	}
+	if (fragment)
+		fragment_free_space(buf);
+	if (!g_vol)
+		goto out;
+	CHECK_EQ(ntfs_volume_sync(g_vol), 0, label(tag, "sync before the rewrite"));
+	umount_scratch();
+
+	/* On a fresh mount, so that nothing has read the free records' pages. */
+	CHECK_EQ(mount_scratch(), 0, label(tag, "remount"));
+	if (!g_vol)
+		goto out;
+	CHECK_EQ(mft_range(&lo, &hi), 0, label(tag, "find $MFT on the image"));
+	if (seed)
+		fill_random(blk, CB_SIZE, seed);
+	else
+		memset(blk, 0, CB_SIZE);
+	rewrite_refused(&(struct refused_rewrite){ .tag = tag, .file = file,
+			.blk = blk, .want = -EIO, .read_only = true,
+			.refuse_lo = lo, .refuse_hi = hi }, orig, rb);
+	printf("  %s: \"fill\" %llu bytes, %d read(s) of $MFT refused, the first at "
+	       "byte %llu\n", tag, (unsigned long long)fill, refused_reads,
+	       (unsigned long long)refused_read_off);
+	checks++;
+	if (!refused_reads) {
+		failures++;
+		fprintf(stderr, "FAIL %s: no read of $MFT was refused during the rewrite: "
+			"its mapping pairs fitted, and this case tested nothing\n", tag);
+	}
+out:
+	g_refusing = false;
+	umount_scratch();
+	unlink(scratch);
+free:
+	free(buf);
+	free(rb);
+	free(orig);
+	free(blk);
+}
+
+static void test_split_run_update_fails(void)
+{
+	rewrite_update_fails("split_run_update_fails", "random-1m.bin", false, 34);
+}
+
+/* Seed 0 writes zeroes, which the U7 path punches without a new block. */
+static void test_zero_block_update_fails(void)
+{
+	rewrite_update_fails("zero_block_update_fails", "random-1m.bin", false, 0);
+}
+
+static void test_fragmented_update_fails(void)
+{
+	rewrite_update_fails("fragmented_update_fails", "text-1m.txt", true, 35);
 }
 
 int main(void)
@@ -1847,6 +2140,9 @@ int main(void)
 		{ test_fragmented_rewrite,	 "fragmented_rewrite" },
 		{ test_full_volume_rewrite,	 "full_volume_rewrite" },
 		{ test_rewrite_write_error,	 "rewrite_write_error" },
+		{ test_split_run_update_fails,	 "split_run_update_fails" },
+		{ test_zero_block_update_fails,	 "zero_block_update_fails" },
+		{ test_fragmented_update_fails,	 "fragmented_update_fails" },
 	};
 
 	/* Per-group counts, so a group that silently stopped checking anything
