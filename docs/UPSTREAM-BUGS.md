@@ -1568,11 +1568,17 @@ chkdsk. That is a change of policy, left for a decision of its own.
 
 Still open:
 
-* **Writes after an error, before the unmount.** Finding 35 is to stop them.
-  None of these paths tests the read-only state: the page-cache and `$MFT`
-  writeback test only `NVolShutdown()`, which the teardown sets, and
-  `write_mft_record()` tests neither. Measured on a volume an error had taken
-  read-only:
+* **Writes after an error, before the unmount.** Left as in 0.4.2 on purpose,
+  by the user's decision of 2026-11-26. Stopping them can leave a disk that
+  chkdsk must repair where finishing them would not.
+  `test_write_fail_midtransfer` (`test_faults.c`) showed it with a barrier that
+  refused every write after the error: its sync stopped at the torn write,
+  leaving root's index naming a record past the end of `$MFT`, while a sync
+  allowed to finish leaves an image that `ntfsck -n` finds clean. Either way
+  the dirty mark makes Windows check the disk. None of these paths tests the
+  read-only state: the page-cache and `$MFT` writeback test only
+  `NVolShutdown()`, which the teardown sets, and `write_mft_record()` tests
+  neither. Measured on a volume an error had taken read-only:
   * The rest of the failing operation. In `test_error_ro_unmount` the device
     refused a.bin's record, and the fsync made 8 more writes after it, root's
     index among them. That index names b.bin, whose record never reached the
@@ -1582,8 +1588,20 @@ Still open:
     after the error.
   * The last put of a deleted file that was still open freed its record
     through `write_mft_record()`. FSKit's reclaimItem makes that last put.
-  * From reading only: the inode cache's shrink past 4096 inodes writes dirty
-    records.
+  * The inode cache's shrink past `NTFS_INODE_CACHE_MAX` writes back each
+    dirty inode it drops: 1 write for one dirty inode.
+* **The inode cache's shrink can deadlock, before any error.** `iput()` shrinks
+  the cache synchronously, eviction calls `iput()` again
+  (`ntfs_evict_big_inode()`), and writing back a dirty inode runs
+  `ntfs_inode_sync_filename()`, whose index lookup calls `iput()` again. With
+  many dirty inodes in one directory the recursion blocks on a mutex held
+  further up the same stack. Measured on main (`bfd3eb1`): creating more than
+  4096 files in one directory, each written to, with no sync in between, hangs
+  at about file 4096, with no progress for 60 s and 2 s of CPU in 10 minutes.
+  It needs more than `NTFS_INODE_CACHE_MAX` dirty, unreferenced inodes. FSKit
+  syncs often enough that the app is unlikely to reach it; `ntfscli` and other
+  callers of the API can. To be fixed after 0.5.0 (the user's decision,
+  2026-11-26).
 
 ## Finding 34 **FIXED**: a failed discard of the hibernation image left the volume writable
 
@@ -1633,3 +1651,18 @@ Still open:
   record 3, a mount with `NTFS_MOUNT_DISCARD_HIBERNATION` came up read-write,
   with reason `NTFS_RO_NONE`, and a create succeeded. Without the discard flag
   the same volume stays read-only. Present in 0.4.2; deferred on 2026-11-26.
+* **A failed discard leaves its request behind.** `discardHibernation()` in
+  `fskit/NTFS/DiskInventory.swift` does not withdraw its one-shot request when
+  the unmount or the remount fails, and the request is keyed by BSD name, which
+  macOS reuses. A different disk that later gets the same name would have its
+  saved Windows session discarded at its first writable mount, without anyone
+  agreeing to it. Mount Read-Write Anyway withdraws its own request for that
+  reason. Present in 0.4.2; deferred on 2026-11-26.
+* **Discard Session… is offered where the discard cannot succeed.** The menu
+  offers it for every hibernated disk mounted read-only, but `ntfs_mount()`
+  discards only when the disk is not marked dirty and its journal is clean,
+  and otherwise does nothing and says nothing. Measured: a hibernated disk that
+  is also dirty, or has an unclean journal, or both, stays read-only for reason
+  4 with no device write and its header kept, and the user only sees "Still
+  read-only". Replay and Close Journal are not offered for a hibernated disk
+  either. Present in 0.4.2; deferred on 2026-11-26.
