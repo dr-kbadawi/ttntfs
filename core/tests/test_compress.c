@@ -1470,9 +1470,10 @@ static void frag_pattern(unsigned char *p, size_t n, int k)
 }
 
 /*
- * Fill the rest of the volume with files in @dir, a file at a time: one file's
- * extension can be refused while clusters are free elsewhere, a fresh file's
- * first cluster cannot. @buf is 1 MiB of scratch.
+ * Fill the rest of the volume with files in @dir, a file at a time, so the
+ * fill does not depend on how far one file's extension reaches. Before U13 an
+ * extension could be refused while clusters were still free elsewhere; a
+ * fresh file's first cluster could not. @buf is 1 MiB of scratch.
  */
 static void fill_volume(ntfs_inode_t *dir, unsigned char *buf)
 {
