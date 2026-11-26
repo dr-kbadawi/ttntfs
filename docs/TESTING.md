@@ -51,7 +51,7 @@ tools/ci.sh --list       # what it will run
 * **`crash`** (217) — the write ordering, asserted by mapping a sync's device
   writes back to `$MFT`/`$Bitmap`, then 55 interrupted operations checked with
   `ntfsck`.
-* **`faults`** (242) — injected read, write and flush failures at fourteen
+* **`faults`** (417) — injected read, write and flush failures at fourteen
   points, plus volumes filled to `ENOSPC`. One is filled with data. Two are
   filled to their last cluster, then hit by new names, and must stay writable
   afterwards and pass a check after a remount (finding 26). One more, also

@@ -1439,9 +1439,10 @@ static void test_fragmented_rewrite(void)
 		CHECK_EQ(ntfs_write(f, buf, small, 0), small, "write a small file");
 		ntfs_inode_put(f);
 	}
-	/* The rest of the volume, a file at a time: one file's extension can
-	 * be refused while clusters are free elsewhere, a fresh file's first
-	 * cluster cannot. */
+	/* The rest of the volume, a file at a time, so the fill does not
+	 * depend on how far one file's extension reaches. Before U13 an
+	 * extension could be refused while clusters were still free
+	 * elsewhere; a fresh file's first cluster could not. */
 	memset(buf, 'Z', mib);
 	for (i = 0; i < 16; i++) {
 		size_t chunk = mib;

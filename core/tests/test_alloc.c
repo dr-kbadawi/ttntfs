@@ -28,7 +28,8 @@
  * it was found: by filling a small root folder with names. The second is not
  * visible in this port. Its contiguous callers are ntfs_attr_map_cluster(),
  * whose callers here zero or write every run it maps, and the compressed
- * writer, which a short run breaks as badly as a second one (U14). So
+ * writer, which a short run broke as badly as a second one until U18
+ * (finding 30) made it write every run it is given. So
  * test_alloc_cases calls the allocator itself, on a $Bitmap crafted on the
  * image before the mount, with a case for each way of reaching each defect.
  * test_fallocate_hole_zeroes keeps upstream's symptom as a guard.

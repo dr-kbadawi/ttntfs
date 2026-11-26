@@ -56,13 +56,15 @@ table:
   `test_fallocate_hole_zeroes` passes on 0.4.2. It is a guard: with mainline's
   zeroing applied to 0.4.2 it fails, with 16 of 20 clusters reading back a
   deleted file's bytes; with 18d4d2a3ce75 as well, it passes.
-* **Open, from reading the code (not reproduced): the compressed writer
-  assumes a single full run.** `ntfs_write_cb()` (`compress.c`) asks for
-  contiguous clusters with no hint, then writes the whole compression block
-  from `rlc->lcn`, whatever came back. A short run (possible in 7.1 too, when a
-  cluster in use ends one) or, before U14, a split one puts the end of the
-  block on clusters the file does not own. Mainline's writer is the same. U14
-  turns the split case into a short one, so it does not fix this.
+* **Since fixed as U18 (finding 30): the compressed writer assumed a single
+  full run.** `ntfs_write_cb()` (`compress.c`) asked for contiguous clusters
+  with no hint, then wrote the whole compression block from `rlc->lcn`,
+  whatever came back. A short run (possible in 7.1 too, when a cluster in use
+  ends one) or, before U14, a split one put the end of the block on clusters
+  the file does not own. Mainline's writer is the same. U14 turns the split
+  case into a short one, so it did not fix this; U18 reproduced it, and the
+  writer now asks again for what a block still lacks and writes each run its
+  own part.
 * **Still not fixed: `$MFT` cannot extend into the MFT zone from a hint past
   it.** With U13 the names test stops with one cluster free: LCN 3, the gap
   mkntfs leaves in front of `$MFT`, inside the MFT zone. The request that fails
