@@ -396,7 +396,7 @@ struct PartitionRow: View {
             }
         } else if partition.dirtyBlocked && partition.servedByOurDriver {
             VStack(alignment: .trailing, spacing: 4) {
-                Button("Mount Read-Write Anyway…", action: mountReadWriteAnyway).controlSize(.small)
+                Button("Mount R/W Anyway", action: mountReadWriteAnyway).controlSize(.small)
                 Button("Eject", action: eject).controlSize(.small)
             }
         } else {

@@ -91,7 +91,7 @@ struct Partition: Identifiable, Equatable {
     /// Read-only because the journal is unclean, which replay could clear.
     var journalBlocked: Bool { !journalSummary.isEmpty && mountedReadOnly && !hibernated }
 
-    /// Read-only for the dirty mark alone, which Mount Read-Write Anyway can
+    /// Read-only for the dirty mark alone, which Mount R/W Anyway can
     /// clear. The core checks NTFS_RO_DIRTY (3) after every other reason, so it
     /// means the mark is the only one; the other two tests guard against a
     /// status file from an extension that ranked the reasons otherwise.

@@ -41,13 +41,13 @@ final class MountStatusTests: XCTestCase {
     }
 
     /// Reason 3 covers both ways a disk gets the dirty mark, and names both
-    /// ways out: chkdsk in Windows, or the menu's Mount Read-Write Anyway.
+    /// ways out: chkdsk in Windows, or the menu's Mount R/W Anyway.
     func testDirtyReasonNamesBothCausesAndBothWaysOut() {
         let text = MountStatus.reasonText(3)                // NTFS_RO_DIRTY
         XCTAssertTrue(text.contains("Windows"), text)
         XCTAssertTrue(text.contains("this Mac"), text)
         XCTAssertTrue(text.contains("chkdsk /f"), text)
-        XCTAssertTrue(text.contains("Mount Read-Write Anyway"), text)
+        XCTAssertTrue(text.contains("Mount R/W Anyway"), text)
     }
 
     /// Reason 6 is the volume flags only Windows may clear: chkdsk's own, or

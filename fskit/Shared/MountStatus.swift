@@ -91,7 +91,7 @@ struct MountStatus: Codable, Equatable {
         case 0: return ""
         case 1: return "Mounted read-only: requested in Settings or with -o ro."
         case 2: return "Mounted read-only: the device is write-protected."
-        case 3: return "Mounted read-only: the volume is marked as needing a check, by Windows or by a session on this Mac that did not finish. Run chkdsk /f in Windows, or choose Mount Read-Write Anyway."
+        case 3: return "Mounted read-only: the volume is marked as needing a check, by Windows or by a session on this Mac that did not finish. Run chkdsk /f in Windows, or choose Mount R/W Anyway."
         case 4: return "Mounted read-only: Windows is hibernated on this volume (Fast Startup). Shut Windows down fully (shutdown /s /t 0)."
         case 5: return "Mounted read-only: the NTFS journal ($LogFile) is not clean. Eject the volume properly in Windows."
         case 6: return "Mounted read-only: chkdsk changed this volume, or Windows left work on it to finish. Mount it in Windows once, then eject it properly."

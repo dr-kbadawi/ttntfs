@@ -1660,7 +1660,7 @@ Still open:
   the unmount or the remount fails, and the request is keyed by BSD name, which
   macOS reuses. A different disk that later gets the same name would have its
   saved Windows session discarded at its first writable mount, without anyone
-  agreeing to it. Mount Read-Write Anyway withdraws its own request for that
+  agreeing to it. Mount R/W Anyway withdraws its own request for that
   reason. Present in 0.4.2; deferred on 2026-11-26.
 * **Discard Session… is offered where the discard cannot succeed.** The menu
   offers it for every hibernated disk mounted read-only, but `ntfs_mount()`

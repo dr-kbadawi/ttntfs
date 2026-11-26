@@ -42,7 +42,7 @@ tools/ci.sh --list       # what it will run
   (finding 33), and neither may a refused mount or `ntfs_probe()`. A volume
   with errors that stays writable must stay marked dirty too (U23), and a
   failed discard of the hibernation image must leave the volume read-only
-  (finding 34). Mount Read-Write Anyway (`NTFS_MOUNT_CLEAR_DIRTY`) must clear
+  (finding 34). Mount R/W Anyway (`NTFS_MOUNT_CLEAR_DIRTY`) must clear
   the dirty flag in both copies and mount read-write when that flag is the one
   reason, write nothing when anything else keeps the volume read-only or the
   switch to read-write is refused, and leave the volume dirty when the cleared

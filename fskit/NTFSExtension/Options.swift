@@ -58,7 +58,7 @@ struct NTFSMountOptions {
     /// mount, one explicit instruction, because it writes to the filesystem
     /// using a layout that has not been checked against Windows.
     var replayJournal = false
-    /// Clear the dirty mark and mount read-write ("Mount Read-Write Anyway").
+    /// Clear the dirty mark and mount read-write ("Mount R/W Anyway").
     /// Never a stored preference: one mount, one explicit instruction, because
     /// it writes to a volume marked as needing chkdsk and stops Windows from
     /// checking it.
