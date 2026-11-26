@@ -1,5 +1,99 @@
 # TT NTFS Native — release notes
 
+## 0.5.0 — 2026-11-26
+
+### A write into a sparse file could show a deleted file's data
+
+Sparse files -- Windows' sparse files, disk images, partial downloads -- have
+holes. A write into a hole that did not cover whole clusters got new clusters,
+and the bytes around the write kept whatever those clusters held before, often
+a deleted file's data, readable after a remount: 3,996 such bytes around a
+100-byte write with 4 KiB clusters. New clusters are now zeroed around a write,
+and a write into holes that fails part way gives back the clusters it had
+taken instead of leaving them in the file. Present in 0.4.2. (#13)
+
+### A compressed file could be written over another one
+
+On fragmented free space, the compressed writer put the end of a compression
+block on clusters another file owned, and a disk check found nothing wrong. It
+now writes each part of the block to the clusters it was given. The upstream
+driver has the same bug. (#13)
+
+### A failed rewrite of a compressed file no longer loses the block
+
+Rewriting part of a compressed file freed the old compression block before
+writing the new one, so when the disk was full or the write failed, the block
+was lost: 64 KiB read back as zeroes. Now the new block is written first, and
+the old one is released only once the new one is recorded; a failure leaves the
+old block as it was. One consequence: on a disk with no free space at all,
+rewriting part of a compressed file now fails with "no space", even when the
+new data would need fewer clusters. (#14)
+
+### A disk that needs checking stays marked until it is checked
+
+NTFS has a mark that asks Windows to check a disk. This driver sets it when it
+starts writing and clears it when it finishes cleanly, so a session on the Mac
+that is cut off mid-write -- a pulled cable, a crash -- leaves it set. 0.4.2
+cleared that mark the next time it merely looked at the disk, and after a disk
+error, so Windows never checked it. Now the mark stays, and such a disk mounts
+read-only, saying why, until chkdsk has run in Windows. The same applies to a
+disk Windows itself flagged for chkdsk. Without a Windows PC at hand, **Mount
+R/W Anyway** in the menu clears the mark after a warning, and the disk mounts
+read-write from then on.
+
+After a disk error, this driver now writes nothing more at eject except that
+mark: changes that had not reached the disk are lost, as in a crash, rather
+than written over what is there.
+
+Disks that Windows left after an unsafe removal, a crash or Fast Startup are
+not affected: Windows marks those in its journal, which Close Journal and
+Replay Journal handle as before. When a disk has several reasons to stay
+read-only, the menu now shows the most basic one first. Also fixed: when
+discarding a hibernated Windows session failed, the disk stayed writable while
+the menu said read-only. (#15)
+
+### A full disk no longer turns read-only
+
+On a full disk, creating a file failed with "operation not permitted" or
+switched the whole volume to read-only. It now fails with "no space", and the
+volume stays writable. A create that failed on a full folder could make the
+next new file disappear; that is fixed, and file records freed on a full disk
+are given out again. (#11)
+
+### Five cluster allocation fixes from the upstream driver
+
+The allocator could report a disk full while clusters were still free, which
+stopped small volumes early. A damaged cluster map pointing past the end of the
+volume could make a write overwrite the backup boot sector; it now gives an
+I/O error. And the free-space count stays right when freeing fails. (#12)
+
+### macOS 27: the app turns the extension on itself again, when it can
+
+0.4.2 sent everyone on macOS 27 to System Settings. With Full Disk Access,
+macOS 27 lets the app turn its extension on itself, as on 26 (#2), so the
+button reads **Enable Extension** again, tries that first, and opens System
+Settings only when macOS refuses. The menu now notices when the extension is
+switched on or off in System Settings, and uninstalling on 27 checks that it
+is really off. (#16)
+
+### The app says when a new version is out
+
+Once a day the app asks GitHub for the latest version number. When a newer one
+is out, the menu and Settings → About say so, with how to update; Homebrew
+users are given the `brew` command. Nothing is downloaded or installed. This is
+the app's first network request: it sends no cookies or identifiers, only the
+app's name and version, and **Check for updates** in Settings turns it off.
+(#16)
+
+### A star on GitHub
+
+Once disks have mounted read/write on three separate occasions, the menu shows
+one line asking for a star on GitHub. Following it or closing it retires it
+for good, and Settings → About has a permanent link. Nothing is sent anywhere.
+(#9)
+
+---
+
 ## 0.4.2 — 2026-11-20
 
 ### macOS 27: the extension is turned on in System Settings
