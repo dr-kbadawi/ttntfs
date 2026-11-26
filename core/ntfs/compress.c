@@ -1368,8 +1368,9 @@ static int ntfs_write_cb_runs(struct ntfs_volume *vol, struct runlist *runlist, 
  * pairs, then merge the new runs in and write the mapping pairs again. A
  * failure between the two left a hole in the run list where the block was:
  * the block read back as zeroes on the same mount, and the next write of the
- * file's mapping pairs put the hole on the disk. The sync at unmount is one,
- * even after an error has taken the volume read-only. A punch whose update
+ * file's mapping pairs put the hole on the disk. Before finding 33 the sync
+ * at unmount was one, even after an error had taken the volume read-only. A
+ * punch whose update
  * failed also left behind the compressed size it had already rewritten,
  * because ntfs_attr_update_meta() runs first. Swap the runs in memory
  * instead, and write the mapping pairs once. If that fails, put the run list

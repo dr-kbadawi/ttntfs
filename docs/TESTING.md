@@ -283,14 +283,6 @@ extraction moved the comment with it and changed nothing else.
   64 KiB short of its runs, and `ntfsck -n` was clean (U22). Compare the
   compressed size before and after a remount; `ntfs_getattr()` reports it in
   `alloc_size` for a compressed file.
-* **A volume that an error took read-only still writes at unmount.**
-  `ntfs_unmount()` skips its own sync then, but `ntfs_glue_teardown()` calls the
-  platform's `sync_filesystem()`, which, unlike Linux's, does not return early
-  for a read-only volume: every dirty inode is written, and `VOLUME_IS_DIRTY`
-  is cleared. So whatever is dirty at unmount reaches the disk, what a failed
-  operation left before the error and what was written after it alike. A
-  remount after a failure shows what reached the disk; it does not show that
-  the error kept anything off it (U22).
 * **A sandboxed extension reads the app-group container, not `~/Library/Preferences`.**
   `defaults write group.ch.techtag.ntfs …` from a shell lands in
   `~/Library/Preferences/group.ch.techtag.ntfs.plist`; the extension reads
