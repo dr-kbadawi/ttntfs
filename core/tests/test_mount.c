@@ -1518,6 +1518,19 @@ static int dirty_fixture(struct vol_rec *v, bool hibernated)
 	return mark_dirty_on_disk(scratch, v);
 }
 
+/*
+ * Whether a fixture exists. CI runs ctest before it builds the fixtures, and
+ * every test here skips without them; only a fixture that exists but cannot
+ * be prepared is a failure.
+ */
+static bool have_fixture(const char *name)
+{
+	char path[1024];
+
+	snprintf(path, sizeof(path), "%s/%s", images_dir(), name);
+	return access(path, R_OK) == 0;
+}
+
 static void test_clear_dirty_mounts_read_write(void)
 {
 	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
@@ -1653,7 +1666,10 @@ static void clear_dirty_refused(const struct clear_refusal *c)
 	    (c->journal_open && write_restart_pages(scratch, false, 0) != 0) ||
 	    (c->extra_flags && set_vol_flags_on_disk(scratch, &v, c->extra_flags) != 0) ||
 	    (c->mirror_mismatch && mirror_mismatch_on_disk(scratch, &v) != 0)) {
-		CHECK(!"prepare the fixture");
+		if (have_fixture("empty.img"))
+			CHECK(!"prepare the fixture");
+		else
+			fprintf(stderr, "SKIP clear_dirty: no fixture\n");
 		unlink(scratch);
 		return;
 	}
@@ -1724,7 +1740,10 @@ static void test_clear_dirty_switch_refused(void)
 	/* A clean journal that is not empty, so that retiring it writes. */
 	if (dirty_fixture(&v, false) != 0 ||
 	    write_restart_pages(scratch, true, RESTART_VOLUME_IS_CLEAN) != 0) {
-		CHECK(!"prepare the fixture");
+		if (have_fixture("empty.img"))
+			CHECK(!"prepare the fixture");
+		else
+			fprintf(stderr, "SKIP clear_dirty: no fixture\n");
 		unlink(scratch);
 		return;
 	}
@@ -1781,7 +1800,10 @@ static void test_clear_dirty_write_fails(void)
 	int err;
 
 	if (dirty_fixture(&v, false) != 0) {
-		CHECK(!"prepare the fixture");
+		if (have_fixture("empty.img"))
+			CHECK(!"prepare the fixture");
+		else
+			fprintf(stderr, "SKIP clear_dirty: no fixture\n");
 		unlink(scratch);
 		return;
 	}
