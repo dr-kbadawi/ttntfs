@@ -239,7 +239,7 @@
   <h2>Install</h2>
   <ol>
     <li>Open the DMG and drag <b>TT NTFS Native</b> to Applications.</li>
-    <li>Open it and press <b>Enable Extension</b>. The app enables its own file system extension — the switch in System Settings does not work for third-party FSKit modules on macOS 26, and the app tells you so. On macOS 27 the button reads <b>Open System Settings</b> instead: choose <b>By Category → File System Extensions</b> and turn TT NTFS Native on (the switch in the By App list does not stay on).</li>
+    <li>Open it and press <b>Enable Extension</b>. The app enables its own file system extension — the switch in System Settings does not work for third-party FSKit modules on macOS 26, and the app tells you so. On macOS 27 the app can do this only with Full Disk Access; without it, the button opens System Settings: choose <b>By Category → File System Extensions</b> and turn TT NTFS Native on (the switch in the By App list does not stay on).</li>
     <li>Plug in an NTFS disk. It appears in Finder, read/write.</li>
   </ol>
   <p class="note" style="margin-top:14px">The app lives in the menu bar. It shows each NTFS volume, whether it mounted read/write, and — if it didn’t — the reason and the one action that fixes it.</p>
@@ -271,7 +271,7 @@
   </details>
   <details>
     <summary>Why does it need to enable its own extension?</summary>
-    <p>Apple’s System Settings has a switch for file system extensions, and on macOS 26 it does not work for any third-party module — the system service refuses the request from everything except Apple’s own code. The app does what the switch should do. That is why it is not sandboxed, and the code that does it is a few hundred lines you can read. On macOS 27 Apple closed that route and fixed the switch, so there the app opens System Settings and waits for you to turn the extension on.</p>
+    <p>Apple’s System Settings has a switch for file system extensions, and on macOS 26 it does not work for any third-party module — the system service refuses the request from everything except Apple’s own code. The app does what the switch should do. That is why it is not sandboxed, and the code that does it is a few hundred lines you can read. On macOS 27 Apple fixed the switch and put the app’s route behind Full Disk Access: with it, the app turns the extension on itself as on 26; without it, the app opens System Settings and waits for you to turn the extension on there.</p>
   </details>
   <details>
     <summary>Does it work on Intel Macs?</summary>
