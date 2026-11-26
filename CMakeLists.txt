@@ -182,7 +182,7 @@ if(NTFS_BUILD_TESTS)
     ${CMAKE_CURRENT_SOURCE_DIR}/platform/include)
   add_test(NAME bigdir COMMAND test_bigdir)
   set_tests_properties(bigdir PROPERTIES
-    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck;NTFS_NTFSINFO=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/bin/ntfsinfo;NTFS_PATCH_REPARSE=${CMAKE_CURRENT_SOURCE_DIR}/tools/mkfixtures/patch_reparse.py")
+    ENVIRONMENT "NTFS_MKNTFS=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/sbin/mkntfs;NTFS_NTFSCK=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local-plus/sbin/ntfsck;NTFS_NTFSINFO=${CMAKE_CURRENT_SOURCE_DIR}/tools/.local/bin/ntfsinfo;NTFS_PATCH_REPARSE=${CMAKE_CURRENT_SOURCE_DIR}/tools/mkfixtures/patch_reparse.py;NTFS_FULL_INDEX_FIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/core/tests/fixtures/full-index-root.img.bz2")
 
   # Compressed writes and sparse files. core/ntfs/compress.c's write half had
   # never been executed by anything, and the compressed-sparse fixture was only

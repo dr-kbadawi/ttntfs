@@ -547,6 +547,31 @@ static struct index_root *ntfs_ir_lookup2(struct ntfs_inode *ni, __le16 *name, u
 	return ir;
 }
 
+static int ntfs_ir_move_to_base(struct ntfs_index_context *icx)
+{
+	struct ntfs_attr_search_ctx *ctx = NULL;
+	struct index_root *ir;
+	bool moved = false;
+	int ret = 0;
+
+	ir = ntfs_ir_lookup(icx->idx_ni, icx->name, icx->name_len, &ctx);
+	if (!ir)
+		return -ENOENT;
+
+	if (ctx->ntfs_ino->mft_no != icx->idx_ni->mft_no) {
+		ret = ntfs_attr_record_move_to(ctx, icx->idx_ni);
+		if (!ret) {
+			moved = true;
+			ret = ntfs_attrlist_update(icx->idx_ni);
+		}
+	}
+
+	ntfs_attr_put_search_ctx(ctx);
+	if (!ret && moved)
+		ret = ntfs_inode_free_empty_extents(icx->idx_ni);
+	return ret;
+}
+
 /*
  * Find a key in the index block.
  */
@@ -919,6 +944,7 @@ static s64 ntfs_ibm_pos_to_vcn(struct ntfs_index_context *icx, s64 pos)
 static int ntfs_ibm_add(struct ntfs_index_context *icx)
 {
 	u8 bmp[8];
+	int ret;
 
 	ntfs_debug("Entering\n");
 
@@ -928,10 +954,11 @@ static int ntfs_ibm_add(struct ntfs_index_context *icx)
 	 * AT_BITMAP must be at least 8 bytes.
 	 */
 	memset(bmp, 0, sizeof(bmp));
-	if (ntfs_attr_add(icx->idx_ni, AT_BITMAP, icx->name, icx->name_len,
-				bmp, sizeof(bmp))) {
+	ret = ntfs_attr_add(icx->idx_ni, AT_BITMAP, icx->name, icx->name_len,
+			    bmp, sizeof(bmp));
+	if (ret) {
 		ntfs_error(icx->idx_ni->vol->sb, "Failed to add AT_BITMAP");
-		return -EINVAL;
+		return ret;
 	}
 
 	return 0;
@@ -1004,6 +1031,7 @@ static s64 ntfs_ibm_get_free(struct ntfs_index_context *icx)
 {
 	u8 *bm;
 	int bit;
+	int ret;
 	s64 vcn, byte, size;
 
 	ntfs_debug("Entering\n");
@@ -1011,7 +1039,7 @@ static s64 ntfs_ibm_get_free(struct ntfs_index_context *icx)
 	bm = ntfs_attr_readall(icx->idx_ni, AT_BITMAP,  icx->name, icx->name_len,
 			&size);
 	if (!bm)
-		return (s64)-1;
+		return -EIO;
 
 	for (byte = 0; byte < size; byte++) {
 		if (bm[byte] == 255)
@@ -1029,10 +1057,12 @@ static s64 ntfs_ibm_get_free(struct ntfs_index_context *icx)
 out:
 	ntfs_debug("allocated vcn: %lld\n", vcn);
 
-	if (ntfs_ibm_set(icx, vcn))
-		vcn = (s64)-1;
+	ret = ntfs_ibm_set(icx, vcn);
 
 	kvfree(bm);
+	if (ret)
+		return ret;
+
 	return vcn;
 }
 
@@ -1173,6 +1203,8 @@ static int ntfs_ir_reparent(struct ntfs_index_context *icx)
 	struct index_entry *ie;
 	struct index_block *ib = NULL;
 	s64 new_ib_vcn;
+	u32 index_length;
+	u32 old_value_length;
 	int ix_root_size;
 	int ret = 0;
 
@@ -1192,7 +1224,7 @@ static int ntfs_ir_reparent(struct ntfs_index_context *icx)
 
 	new_ib_vcn = ntfs_ibm_get_free(icx);
 	if (new_ib_vcn < 0) {
-		ret = -EINVAL;
+		ret = (int)new_ib_vcn;
 		goto out;
 	}
 
@@ -1220,6 +1252,21 @@ retry:
 		goto clear_bmp;
 	}
 
+	old_value_length = le32_to_cpu(ctx->attr->data.resident.value_length);
+	index_length = le32_to_cpu(ir->index.entries_offset) +
+		sizeof(struct index_entry_header) + sizeof(s64);
+	ix_root_size = offsetof(struct index_root, index) + index_length;
+	/* Grow the resident value before publishing the larger root header. */
+	if (ix_root_size > old_value_length) {
+		ret = ntfs_resident_attr_value_resize(ctx->mrec, ctx->attr, ix_root_size);
+		if (ret)
+			goto resize_failed;
+
+		icx->idx_ni->data_size = ix_root_size;
+		icx->idx_ni->initialized_size = ix_root_size;
+		icx->idx_ni->allocated_size = (ix_root_size + 7) & ~7;
+	}
+
 	ntfs_ir_nill(ir);
 
 	ie = ntfs_ie_get_first(&ir->index);
@@ -1228,48 +1275,72 @@ retry:
 
 	ir->index.flags = LARGE_INDEX;
 	NInoSetIndexAllocPresent(icx->idx_ni);
-	ir->index.index_length = cpu_to_le32(le32_to_cpu(ir->index.entries_offset) +
-			le16_to_cpu(ie->length));
+	ir->index.index_length = cpu_to_le32(index_length);
 	ir->index.allocated_size = ir->index.index_length;
 
-	ix_root_size = sizeof(struct index_root) - sizeof(struct index_header) +
-		le32_to_cpu(ir->index.allocated_size);
-	ret  = ntfs_resident_attr_value_resize(ctx->mrec, ctx->attr, ix_root_size);
-	if (ret) {
-		/*
-		 * When there is no space to build a non-resident
-		 * index, we may have to move the root to an extent
-		 */
-		if ((ret == -ENOSPC) && (ctx->al_entry || !ntfs_inode_add_attrlist(icx->idx_ni))) {
-			ntfs_attr_put_search_ctx(ctx);
-			ctx = NULL;
-			ir = ntfs_ir_lookup(icx->idx_ni, icx->name, icx->name_len, &ctx);
-			if (ir && !ntfs_attr_record_move_away(ctx, ix_root_size -
-					le32_to_cpu(ctx->attr->data.resident.value_length))) {
-				if (ntfs_attrlist_update(ctx->base_ntfs_ino ?
-							 ctx->base_ntfs_ino : ctx->ntfs_ino))
-					goto clear_bmp;
-				ntfs_attr_put_search_ctx(ctx);
-				ctx = NULL;
-				goto retry;
-			}
-		}
-		goto clear_bmp;
-	} else {
-		icx->idx_ni->data_size = icx->idx_ni->initialized_size = ix_root_size;
-		icx->idx_ni->allocated_size = (ix_root_size  + 7) & ~7;
+	if (ix_root_size <= old_value_length) {
+		ret = ntfs_resident_attr_value_resize(ctx->mrec, ctx->attr, ix_root_size);
+		if (ret)
+			goto resize_failed;
+
+		icx->idx_ni->data_size = ix_root_size;
+		icx->idx_ni->initialized_size = ix_root_size;
+		icx->idx_ni->allocated_size = (ix_root_size + 7) & ~7;
 	}
 	ntfs_ie_set_vcn(ie, new_ib_vcn);
+	goto err_out;
 
+resize_failed:
+	/*
+	 * When there is no space to build a non-resident
+	 * index, we may have to move the root to an extent
+	 */
+	if (ret == -ENOSPC) {
+		if (!ctx->al_entry) {
+			ret = ntfs_inode_add_attrlist(icx->idx_ni);
+			if (ret)
+				goto clear_bmp;
+
+			ntfs_attr_put_search_ctx(ctx);
+			ctx = NULL;
+			goto retry;
+		}
+
+		if (ctx->ntfs_ino->mft_no != icx->idx_ni->mft_no)
+			goto clear_bmp;
+
+		ret = ntfs_attr_record_move_away(ctx, ix_root_size -
+				le32_to_cpu(ctx->attr->data.resident.value_length));
+		if (ret)
+			goto clear_bmp;
+
+		ret = ntfs_attrlist_update(icx->idx_ni);
+		if (ret) {
+			int rollback_ret;
+
+			ntfs_attr_put_search_ctx(ctx);
+			ctx = NULL;
+			rollback_ret = ntfs_ir_move_to_base(icx);
+			if (rollback_ret)
+				ntfs_error(icx->idx_ni->vol->sb,
+					   "Failed to roll back INDEX_ROOT relocation: %d",
+					   rollback_ret);
+			goto clear_bmp;
+		}
+
+		ntfs_attr_put_search_ctx(ctx);
+		ctx = NULL;
+		goto retry;
+	}
+clear_bmp:
+	ntfs_ibm_clear(icx, new_ib_vcn);
+	goto err_out;
 err_out:
 	kvfree(ib);
 	if (ctx)
 		ntfs_attr_put_search_ctx(ctx);
 out:
 	return ret;
-clear_bmp:
-	ntfs_ibm_clear(icx, new_ib_vcn);
-	goto err_out;
 }
 
 /*
@@ -1479,7 +1550,7 @@ resplit:
 	median  = ntfs_ie_get_median(&ib->index);
 	new_vcn = ntfs_ibm_get_free(icx);
 	if (new_vcn < 0) {
-		ret = -EINVAL;
+		ret = (int)new_vcn;
 		goto out;
 	}
 
