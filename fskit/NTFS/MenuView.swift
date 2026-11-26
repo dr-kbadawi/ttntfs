@@ -61,7 +61,7 @@ struct MenuView: View {
             }
             Divider()
             HStack {
-                Button("Settings…") { showSettings() }
+                Button("Settings") { showSettings() }
                 Spacer()
                 Button("Quit") { NSApp.terminate(nil) }
             }
@@ -320,7 +320,7 @@ struct PartitionRow: View {
      * neither is true. See confirmReplay().
      */
     private var replayButtonTitle: String {
-        partition.journalPendingOps == 0 ? "Close Journal…" : "Replay Journal…"
+        partition.journalPendingOps == 0 ? "Close Journal" : "Replay Journal"
     }
     /// Why it is read-only, from the extension's own status file, when it knows.
     let reason: String
@@ -391,7 +391,7 @@ struct PartitionRow: View {
             }
         } else if partition.hibernated && partition.mountedReadOnly {
             VStack(alignment: .trailing, spacing: 4) {
-                Button("Discard Session…", action: discardHibernation).controlSize(.small)
+                Button("Discard Session", action: discardHibernation).controlSize(.small)
                 Button("Eject", action: eject).controlSize(.small)
             }
         } else if partition.dirtyBlocked && partition.servedByOurDriver {

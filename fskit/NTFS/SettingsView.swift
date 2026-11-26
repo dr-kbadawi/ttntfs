@@ -132,7 +132,7 @@ struct SettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     Button("Try Again") { confirmRemove = true }
                 case .idle:
-                    Button("Remove TT NTFS Native…") { confirmRemove = true }
+                    Button("Remove TT NTFS Native") { confirmRemove = true }
                     Text("Turns the extension off, removes its settings and login item, "
                          + "and moves the app to the Trash. Eject your NTFS volumes first.")
                         .font(.caption).foregroundStyle(.secondary)

@@ -1662,7 +1662,7 @@ Still open:
   saved Windows session discarded at its first writable mount, without anyone
   agreeing to it. Mount R/W Anyway withdraws its own request for that
   reason. Present in 0.4.2; deferred on 2026-11-26.
-* **Discard Session… is offered where the discard cannot succeed.** The menu
+* **Discard Session is offered where the discard cannot succeed.** The menu
   offers it for every hibernated disk mounted read-only, but `ntfs_mount()`
   discards only when the disk is not marked dirty and its journal is clean,
   and otherwise does nothing and says nothing. Measured: a hibernated disk that
