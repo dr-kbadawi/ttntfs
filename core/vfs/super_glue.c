@@ -297,6 +297,23 @@ iput_out:
 }
 
 /*
+ * ntfs_glue_write_cleared_dirty - write $Volume's record with VOLUME_IS_DIRTY clear
+ *
+ * Both copies, $MFT's and $MFTMirr's, through __ntfs_write_inode(). The flag was
+ * cleared in memory before the volume was switched read-write; the record is
+ * marked dirty again here so that the write cannot be skipped.
+ */
+static int ntfs_glue_write_cleared_dirty(struct ntfs_volume *vol)
+{
+	int err = ntfs_clear_volume_flags(vol, VOLUME_IS_DIRTY);
+
+	if (err)
+		return err;
+	mark_mft_record_dirty(NTFS_I(vol->vol_ino));
+	return __ntfs_write_inode(vol->vol_ino, 1);
+}
+
+/*
  * ntfs_glue_make_rw - switch a clean, read-only mounted volume read-write
  *
  * What super.c's ntfs_reconfigure() does for a rw remount, minus
@@ -565,7 +582,7 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	struct ntfs_volume_handle *h;
 	struct ntfs_volume *vol;
 	struct super_block *sb;
-	bool want_rw, made_rw = false;
+	bool want_rw, made_rw = false, cleared_dirty = false;
 	int err, hib;
 
 	*vol_out = NULL;
@@ -676,6 +693,7 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 			} else {
 				hib = 0;
 				h->fc.sb_flags = sb->s_flags;
+				h->mounted_rw = true;
 				platform_log(PLATFORM_LOG_WARN,
 					     "ntfs: %s: discarded the saved Windows hibernation image on request; Windows will boot instead of resuming",
 					     sb->s_id);
@@ -684,6 +702,24 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 	}
 	h->hibernated = hib != 0;
 
+	/*
+	 * NTFS_MOUNT_CLEAR_DIRTY: the user was told what the dirty mark means -- a
+	 * session that did not finish, or Windows flagging the disk for chkdsk --
+	 * and chose to mount read-write anyway. The mark is cleared in memory only,
+	 * so that the decision below judges the volume without it: any other
+	 * reason keeps the volume read-only as before. The cleared flag is written
+	 * only once ntfs_glue_make_rw() has switched the volume read-write; if it
+	 * stays read-only, the flag is put back in memory, and nothing has been
+	 * written.
+	 */
+	if ((opts->flags & NTFS_MOUNT_CLEAR_DIRTY) && h->dirty) {
+		cleared_dirty = !ntfs_clear_volume_flags(vol, VOLUME_IS_DIRTY);
+		if (cleared_dirty)
+			h->dirty = false;
+		else
+			vol->vol_flags |= VOLUME_IS_DIRTY;
+	}
+
 	h->ro_reason = NTFS_RO_NONE;
 	if (!want_rw)
 		h->ro_reason = NTFS_RO_REQUESTED;
@@ -691,14 +727,20 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 		h->ro_reason = NTFS_RO_DEVICE;
 	else if (hib)
 		h->ro_reason = NTFS_RO_HIBERNATED;
-	else if (h->dirty)
-		h->ro_reason = NTFS_RO_DIRTY;
-	else if (vol->vol_flags & VOLUME_MUST_MOUNT_RO_MASK)
+	else if (vol->vol_flags & (VOLUME_MUST_MOUNT_RO_MASK & ~VOLUME_IS_DIRTY))
 		h->ro_reason = NTFS_RO_UNSUPPORTED;
 	else if (!h->logfile_clean)
 		h->ro_reason = NTFS_RO_LOGFILE;
 	else if (NVolErrors(vol))
 		h->ro_reason = NTFS_RO_ERRORS;
+	/*
+	 * Last, so that NTFS_RO_DIRTY means the dirty flag is the only reason:
+	 * what reason 3 tells the user, and what NTFS_MOUNT_CLEAR_DIRTY can lift.
+	 * A dirty volume with an unclean journal reports the journal first, whose
+	 * replay comes before anything else.
+	 */
+	else if (h->dirty)
+		h->ro_reason = NTFS_RO_DIRTY;
 
 	if (want_rw && h->ro_reason == NTFS_RO_NONE && made_rw) {
 		err = 0;                     /* switched above, for the discard */
@@ -707,11 +749,35 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 		err = ntfs_glue_make_rw(vol);
 		if (!err) {
 			h->fc.sb_flags = sb->s_flags;
+			h->mounted_rw = true;
 		} else {
 			platform_log(PLATFORM_LOG_WARN,
 				     "ntfs: %s: read-write remount refused (%d)",
 				     sb->s_id, err);
 			h->ro_reason = NTFS_RO_ERRORS;
+		}
+	}
+	if (cleared_dirty) {
+		if (sb_rdonly(sb)) {
+			/* Read-only after all, and nothing written: the mark
+			 * stays, on the disk and now in memory again. */
+			ntfs_set_volume_flags(vol, VOLUME_IS_DIRTY);
+			h->dirty = true;
+			platform_log(PLATFORM_LOG_WARN,
+				     "ntfs: %s: not clearing the dirty mark: the volume is read-only for another reason (%d)",
+				     sb->s_id, h->ro_reason);
+		} else {
+			err = ntfs_glue_write_cleared_dirty(vol);
+			/*
+			 * A failed write took the volume read-only through
+			 * ntfs_error(). mounted_rw makes the teardown leave it marked
+			 * dirty, as after any error in a read-write session.
+			 */
+			platform_log(err ? PLATFORM_LOG_ERR : PLATFORM_LOG_WARN,
+				     err ? "ntfs: %s: could not write the cleared dirty mark (%d)" :
+				     "ntfs: %s: cleared the dirty mark at the user's request; Windows will not check this volume for it",
+				     sb->s_id, err);
+			err = 0;
 		}
 	}
 	if (want_rw && h->ro_reason != NTFS_RO_NONE) {
@@ -741,8 +807,11 @@ int ntfs_mount(struct ntfs_bdev *dev, const struct ntfs_mount_options *opts,
 		     sb->s_id, sb_rdonly(sb) ? "read-only" : "read-write",
 		     vol->volume_label ? (char *)vol->volume_label : "",
 		     vol->major_ver, vol->minor_ver);
-	/* Read-only at unmount after this means an error took it there. */
-	h->mounted_rw = !sb_rdonly(sb);
+	/*
+	 * Read-only at unmount after this means an error took it there, perhaps
+	 * already during the mount: writing the cleared dirty flag can fail.
+	 */
+	h->mounted_rw = h->mounted_rw || !sb_rdonly(sb);
 	*vol_out = h;
 	return 0;
 

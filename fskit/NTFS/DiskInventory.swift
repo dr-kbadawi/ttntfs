@@ -39,6 +39,9 @@ struct Partition: Identifiable, Equatable {
     var mountedReadOnly: Bool = false
     /// Why, when our driver decided it. Empty when read/write.
     var readOnlyReason: String = ""
+    /// The same reason as the core's enum ntfs_ro_reason; 0 when read/write.
+    var roReason: Int = 0
+    var logfileClean: Bool = true
     /// Windows has a suspended session saved on this volume (Fast Startup).
     /// Writing to it would corrupt the filesystem when Windows resumes, so the
     /// driver refuses until the saved session is discarded.
@@ -87,6 +90,14 @@ struct Partition: Identifiable, Equatable {
 
     /// Read-only because the journal is unclean, which replay could clear.
     var journalBlocked: Bool { !journalSummary.isEmpty && mountedReadOnly && !hibernated }
+
+    /// Read-only for the dirty mark alone, which Mount Read-Write Anyway can
+    /// clear. The core checks NTFS_RO_DIRTY (3) after every other reason, so it
+    /// means the mark is the only one; the other two tests guard against a
+    /// status file from an extension that ranked the reasons otherwise.
+    var dirtyBlocked: Bool {
+        mountedReadOnly && roReason == 3 && !hibernated && logfileClean
+    }
 
     /// Mounted by something other than us — offer to take it over.
     var heldByAnotherDriver: Bool { isMounted && !servedByOurDriver }
@@ -183,7 +194,9 @@ final class DiskInventory: ObservableObject {
                 if s.readOnly {
                     found[index].mountedReadOnly = true
                     found[index].readOnlyReason = s.roReasonText
+                    found[index].roReason = s.roReason
                 }
+                found[index].logfileClean = s.logfileClean
                 found[index].hibernated = s.hibernated
                 found[index].journalSummary = s.journalSummary
                 found[index].journalPendingOps = s.journalPendingOps
@@ -319,6 +332,50 @@ final class DiskInventory: ObservableObject {
         refresh()
         if let now = partitions.first(where: { $0.bsdName == partition.bsdName }), now.mountedReadOnly {
             setNote(partition, "Still read-only: \(now.readOnlyReason)")
+        }
+    }
+
+    /// Clear the dirty mark and hand the volume back read-write. Reached only
+    /// through a confirmation that says what is at risk; the request is one-shot
+    /// and consumed by the extension at mount, like the hibernation discard.
+    func mountReadWriteAnyway(_ partition: Partition) async {
+        note = nil
+        let store = SharedSettings.store
+        /*
+         * The consent is for this disk and this attempt. BSD names are reused,
+         * so a request left behind by a failed attempt could clear the mark of
+         * the next disk to get the same name: it is withdrawn when the attempt
+         * ends, whether the extension took it or not.
+         */
+        func withdraw() {
+            let left = (store.stringArray(forKey: SharedSettings.pendingDirtyClear) ?? [])
+                .filter { $0 != partition.bsdName }
+            store.set(left, forKey: SharedSettings.pendingDirtyClear)
+        }
+        var pending = store.stringArray(forKey: SharedSettings.pendingDirtyClear) ?? []
+        if !pending.contains(partition.bsdName) { pending.append(partition.bsdName) }
+        store.set(pending, forKey: SharedSettings.pendingDirtyClear)
+
+        busy = true
+        if let problem = await unmountQuietly(partition) {
+            withdraw()
+            busy = false
+            refresh()
+            setNote(partition, "Could not be unmounted: \(problem)")
+            return
+        }
+        if let problem = await mountQuietly(partition) {
+            setNote(partition, "Could not be mounted: \(problem)")
+        }
+        withdraw()
+        busy = false
+        refresh()
+        if let now = partitions.first(where: { $0.bsdName == partition.bsdName }) {
+            if now.mountedReadOnly {
+                setNote(partition, "Still read-only: \(now.readOnlyReason)")
+            } else {
+                setNote(partition, "Now read/write.", .good)
+            }
         }
     }
 

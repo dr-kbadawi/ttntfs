@@ -27,6 +27,9 @@ enum SharedDefaults {
     /// One-shot requests: BSD names whose journal the user has agreed to have
     /// replayed, knowing the layout is unverified. Consumed at mount.
     static let pendingJournalReplay = "pendingJournalReplay"
+    /// One-shot requests: BSD names whose dirty mark (VOLUME_IS_DIRTY) the user
+    /// has agreed to clear, to mount read-write without chkdsk. Consumed at mount.
+    static let pendingDirtyClear = "pendingDirtyClear"
 }
 
 /*
@@ -55,6 +58,11 @@ struct NTFSMountOptions {
     /// mount, one explicit instruction, because it writes to the filesystem
     /// using a layout that has not been checked against Windows.
     var replayJournal = false
+    /// Clear the dirty mark and mount read-write ("Mount Read-Write Anyway").
+    /// Never a stored preference: one mount, one explicit instruction, because
+    /// it writes to a volume marked as needing chkdsk and stops Windows from
+    /// checking it.
+    var clearDirty = false
 
     static func fromDefaults() -> NTFSMountOptions {
         var o = NTFSMountOptions()
@@ -82,10 +90,18 @@ struct NTFSMountOptions {
         takeOneShotRequest(SharedDefaults.pendingJournalReplay, for: bsdName)
     }
 
+    /// Takes the one-shot request to clear this device's dirty mark, if the
+    /// user made one. @defaults is the app group's, except in tests.
+    static func takeDirtyClearRequest(for bsdName: String,
+                                      in defaults: UserDefaults? = UserDefaults(suiteName: SharedDefaults.suite)) -> Bool {
+        takeOneShotRequest(SharedDefaults.pendingDirtyClear, for: bsdName, in: defaults)
+    }
+
     /// Takes a one-shot request, removing it. Removing it here means a failed
     /// or repeated mount cannot act on consent the user gave once.
-    private static func takeOneShotRequest(_ key: String, for bsdName: String) -> Bool {
-        guard let d = UserDefaults(suiteName: SharedDefaults.suite) else { return false }
+    private static func takeOneShotRequest(_ key: String, for bsdName: String,
+                                           in defaults: UserDefaults? = UserDefaults(suiteName: SharedDefaults.suite)) -> Bool {
+        guard let d = defaults else { return false }
         let pending = d.stringArray(forKey: key) ?? []
         guard pending.contains(bsdName) else { return false }
         d.set(pending.filter { $0 != bsdName }, forKey: key)
@@ -154,6 +170,7 @@ struct NTFSMountOptions {
         if wslSymlinks { f |= NTFS_MOUNT_WSL_SYMLINKS.rawValue }
         if discardHibernation { f |= NTFS_MOUNT_DISCARD_HIBERNATION.rawValue }
         if replayJournal { f |= NTFS_MOUNT_REPLAY_JOURNAL.rawValue }
+        if clearDirty { f |= NTFS_MOUNT_CLEAR_DIRTY.rawValue }
         return f
     }
 

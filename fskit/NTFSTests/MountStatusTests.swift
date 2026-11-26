@@ -40,6 +40,26 @@ final class MountStatusTests: XCTestCase {
         }
     }
 
+    /// Reason 3 covers both ways a disk gets the dirty mark, and names both
+    /// ways out: chkdsk in Windows, or the menu's Mount Read-Write Anyway.
+    func testDirtyReasonNamesBothCausesAndBothWaysOut() {
+        let text = MountStatus.reasonText(3)                // NTFS_RO_DIRTY
+        XCTAssertTrue(text.contains("Windows"), text)
+        XCTAssertTrue(text.contains("this Mac"), text)
+        XCTAssertTrue(text.contains("chkdsk /f"), text)
+        XCTAssertTrue(text.contains("Mount Read-Write Anyway"), text)
+    }
+
+    /// Reason 6 is the volume flags only Windows may clear: chkdsk's own, or
+    /// work Windows left unfinished. It used to say "a feature this driver
+    /// cannot write safely", which fit neither, and since the dirty flag is
+    /// checked last a dirty disk with chkdsk's flag shows it too.
+    func testUnfinishedWindowsWorkReasonNamesChkdskAndWindows() {
+        let text = MountStatus.reasonText(6)                // NTFS_RO_UNSUPPORTED
+        XCTAssertTrue(text.contains("chkdsk"), text)
+        XCTAssertTrue(text.contains("Mount it in Windows"), text)
+    }
+
     /// NTFS_RO_NONE is not a reason at all: the volume is read/write and the
     /// app shows nothing. An explanatory sentence here would be a false claim.
     func testNoReasonIsEmpty() {

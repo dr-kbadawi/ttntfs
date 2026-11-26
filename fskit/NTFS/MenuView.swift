@@ -45,6 +45,7 @@ struct MenuView: View {
                         eject: { Task { await inventory.unmount(partition); monitor.refresh() } },
                         discardHibernation: { confirmDiscard(partition) },
                         replayJournal: { confirmReplay(partition) },
+                        mountReadWriteAnyway: { confirmClearDirty(partition) },
                         note: inventory.note?.bsdName == partition.bsdName
                             ? inventory.note : nil,
                         busy: inventory.busy,
@@ -139,6 +140,21 @@ struct MenuView: View {
                    + "next time.\n\nYour files are not affected.",
             proceed: "Discard and Mount Read/Write") else { return }
         Task { await inventory.discardHibernation(partition); monitor.refresh() }
+    }
+
+    /// The dirty mark asks for chkdsk, so this is the one confirmation that has
+    /// to say both what is at risk and what the safe path is.
+    private func confirmClearDirty(_ partition: Partition) {
+        guard Confirm.destructive(
+            title: "Mount \(partition.displayName) read/write without a check?",
+            message: "This disk is marked as needing a check: Windows flagged it, or a session "
+                   + "on this Mac did not finish. Writing to it before chkdsk runs can make any "
+                   + "damage that is already there worse.\n\n"
+                   + "This clears the mark. The Mac will then mount the disk read/write, and "
+                   + "Windows will no longer check it.\n\n"
+                   + "The safe way is to run chkdsk /f on it in Windows first.",
+            proceed: "Clear the Mark and Mount Read/Write") else { return }
+        Task { await inventory.mountReadWriteAnyway(partition); monitor.refresh() }
     }
 
     /// Partitions grouped by the physical disk they live on, in a stable order.
@@ -287,6 +303,7 @@ struct PartitionRow: View {
     let eject: () -> Void
     let discardHibernation: () -> Void
     let replayJournal: () -> Void
+    let mountReadWriteAnyway: () -> Void
     /// The result of the last action on *this* volume, shown in its own row.
     let note: DiskInventory.Note?
     let busy: Bool
@@ -350,6 +367,11 @@ struct PartitionRow: View {
         } else if partition.hibernated && partition.mountedReadOnly {
             VStack(alignment: .trailing, spacing: 4) {
                 Button("Discard Session…", action: discardHibernation).controlSize(.small)
+                Button("Eject", action: eject).controlSize(.small)
+            }
+        } else if partition.dirtyBlocked && partition.servedByOurDriver {
+            VStack(alignment: .trailing, spacing: 4) {
+                Button("Mount Read-Write Anyway…", action: mountReadWriteAnyway).controlSize(.small)
                 Button("Eject", action: eject).controlSize(.small)
             }
         } else {

@@ -770,9 +770,8 @@ static int vol_flags_on_disk(const char *path, const struct vol_rec *v, int copy
 	return n == 2 ? get16(f) : -1;
 }
 
-/* Set VOLUME_IS_DIRTY in both copies, as a session that did not finish
- * leaves it, or Windows when it flags the disk for chkdsk. */
-static int mark_dirty_on_disk(const char *path, const struct vol_rec *v)
+/* Set @bits in the volume flags of both copies of $Volume's record. */
+static int set_vol_flags_on_disk(const char *path, const struct vol_rec *v, uint16_t bits)
 {
 	int fd = open(path, O_RDWR), i;
 
@@ -785,7 +784,7 @@ static int mark_dirty_on_disk(const char *path, const struct vol_rec *v)
 			close(fd);
 			return -1;
 		}
-		put16(f, get16(f) | 0x0001);
+		put16(f, get16(f) | bits);
 		if (pwrite(fd, f, 2, (off_t)v->flags[i]) != 2) {
 			close(fd);
 			return -1;
@@ -793,6 +792,13 @@ static int mark_dirty_on_disk(const char *path, const struct vol_rec *v)
 	}
 	close(fd);
 	return 0;
+}
+
+/* Set VOLUME_IS_DIRTY in both copies, as a session that did not finish
+ * leaves it, or Windows when it flags the disk for chkdsk. */
+static int mark_dirty_on_disk(const char *path, const struct vol_rec *v)
+{
+	return set_vol_flags_on_disk(path, v, 0x0001);
 }
 
 /* ntfsck -n on @path, if $NTFSCK is usable. */
@@ -816,9 +822,9 @@ static void fsck_image(const char *path, const char *what)
 	}
 }
 
-static struct ntfs_bdev *open_counting(const char *path)
+static struct ntfs_bdev *open_counting_mode(const char *path, bool read_only)
 {
-	struct ntfs_bdev *dev = ntfs_bdev_open_path(path, false);
+	struct ntfs_bdev *dev = ntfs_bdev_open_path(path, read_only);
 
 	if (!dev)
 		return NULL;
@@ -828,6 +834,11 @@ static struct ntfs_bdev *open_counting(const char *path)
 	counting_ops.flush = c_flush; counting_ops.close = c_close;
 	dev->ops = &counting_ops;
 	return dev;
+}
+
+static struct ntfs_bdev *open_counting(const char *path)
+{
+	return open_counting_mode(path, false);
 }
 
 /*
@@ -1312,16 +1323,59 @@ out:
  * straight to the disk. Its two earlier writes, the journal's restart pages,
  * are what any read-write mount writes; nothing may follow the refused one.
  */
-static void discard_case(const char *what, uint32_t flags, int want_err)
+/*
+ * Windows hibernated on @path: a hiberfil.sys in the root whose header starts
+ * "hibr". Returns where the header lies on the image, or -1.
+ */
+static long long make_hibernated(const char *path)
 {
 	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
 	static uint8_t buf[8192];
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol = NULL;
+	ntfs_inode_t *root = NULL, *f = NULL;
+	uint64_t hib_no = 0, run = 0;
+	long long hib = -1;
+	int err;
+
+	dev = ntfs_bdev_open_path(path, false);
+	CHECK(dev != NULL);
+	if (!dev)
+		return -1;
+	err = ntfs_mount(dev, &o, &vol);
+	CHECK(err == 0);
+	if (err) {
+		ntfs_bdev_close(dev);
+		return -1;
+	}
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	if (root) {
+		CHECK(ntfs_create(root, "hiberfil.sys", 0100644, &f) == 0);
+		if (f) {
+			memset(buf, 'H', sizeof(buf));
+			memcpy(buf, "hibr", 4);
+			CHECK(ntfs_write(f, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf));
+			hib_no = ntfs_inode_number(f);
+			ntfs_inode_put(f);
+		}
+		ntfs_inode_put(root);
+	}
+	CHECK(ntfs_unmount(vol) == 0);
+	ntfs_bdev_close(dev);
+	if (hib_no)
+		hib = attr_first_run(path, hib_no, 0x80, &run);
+	CHECK(hib >= 0 && run >= 4096);
+	return hib;
+}
+
+static void discard_case(const char *what, uint32_t flags, int want_err)
+{
+	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
 	struct ntfs_volume_info info;
 	struct ntfs_bdev *dev = NULL;
 	ntfs_volume_t *vol = NULL;
 	ntfs_inode_t *root = NULL, *f = NULL;
 	struct vol_rec v;
-	uint64_t hib_no = 0, run = 0;
 	long long hib = -1;
 	uint8_t magic[4] = { 0 };
 	int err, fl, fd;
@@ -1336,33 +1390,7 @@ static void discard_case(const char *what, uint32_t flags, int want_err)
 		goto out;
 
 	/* Windows hibernated on it: hiberfil.sys in the root, a header to resume. */
-	dev = ntfs_bdev_open_path(scratch, false);
-	CHECK(dev != NULL);
-	if (!dev)
-		goto out;
-	err = ntfs_mount(dev, &o, &vol);
-	CHECK(err == 0);
-	if (err)
-		goto out;
-	CHECK(ntfs_volume_root(vol, &root) == 0);
-	CHECK(ntfs_create(root, "hiberfil.sys", 0100644, &f) == 0);
-	if (f) {
-		memset(buf, 'H', sizeof(buf));
-		memcpy(buf, "hibr", 4);
-		CHECK(ntfs_write(f, buf, sizeof(buf), 0) == (ssize_t)sizeof(buf));
-		hib_no = ntfs_inode_number(f);
-		ntfs_inode_put(f);
-		f = NULL;
-	}
-	ntfs_inode_put(root);
-	root = NULL;
-	CHECK(ntfs_unmount(vol) == 0);
-	vol = NULL;
-	ntfs_bdev_close(dev);
-	dev = NULL;
-	if (hib_no)
-		hib = attr_first_run(scratch, hib_no, 0x80, &run);
-	CHECK(hib >= 0 && run >= 4096);
+	hib = make_hibernated(scratch);
 	if (hib < 0)
 		goto out;
 
@@ -1448,6 +1476,345 @@ static void test_failed_discard_stays_read_only(void)
 	printf("test_failed_discard_stays_read_only\n");
 }
 
+/* ---- 7. clearing the dirty mark on the user's instruction ---------------- */
+
+/*
+ * NTFS_MOUNT_CLEAR_DIRTY, which the app sets behind "Mount Read-Write Anyway…".
+ * On a volume whose one reason to stay read-only is VOLUME_IS_DIRTY, the flag
+ * is cleared in both copies of $Volume's record and the volume mounts
+ * read-write; the next mount needs no instruction. With any other reason to
+ * stay read-only the instruction is refused and nothing is written: the device
+ * must see no write at all, and the flag must still be set in both copies.
+ */
+static bool dirty_in_both(const struct vol_rec *v)
+{
+	for (int i = 0; i < 2; i++) {
+		int fl = vol_flags_on_disk(scratch, v, i);
+
+		if (fl < 0 || !(fl & 0x0001))
+			return false;
+	}
+	return true;
+}
+
+static bool clean_in_both(const struct vol_rec *v)
+{
+	for (int i = 0; i < 2; i++) {
+		int fl = vol_flags_on_disk(scratch, v, i);
+
+		if (fl < 0 || (fl & 0x0001))
+			return false;
+	}
+	return true;
+}
+
+/* empty.img marked dirty, made hibernated first when @hibernated. */
+static int dirty_fixture(struct vol_rec *v, bool hibernated)
+{
+	if (copy_fixture("empty.img") != 0 || locate_vol_rec(scratch, v) != 0)
+		return -1;
+	if (hibernated && make_hibernated(scratch) < 0)
+		return -1;
+	return mark_dirty_on_disk(scratch, v);
+}
+
+static void test_clear_dirty_mounts_read_write(void)
+{
+	struct ntfs_mount_options o = { .flags = 0, .uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
+	struct ntfs_volume_info info;
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol = NULL;
+	ntfs_inode_t *root = NULL, *f = NULL;
+	struct vol_rec v;
+	int err;
+
+	if (dirty_fixture(&v, false) != 0) {
+		fprintf(stderr, "SKIP clear_dirty: no fixture\n");
+		unlink(scratch);
+		return;
+	}
+
+	/* Without the instruction: refused, and nothing written. */
+	dev = open_counting(scratch);
+	CHECK(dev != NULL);
+	if (!dev) { unlink(scratch); return; }
+	write_count = 0;
+	CHECK(ntfs_mount(dev, &o, &vol) == -EROFS);
+	ntfs_bdev_close(dev);
+	CHECK(write_count == 0);
+	CHECK(dirty_in_both(&v));
+
+	/* With it: the flag cleared on the disk, then a read-write mount. */
+	dev = open_counting(scratch);
+	CHECK(dev != NULL);
+	if (!dev) { unlink(scratch); return; }
+	o.flags = NTFS_MOUNT_CLEAR_DIRTY | NTFS_MOUNT_RDONLY_FALLBACK;
+	write_count = 0;
+	err = ntfs_mount(dev, &o, &vol);
+	printf("  clear_dirty: mount %d, %lu device writes\n", err, write_count);
+	CHECK(err == 0);
+	if (err) { ntfs_bdev_close(dev); unlink(scratch); return; }
+	CHECK(ntfs_volume_get_info(vol, &info) == 0);
+	CHECK(!info.read_only);
+	CHECK(info.ro_reason == NTFS_RO_NONE);
+	CHECK(!info.dirty);
+	checks++;
+	if (!clean_in_both(&v)) {
+		failures++;
+		fprintf(stderr, "FAIL clear_dirty: VOLUME_IS_DIRTY is still set on the disk "
+			"after the mount that was told to clear it\n");
+	}
+	CHECK(ntfs_volume_root(vol, &root) == 0);
+	if (root) {
+		static const char text[] = "written after clearing the dirty mark";
+
+		CHECK(ntfs_create(root, "after.txt", 0100644, &f) == 0);
+		if (f) {
+			CHECK(ntfs_write(f, text, sizeof(text), 0) == (ssize_t)sizeof(text));
+			CHECK(ntfs_fsync(f, false) == 0);
+			ntfs_inode_put(f);
+			f = NULL;
+		}
+		ntfs_inode_put(root);
+		root = NULL;
+	}
+	CHECK(ntfs_unmount(vol) == 0);
+	vol = NULL;
+	ntfs_bdev_close(dev);
+	CHECK(clean_in_both(&v));
+
+	/* The next mount needs no instruction. */
+	dev = ntfs_bdev_open_path(scratch, false);
+	CHECK(dev != NULL);
+	if (dev) {
+		o.flags = 0;
+		err = ntfs_mount(dev, &o, &vol);
+		CHECK(err == 0);
+		if (!err) {
+			CHECK(ntfs_volume_get_info(vol, &info) == 0 && !info.read_only);
+			CHECK(ntfs_volume_root(vol, &root) == 0);
+			if (root) {
+				CHECK(ntfs_lookup(root, "after.txt", &f) == 0);
+				if (f)
+					ntfs_inode_put(f);
+				ntfs_inode_put(root);
+			}
+			CHECK(ntfs_unmount(vol) == 0);
+		}
+		ntfs_bdev_close(dev);
+	}
+	fsck_image(scratch, "clear_dirty");
+	unlink(scratch);
+	printf("test_clear_dirty_mounts_read_write\n");
+}
+
+/* Each of these keeps the volume read-only whatever its dirty flag says. */
+struct clear_refusal {
+	const char *what;
+	uint32_t flags;			/* besides CLEAR_DIRTY and the fallback */
+	bool hibernated, journal_open, device_ro;
+	uint16_t extra_flags;		/* more volume flags than VOLUME_IS_DIRTY */
+	bool mirror_mismatch;		/* an error found at load */
+	int want_reason;
+};
+
+/* $MFTMirr's copy of record 3 made to differ from $MFT's in one byte of the
+ * $VOLUME_INFORMATION value's reserved field, which the load reports as an
+ * error and NVolErrors() records. */
+static int mirror_mismatch_on_disk(const char *path, const struct vol_rec *v)
+{
+	uint64_t at = v->flags[1] - 0x0a;	/* the value's first, reserved, byte */
+	uint8_t b;
+	int fd = open(path, O_RDWR), ok;
+
+	if (fd < 0)
+		return -1;
+	if ((at - v->rec[1]) % 512 >= 510)	/* never an update sequence slot */
+		at += 2;
+	ok = pread(fd, &b, 1, (off_t)at) == 1;
+	b ^= 0x5a;
+	ok = ok && pwrite(fd, &b, 1, (off_t)at) == 1;
+	close(fd);
+	return ok ? 0 : -1;
+}
+
+static void clear_dirty_refused(const struct clear_refusal *c)
+{
+	struct ntfs_mount_options o = {
+		.flags = c->flags | NTFS_MOUNT_CLEAR_DIRTY | NTFS_MOUNT_RDONLY_FALLBACK,
+		.uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
+	struct ntfs_volume_info info;
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol = NULL;
+	struct vol_rec v;
+	int err;
+
+	if (dirty_fixture(&v, c->hibernated) != 0 ||
+	    (c->journal_open && write_restart_pages(scratch, false, 0) != 0) ||
+	    (c->extra_flags && set_vol_flags_on_disk(scratch, &v, c->extra_flags) != 0) ||
+	    (c->mirror_mismatch && mirror_mismatch_on_disk(scratch, &v) != 0)) {
+		CHECK(!"prepare the fixture");
+		unlink(scratch);
+		return;
+	}
+	dev = open_counting_mode(scratch, c->device_ro);
+	CHECK(dev != NULL);
+	if (!dev) { unlink(scratch); return; }
+	write_count = 0;
+	err = ntfs_mount(dev, &o, &vol);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		checks++;
+		if (!info.read_only || info.ro_reason != c->want_reason) {
+			failures++;
+			fprintf(stderr, "FAIL clear_dirty refused (%s): read_only %d reason %d, "
+				"expected read-only for reason %d\n", c->what,
+				(int)info.read_only, info.ro_reason, c->want_reason);
+		}
+		ntfs_unmount(vol);
+	}
+	ntfs_bdev_close(dev);
+	checks++;
+	if (write_count || !dirty_in_both(&v)) {
+		failures++;
+		fprintf(stderr, "FAIL clear_dirty refused (%s): %lu device writes, the flag "
+			"%s in both copies\n", c->what, write_count,
+			dirty_in_both(&v) ? "still set" : "NOT set");
+	}
+	unlink(scratch);
+}
+
+static void test_clear_dirty_refused(void)
+{
+	/* The dirty flag is the last reason the mount checks, so each case
+	 * reports its own reason, not the dirty one. */
+	static const struct clear_refusal cases[] = {
+		{ "journal not clean", 0, false, true, false, 0, false, NTFS_RO_LOGFILE },
+		{ "hibernated", 0, true, false, false, 0, false, NTFS_RO_HIBERNATED },
+		{ "modified by chkdsk", 0, false, false, false, 0x8000, false, NTFS_RO_UNSUPPORTED },
+		{ "errors found at load", 0, false, false, false, 0, true, NTFS_RO_ERRORS },
+		{ "device read-only", 0, false, false, true, 0, false, NTFS_RO_DEVICE },
+		{ "read-only by request", NTFS_MOUNT_RDONLY, false, false, false, 0, false, NTFS_RO_REQUESTED },
+	};
+
+	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+		clear_dirty_refused(&cases[i]);
+	printf("test_clear_dirty_refused\n");
+}
+
+/*
+ * The flag is written only once the volume is read-write. When the switch is
+ * refused, here because the device refuses every write into $LogFile, so that
+ * the journal cannot be retired, nothing at all may reach the disk.
+ */
+static void test_clear_dirty_switch_refused(void)
+{
+	struct ntfs_mount_options o = {
+		.flags = NTFS_MOUNT_CLEAR_DIRTY | NTFS_MOUNT_RDONLY_FALLBACK,
+		.uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
+	struct ntfs_volume_info info;
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol = NULL;
+	struct vol_rec v;
+	uint64_t len = 0;
+	long long log;
+	int err;
+
+	/* A clean journal that is not empty, so that retiring it writes. */
+	if (dirty_fixture(&v, false) != 0 ||
+	    write_restart_pages(scratch, true, RESTART_VOLUME_IS_CLEAN) != 0) {
+		CHECK(!"prepare the fixture");
+		unlink(scratch);
+		return;
+	}
+	log = attr_first_run(scratch, 2, 0x80, &len);
+	CHECK(log >= 0 && len > 0);
+	dev = log >= 0 ? open_counting(scratch) : NULL;
+	CHECK(dev != NULL);
+	if (!dev) { unlink(scratch); return; }
+	fail_lo = (uint64_t)log;
+	fail_hi = fail_lo + len;
+	fail_times = 1 << 20;
+	failed_writes = 0;
+	write_count = 0;
+	err = ntfs_mount(dev, &o, &vol);
+	fail_times = 0;
+	printf("  clear_dirty_switch_refused: mount %d, %lu device writes, %d refused\n",
+	       err, write_count, failed_writes);
+	CHECK(failed_writes > 0);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		CHECK(info.read_only && info.dirty);
+		ntfs_unmount(vol);
+	}
+	ntfs_bdev_close(dev);
+	checks++;
+	if (write_count != (unsigned long)failed_writes || !dirty_in_both(&v)) {
+		failures++;
+		fprintf(stderr, "FAIL clear_dirty_switch_refused: %lu writes reached the disk, "
+			"the flag %s in both copies\n",
+			write_count - (unsigned long)failed_writes,
+			dirty_in_both(&v) ? "still set" : "NOT set");
+	}
+	failed_writes = 0;
+	unlink(scratch);
+	printf("test_clear_dirty_switch_refused\n");
+}
+
+/*
+ * The cleared flag's own write fails part way: $MFT's copy is written, the
+ * mirror's is refused. That error takes the volume read-only, and the unmount
+ * must then leave it marked dirty in both copies, as after any error in a
+ * read-write session, not with $MFT's copy saying clean.
+ */
+static void test_clear_dirty_write_fails(void)
+{
+	struct ntfs_mount_options o = {
+		.flags = NTFS_MOUNT_CLEAR_DIRTY | NTFS_MOUNT_RDONLY_FALLBACK,
+		.uid = 0, .gid = 0, .fmask = 022, .dmask = 022 };
+	struct ntfs_volume_info info;
+	struct ntfs_bdev *dev;
+	ntfs_volume_t *vol = NULL;
+	struct vol_rec v;
+	int err;
+
+	if (dirty_fixture(&v, false) != 0) {
+		CHECK(!"prepare the fixture");
+		unlink(scratch);
+		return;
+	}
+	dev = open_counting(scratch);
+	CHECK(dev != NULL);
+	if (!dev) { unlink(scratch); return; }
+	fail_lo = v.rec[1];
+	fail_hi = fail_lo + v.size;
+	fail_times = 1;
+	failed_writes = 0;
+	err = ntfs_mount(dev, &o, &vol);
+	fail_times = 0;
+	printf("  clear_dirty_write_fails: mount %d, %d write(s) refused\n", err, failed_writes);
+	CHECK(failed_writes == 1);
+	CHECK(err == 0);
+	if (!err) {
+		CHECK(ntfs_volume_get_info(vol, &info) == 0);
+		CHECK(info.read_only);
+		ntfs_unmount(vol);
+	}
+	ntfs_bdev_close(dev);
+	checks++;
+	if (!dirty_in_both(&v)) {
+		failures++;
+		fprintf(stderr, "FAIL clear_dirty_write_fails: after the failed write and the "
+			"unmount, VOLUME_IS_DIRTY is not set in both copies ($MFT %#x, $MFTMirr %#x)\n",
+			vol_flags_on_disk(scratch, &v, 0), vol_flags_on_disk(scratch, &v, 1));
+	}
+	failed_writes = 0;
+	unlink(scratch);
+	printf("test_clear_dirty_write_fails\n");
+}
+
 int main(void)
 {
 	ntfs_set_logger(log_to_stderr, NULL);
@@ -1461,6 +1828,10 @@ int main(void)
 	test_error_ro_unmount();
 	test_errors_rw_unmount();
 	test_failed_discard_stays_read_only();
+	test_clear_dirty_mounts_read_write();
+	test_clear_dirty_refused();
+	test_clear_dirty_switch_refused();
+	test_clear_dirty_write_fails();
 	CHECK(busy_inode_logs == 0);
 	printf("%d checks, %d failures\n", checks, failures);
 	return failures ? 1 : 0;

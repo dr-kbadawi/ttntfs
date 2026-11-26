@@ -22,6 +22,7 @@ final class MountOptionsTests: XCTestCase {
         ("caseSensitive",            { $0.caseSensitive = true },            NTFS_MOUNT_CASE_SENSITIVE.rawValue),
         ("discardHibernation",       { $0.discardHibernation = true },       NTFS_MOUNT_DISCARD_HIBERNATION.rawValue),
         ("replayJournal",            { $0.replayJournal = true },            NTFS_MOUNT_REPLAY_JOURNAL.rawValue),
+        ("clearDirty",               { $0.clearDirty = true },               NTFS_MOUNT_CLEAR_DIRTY.rawValue),
     ]
 
     /// The read-only fallback is unconditional: PORTING.md §6 says a dirty or
@@ -80,16 +81,37 @@ final class MountOptionsTests: XCTestCase {
         XCTAssertEqual(o.cFlags, NTFS_MOUNT_RDONLY_FALLBACK.rawValue)
     }
 
-    /// The two destructive options are never stored preferences, so nothing but
-    /// an explicit per-mount request can set them. Guards against a default that
-    /// would discard a suspended Windows session on every mount.
+    /// The destructive options are never stored preferences, so nothing but an
+    /// explicit per-mount request can set them. Guards against a default that
+    /// would discard a suspended Windows session, or clear a dirty mark, on
+    /// every mount.
     func testDestructiveOptionsAreOffByDefaultAndNotReachableFromAnOptionList() {
         XCTAssertFalse(NTFSMountOptions().discardHibernation)
         XCTAssertFalse(NTFSMountOptions().replayJournal)
+        XCTAssertFalse(NTFSMountOptions().clearDirty)
         var o = NTFSMountOptions()
-        o.applyList("discardhibernation,replayjournal,discard_hibernation,replay_journal")
+        o.applyList("discardhibernation,replayjournal,discard_hibernation,replay_journal,"
+                    + "cleardirty,clear_dirty,mountanyway")
         XCTAssertFalse(o.discardHibernation)
         XCTAssertFalse(o.replayJournal)
+        XCTAssertFalse(o.clearDirty)
+    }
+
+    /// Clearing a dirty mark is consent given once: the first mount of the
+    /// device takes the request, a second finds nothing, and another device's
+    /// request is left where it was. A throwaway defaults suite stands in for
+    /// the app group, so the test never touches the real one.
+    func testDirtyClearRequestIsTakenExactlyOnce() throws {
+        let suite = "ttntfs-tests-\(UUID().uuidString)"
+        let d = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { d.removePersistentDomain(forName: suite) }
+        d.set(["disk6s1", "disk7s2"], forKey: SharedDefaults.pendingDirtyClear)
+
+        XCTAssertTrue(NTFSMountOptions.takeDirtyClearRequest(for: "disk6s1", in: d))
+        XCTAssertFalse(NTFSMountOptions.takeDirtyClearRequest(for: "disk6s1", in: d))
+        XCTAssertEqual(d.stringArray(forKey: SharedDefaults.pendingDirtyClear), ["disk7s2"])
+        XCTAssertFalse(NTFSMountOptions.takeDirtyClearRequest(for: "disk8s1", in: d))
+        XCTAssertEqual(d.stringArray(forKey: SharedDefaults.pendingDirtyClear), ["disk7s2"])
     }
 
     // MARK: -o option lists

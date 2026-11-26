@@ -125,6 +125,10 @@ final class NTFSFileSystem: FSUnaryFileSystem, FSUnaryFileSystemOperations,
                 mountOptions.discardHibernation = true
                 log.notice("\(block.bsdName, privacy: .public): discarding the saved Windows hibernation image at the user's request")
             }
+            if NTFSMountOptions.takeDirtyClearRequest(for: block.bsdName) {
+                mountOptions.clearDirty = true
+                log.notice("\(block.bsdName, privacy: .public): clearing the dirty mark at the user's request")
+            }
         }
         if mountOptions.kernelReadOnly { _ = ntfs_bdev_fskit_set_read_only(dev, true) }
 

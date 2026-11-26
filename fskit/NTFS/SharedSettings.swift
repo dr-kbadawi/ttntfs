@@ -22,4 +22,6 @@ enum SharedSettings {
     static let pendingHibernationDiscard = "pendingHibernationDiscard"
     /// One-shot: BSD names whose journal the user agreed to have replayed.
     static let pendingJournalReplay = "pendingJournalReplay"
+    /// One-shot: BSD names whose dirty mark the user agreed to clear.
+    static let pendingDirtyClear = "pendingDirtyClear"
 }

@@ -69,6 +69,14 @@ enum ntfs_mount_flags {
 	 * otherwise clean -- a dirty volume or an unclean journal still refuses.
 	 * Destructive to the user's Windows session: ask first. */
 	NTFS_MOUNT_DISCARD_HIBERNATION	= 1u << 7,
+	/* Clear VOLUME_IS_DIRTY and mount read-write, when that flag is the one
+	 * thing keeping the volume read-only. The flag asks for chkdsk: a session
+	 * that did not finish, or Windows flagging the disk. Writing before
+	 * chkdsk can make existing damage worse, and once it is cleared Windows no
+	 * longer checks the volume. Refused, with nothing written, when anything
+	 * else keeps the volume read-only. Only ever set from an explicit
+	 * per-volume instruction: ask first. */
+	NTFS_MOUNT_CLEAR_DIRTY		= 1u << 11,
 	/* Write every symlink with the WSL reparse tag (IO_REPARSE_TAG_LX_SYMLINK)
 	 * instead of choosing per link. The default writes the native Windows tag
 	 * whenever the target can be expressed in it, which is what Windows, WSL,
@@ -87,10 +95,12 @@ enum ntfs_ro_reason {
 	NTFS_RO_NONE = 0,
 	NTFS_RO_REQUESTED,		/* caller asked for read-only */
 	NTFS_RO_DEVICE,			/* device is read-only */
-	NTFS_RO_DIRTY,			/* volume dirty flag set; needs chkdsk or journal replay */
+	NTFS_RO_DIRTY,			/* the dirty flag, and nothing else: chkdsk, or NTFS_MOUNT_CLEAR_DIRTY.
+				 * Checked last, after every other reason. */
 	NTFS_RO_HIBERNATED,		/* Windows hibernated / Fast Startup */
 	NTFS_RO_LOGFILE,		/* $LogFile not clean and could not be replayed */
-	NTFS_RO_UNSUPPORTED,		/* feature we cannot write safely (e.g. old version) */
+	NTFS_RO_UNSUPPORTED,		/* volume flags only Windows may clear: chkdsk's,
+				 * or work it left unfinished (0xc026) */
 	NTFS_RO_ERRORS,			/* errors detected while mounted; switched to ro */
 };
 

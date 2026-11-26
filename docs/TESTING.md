@@ -22,7 +22,7 @@ tools/ci.sh --list       # what it will run
 |---|---|---|
 | `ctest` (16 targets, ~2,800 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the cluster allocator, the enable script | `ctest --test-dir build` |
 | `tools/run-tests.sh` (265 checks) | read and write against 7 NTFS fixtures, compared with ntfsprogs as ground truth, then structurally checked | `tools/run-tests.sh all` |
-| `NTFSTests` (51 tests) | the app's Swift logic: option parsing, status decoding, note expiry | `xcodebuild test -scheme NTFSTests` |
+| `NTFSTests` (60 tests) | the app's Swift logic: option parsing, status decoding, note expiry | `xcodebuild test -scheme NTFSTests` |
 | `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end, then `fsck` on the result | by hand |
 
 ### ctest, in detail
@@ -35,14 +35,18 @@ tools/ci.sh --list       # what it will run
   contract that every bdev must satisfy.
 * **`pagecache`, `pagecache_stress`** — folio lifecycle, writeback visibility,
   the lookup-versus-invalidate race, reclaim under a cap.
-* **`mount`** (239) — the `$LogFile` clean rule, the read-only reason, a
+* **`mount`** (313) — the `$LogFile` clean rule, the read-only reason, a
   read-write mount with a non-empty journal, the fast probe against the full
   one, the device-flush count, and the unmount of a read-only volume. That
   unmount must write nothing, except the dirty flag after an error
   (finding 33), and neither may a refused mount or `ntfs_probe()`. A volume
   with errors that stays writable must stay marked dirty too (U23), and a
   failed discard of the hibernation image must leave the volume read-only
-  (finding 34).
+  (finding 34). Mount Read-Write Anyway (`NTFS_MOUNT_CLEAR_DIRTY`) must clear
+  the dirty flag in both copies and mount read-write when that flag is the one
+  reason, write nothing when anything else keeps the volume read-only or the
+  switch to read-write is refused, and leave the volume dirty when the cleared
+  flag's own write fails.
 * **`links`** (279) — hard links, symlinks through reparse points, the 100 ns
   timestamp conversion, and permissions from the mount masks.
 * **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
