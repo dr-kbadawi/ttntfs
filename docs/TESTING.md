@@ -20,9 +20,9 @@ tools/ci.sh --list       # what it will run
 
 | suite | what it covers | run by |
 |---|---|---|
-| `ctest` (16 targets, ~2,800 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the cluster allocator, the enable script | `ctest --test-dir build` |
+| `ctest` (16 targets, ~4,800 checks) | the platform layer, mount decisions, `$LogFile`, compressed and sparse writes, links and names, large directories, crash consistency, fault injection, geometry, the cluster allocator, the enable script | `ctest --test-dir build` |
 | `tools/run-tests.sh` (265 checks) | read and write against 7 NTFS fixtures, compared with ntfsprogs as ground truth, then structurally checked | `tools/run-tests.sh all` |
-| `NTFSTests` (102 tests) | the app's Swift logic: option parsing, status decoding, note expiry, name alternatives, turning the extension on (the module list, when System Settings takes over), how the menu reads its state, when to ask for a star | `xcodebuild test -scheme NTFSTests` |
+| `NTFSTests` (128 tests) | the app's Swift logic: option parsing, status decoding, note expiry, name alternatives, turning the extension on (the module list, when System Settings takes over), how the menu reads its state, when to ask for a star, the update check | `xcodebuild test -scheme NTFSTests` |
 | `fskit/scripts/mount-test.sh` | a real FSKit mount, read-write, end to end, then `fsck` on the result | by hand |
 
 ### ctest, in detail
@@ -47,7 +47,7 @@ tools/ci.sh --list       # what it will run
   reason, write nothing when anything else keeps the volume read-only or the
   switch to read-write is refused, and leave the volume dirty when the cleared
   flag's own write fails.
-* **`links`** (279) — hard links, symlinks through reparse points, the 100 ns
+* **`links`** (559) — hard links, symlinks through reparse points, the 100 ns
   timestamp conversion, and permissions from the mount masks.
 * **`names`** (448) — the three name and xattr decisions in PORTING.md §6:
   Windows-illegal names refused, case-insensitive and case-preserving lookup
@@ -60,7 +60,7 @@ tools/ci.sh --list       # what it will run
   paths.
 * **`bigdir`** (480) — the index B-tree: growth to four levels, deletion in
   creation, reverse and shuffled order, and six collation shapes.
-* **`crash`** (217) — the write ordering, asserted by mapping a sync's device
+* **`crash`** (253) — the write ordering, asserted by mapping a sync's device
   writes back to `$MFT`/`$Bitmap`, then 55 interrupted operations checked with
   `ntfsck`.
 * **`faults`** (417) — injected read, write and flush failures at fourteen
